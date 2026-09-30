@@ -4088,6 +4088,60 @@ cob_set_switch (const int n, const int flag)
 	}
 }
 
+#define IS_UTF16_FIELD(f)	\
+	((COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f)) \
+	 || COB_FIELD_NATIONAL_ALL (f))
+
+/* compare with national (UTF-16) data: both operands are converted to
+   UTF-16, the shorter one is padded with national spaces */
+static int
+cob_cmp_national (cob_field *f1, cob_field *f2)
+{
+	static const unsigned char	space16[2] = { 0x00, 0x20 };
+	const cob_charset	*cs = COB_CS;
+	unsigned char	*u1, *u2;
+	size_t		s1, s2, min, i;
+	int		ret = 0;
+	const int	all1 = COB_FIELD_TYPE (f1) == COB_TYPE_ALPHANUMERIC_ALL;
+	const int	all2 = COB_FIELD_TYPE (f2) == COB_TYPE_ALPHANUMERIC_ALL;
+
+	if (all1 && all2) {
+		/* not possible, but play safe */
+		return 0;
+	}
+	if (all2) {
+		u1 = cob_field_to_utf16 (cs, f1, &s1);
+		u2 = cob_all_to_utf16 (cs, f2, s1);
+		s2 = s1;
+	} else if (all1) {
+		u2 = cob_field_to_utf16 (cs, f2, &s2);
+		u1 = cob_all_to_utf16 (cs, f1, s2);
+		s1 = s2;
+	} else {
+		u1 = cob_field_to_utf16 (cs, f1, &s1);
+		u2 = cob_field_to_utf16 (cs, f2, &s2);
+	}
+	min = s1 < s2 ? s1 : s2;
+	ret = memcmp (u1, u2, min);
+	if (ret == 0 && s1 != s2) {
+		/* compare the rest of the longer one with spaces */
+		const unsigned char	*rest = s1 > s2 ? u1 : u2;
+		const size_t		max = s1 > s2 ? s1 : s2;
+		for (i = min; i < max; i++) {
+			if (rest[i] != space16[(i - min) % 2]) {
+				ret = rest[i] - space16[(i - min) % 2];
+				break;
+			}
+		}
+		if (s1 < s2) {
+			ret = -ret;
+		}
+	}
+	cob_free (u1);
+	cob_free (u2);
+	return ret;
+}
+
 int
 cob_cmp (cob_field *f1, cob_field *f2)
 {
@@ -4100,6 +4154,12 @@ cob_cmp (cob_field *f1, cob_field *f2)
 	/* both numeric -> direct numeric compare */
 	if (f1_is_numeric && f2_is_numeric) {
 		return cob_numeric_cmp (f1, f2);
+	}
+
+	/* national (UTF-16) data for a data charset */
+	if (COB_MODULE_PTR && COB_MODULE_PTR->charset
+	 && (IS_UTF16_FIELD (f1) || IS_UTF16_FIELD (f2))) {
+		return cob_cmp_national (f1, f2);
 	}
 
 	/* one is an internal ALL field (ZERO,LOW-VALUE, ...) */
@@ -4118,12 +4178,6 @@ cob_cmp (cob_field *f1, cob_field *f2)
 		return -cob_cmp_all (f2, f1);
 	}
 
-#if 0	/* FIXME later: must cater for national fields, too,
-		   at least if that is numeric NATIONAL	*/
-	if (COB_FIELD_IS_NATIONAL (f1)) {
-		...
-	}
-#endif
 
 	/* all else -> alphanumeric comparision */
 

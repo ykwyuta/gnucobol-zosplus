@@ -544,6 +544,10 @@ COB_HIDDEN unsigned char	*cob_charset_utf16_from_host	(const cob_charset *,
 COB_HIDDEN unsigned char	*cob_charset_dbcs_to_mixed	(const cob_charset *,
 					const unsigned char *, const size_t, size_t *);
 COB_HIDDEN void		cob_move_national	(cob_field *, cob_field *);
+COB_HIDDEN unsigned char	*cob_field_to_utf16	(const cob_charset *,
+					cob_field *, size_t *);
+COB_HIDDEN unsigned char	*cob_all_to_utf16	(const cob_charset *,
+					cob_field *, const size_t);
 COB_HIDDEN void		cob_exit_charset	(void);
 COB_HIDDEN void		cob_init_cconv		(cob_global *);
 COB_HIDDEN void		cob_init_termio		(cob_global *, cob_settings *);

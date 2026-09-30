@@ -65,6 +65,7 @@ struct cob_inspect_state {
 	int			          sign;
 	cob_field			  var_copy;	/* use a copy to account for overwritten temporary field, see cob_inspect_init_common_intern */
 	enum inspect_type type;
+	size_t			unit;	/* size of a character: 2 for national (UTF-16) data */
 };
 
 struct cob_string_state {
@@ -75,6 +76,7 @@ struct cob_string_state {
 	cob_field		ptr_copy;	/* use a copy to account for overwritten temporary field, see cob_string_init_intern */
 	cob_field		dlm_copy;	/* use a copy to account for overwritten temporary field, see cob_string_delimited_intern */
 	int		    	offset;	/* value associated with WITH POINTER clauses */
+	size_t			unit;	/* size of a character: 2 for national (UTF-16) data */
 };
 
 struct cob_unstring_state {
@@ -90,6 +92,7 @@ struct cob_unstring_state {
 	int                 offset;
 	unsigned int        count;
 	unsigned int        ndlms;
+	size_t              unit;	/* size of a character: 2 for national (UTF-16) data */
 };
 
 /* Local variables */
@@ -135,10 +138,148 @@ cob_str_memcpy (cob_field *dst, unsigned char *src, const int size)
 	cob_move (&temp, dst);
 }
 
+/* national (UTF-16) data for a data charset (-fdata-codeset):
+   all operands are converted to UTF-16 and the data is handled in units
+   of 2 bytes; the converted operands are kept in a pool until the next
+   statement of the same kind starts */
+
+static const cob_field_attr	const_national_attr =
+				{COB_TYPE_NATIONAL, 0, 0, 0, NULL};
+static const cob_field_attr	const_national_all_attr =
+				{COB_TYPE_ALPHANUMERIC_ALL, 0, 0, COB_FLAG_NATIONAL_ALL, NULL};
+
+struct national_pool {
+	void		**buff;		/* allocated fields and data */
+	size_t		count;
+	size_t		max;
+};
+
+static struct national_pool	inspect_pool, string_pool, unstring_pool;
+
+static int
+is_utf16_data (const cob_field *f)
+{
+	return COB_MODULE_PTR && COB_MODULE_PTR->charset
+	    && ((COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f))
+	     || COB_FIELD_NATIONAL_ALL (f));
+}
+
+static void
+national_pool_clear (struct national_pool *pool)
+{
+	size_t	i;
+	for (i = 0; i < pool->count; i++) {
+		cob_free (pool->buff[i]);
+	}
+	pool->count = 0;
+}
+
+static void
+national_pool_free (struct national_pool *pool)
+{
+	national_pool_clear (pool);
+	if (pool->buff) {
+		cob_free (pool->buff);
+		pool->buff = NULL;
+	}
+	pool->max = 0;
+}
+
+/* return 'f' as UTF-16 data, with the data kept in 'pool' */
+static cob_field *
+national_operand (struct national_pool *pool, cob_field *f)
+{
+	const cob_charset	*cs = COB_CS;
+	cob_field	*res;
+	unsigned char	*data;
+	size_t		size;
+
+	if (f == NULL) {
+		/* LOW-VALUE */
+		static unsigned char	low16[2] = { 0, 0 };
+		static cob_field	low_fld = { 2, low16, &const_national_all_attr };
+		return &low_fld;
+	}
+	if (COB_FIELD_NATIONAL_ALL (f)
+	 || (COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f))) {
+		return f;
+	}
+	if (pool->count + 2 > pool->max) {
+		const size_t	new_max = pool->max ? pool->max * 2 : 16;
+		void	**nb = cob_malloc (new_max * sizeof (void *));
+		if (pool->buff) {
+			memcpy (nb, pool->buff, pool->count * sizeof (void *));
+			cob_free (pool->buff);
+		}
+		pool->buff = nb;
+		pool->max = new_max;
+	}
+	if (COB_FIELD_TYPE (f) == COB_TYPE_ALPHANUMERIC_ALL) {
+		/* figurative constant / ALL literal: one repetition */
+		size_t	i;
+		int	all_ff = 1, all_00 = 1;
+		for (i = 0; i < f->size; i++) {
+			if (f->data[i] != 0xFF) all_ff = 0;
+			if (f->data[i] != 0x00) all_00 = 0;
+		}
+		if (all_ff || all_00) {
+			size = 2;
+			data = cob_malloc (size + 1);
+			memset (data, all_ff ? 0xFF : 0x00, size);
+		} else {
+			data = cob_charset_to_utf16 (cs, f->data, f->size, &size);
+		}
+	} else {
+		data = cob_field_to_utf16 (cs, f, &size);
+	}
+	res = cob_malloc (sizeof (cob_field));
+	pool->buff[pool->count++] = data;
+	pool->buff[pool->count++] = res;
+	res->size = size;
+	res->data = data;
+	res->attr = COB_FIELD_TYPE (f) == COB_TYPE_ALPHANUMERIC_ALL
+		? &const_national_all_attr : &const_national_attr;
+	return res;
+}
+
+static void
+cob_str_memcpy_unit (cob_field *dst, unsigned char *src, const int size,
+	const size_t unit)
+{
+	cob_field	temp;
+
+	if (unit == 1) {
+		cob_str_memcpy (dst, src, size);
+		return;
+	}
+	temp.size = size;
+	temp.data = src;
+	temp.attr = &const_national_attr;
+	cob_move (&temp, dst);
+}
+
 static void
 alloc_figurative (const cob_field *f1, const cob_field *f2)
 {
 	const size_t		size2 = f2->size;
+
+	if (COB_FIELD_NATIONAL_ALL (f1)) {
+		/* national: repeat the UTF-16 pattern */
+		size_t	i;
+		if (size2 > figurative_size) {
+			if (figurative_ptr) {
+				cob_free (figurative_ptr);
+			}
+			figurative_ptr = cob_malloc (size2);
+			figurative_size = size2;
+		}
+		for (i = 0; i < size2; i++) {
+			figurative_ptr[i] = f1->size ? f1->data[i % f1->size] : 0;
+		}
+		alpha_fld.size = size2;
+		alpha_fld.data = figurative_ptr;
+		return;
+	}
 
 #if 1	/* size1 is always 1 here, so several optimizations possible */
 	const cob_charset	*cs = COB_CS;
@@ -233,11 +374,11 @@ inspect_find_data (struct cob_inspect_state *st, const cob_field *str)
 		return NULL;
 	}
 
-	while (p != end_p) {
+	while (p < end_p) {
 		if (memcmp (p, data, len) == 0) {
 			return p;
 		}
-		p++;
+		p += st->unit;
 	}
 	return NULL;
 }
@@ -299,19 +440,20 @@ inspect_common_no_replace (
 )
 {
 	register size_t		i;
+	const size_t	unit = st->unit;
 	int		n = 0;
 
 	if (st->type == INSPECT_TRAILING) {
 		const size_t	i_max = len - f2->size; /* no + 1 here */
 		size_t	first_marker = 0;
-		for (i = i_max; ; --i) {
+		for (i = i_max; ; i -= unit) {
 			/* Find matching substring */
 			if (memcmp (i + st->start, f2->data, f2->size) == 0) {
 				/* when not marked yet: count, mark and skip handled positions */
 				if (!is_marked (st, pos + i, f2->size)) {
 					n++;
 					first_marker = i;
-					i -= f2->size - 1;
+					i -= f2->size - unit;
 				}
 				if (i == 0) {
 					break;
@@ -327,13 +469,13 @@ inspect_common_no_replace (
 	} else if (st->type == INSPECT_LEADING) {
 		const size_t	i_max = len - f2->size + 1;
 		size_t	last_marker = 0;
-		for (i = 0; i < i_max; ++i) {
+		for (i = 0; i < i_max; i += unit) {
 			/* Find matching substring */
 			if (memcmp (i + st->start, f2->data, f2->size) == 0) {
 				/* when not marked yet: count, skip handled positions and set mark pos */
 				if (!is_marked (st, pos + i, f2->size)) {
 					n++;
-					i += f2->size - 1;
+					i += f2->size - unit;
 					last_marker = i;
 				}
 			} else {
@@ -348,7 +490,7 @@ inspect_common_no_replace (
 	   LEADING for _every_ byte in that tight loop */
 	} else {
 		const size_t	i_max = len - f2->size + 1;
-		for (i = 0; i < i_max; ++i) {
+		for (i = 0; i < i_max; i += unit) {
 			/* Find matching substring */
 			if (memcmp (i + st->start, f2->data, f2->size) == 0) {
 				const size_t checked_pos = pos + i;
@@ -360,7 +502,7 @@ inspect_common_no_replace (
 					if (st->type == INSPECT_FIRST) {
 						break;
 					}
-					i += f2->size - 1;
+					i += f2->size - unit;
 				}
 			}
 		}
@@ -405,15 +547,16 @@ inspect_common_replacing (
 )
 {
 	register size_t		i;
+	const size_t	unit = st->unit;
 
 	if (st->type == INSPECT_TRAILING) {
 		const size_t	i_max = len - f2->size; /* no + 1 here */
-		for (i = i_max; ; --i) {
+		for (i = i_max; ; i -= unit) {
 			/* Find matching substring */
 			if (memcmp (i + st->start, f2->data, f2->size) == 0) {
 				/* when not marked yet: count, mark and skip handled positions */
 				if (do_mark (st, pos + i, f2->size, f1->data)) {
-					i -= f2->size - 1;
+					i -= f2->size - unit;
 				}
 				if (i == 0) {
 					break;
@@ -424,12 +567,12 @@ inspect_common_replacing (
 		}
 	} else if (st->type == INSPECT_LEADING) {
 		const size_t	i_max = len - f2->size + 1;
-		for (i = 0; i < i_max; ++i) {
+		for (i = 0; i < i_max; i += unit) {
 			/* Find matching substring */
 			if (memcmp (i + st->start, f2->data, f2->size) == 0) {
 				/* when not marked yet: count, mark and skip handled positions */
 				if (do_mark (st, pos + i, f2->size, f1->data)) {
-					i += f2->size - 1;
+					i += f2->size - unit;
 				}
 			} else {
 				break;
@@ -439,7 +582,7 @@ inspect_common_replacing (
 	   LEADING for _every_ byte in that tight loop */
 	} else {
 		const size_t	i_max = len - f2->size + 1;
-		for (i = 0; i < i_max; ++i) {
+		for (i = 0; i < i_max; i += unit) {
 			/* Find matching substring */
 			if (memcmp (i + st->start, f2->data, f2->size) == 0) {
 				/* when not marked yet: count, mark and skip handled positions */
@@ -447,7 +590,7 @@ inspect_common_replacing (
 					if (st->type == INSPECT_FIRST) {
 						break;
 					}
-					i += f2->size - 1;
+					i += f2->size - unit;
 				}
 			}
 		}
@@ -470,6 +613,13 @@ inspect_common (
 		return;
 	}
 
+	if (st->unit != 1) {
+		/* national: f1 is the counter for TALLYING */
+		if (st->replacing) {
+			f1 = national_operand (&inspect_pool, f1);
+		}
+		f2 = national_operand (&inspect_pool, f2);
+	}
 	if (unlikely (!f1)) {
 		cob_update_low_value ();
 		f1 = &str_cob_low;
@@ -540,6 +690,8 @@ cob_inspect_init_common_intern (struct cob_inspect_state *st, cob_field *var)
 	st->start = NULL;
 	st->end = NULL;
 	st->repdata_size = 0;
+	st->unit = is_utf16_data (var) ? 2 : 1;
+	national_pool_clear (&inspect_pool);
 
 	cobglobptr->cob_exception_code = 0;
 }
@@ -608,7 +760,11 @@ cob_inspect_start (void)
 static void
 cob_inspect_before_intern (struct cob_inspect_state *st, const cob_field *str)
 {
-	unsigned char *data_pos = inspect_find_data (st, str);
+	unsigned char *data_pos;
+	if (st->unit != 1) {
+		str = national_operand (&inspect_pool, (cob_field *)str);
+	}
+	data_pos = inspect_find_data (st, str);
 	if (data_pos)
 		st->end = data_pos;
 }
@@ -621,7 +777,11 @@ cob_inspect_before (const cob_field *str)
 static void
 cob_inspect_after_intern (struct cob_inspect_state *st, const cob_field *str)
 {
-	unsigned char *data_pos = inspect_find_data (st, str);
+	unsigned char *data_pos;
+	if (st->unit != 1) {
+		str = national_operand (&inspect_pool, (cob_field *)str);
+	}
+	data_pos = inspect_find_data (st, str);
 	if (data_pos) 
 		st->start = data_pos + str->size;
 	else 
@@ -644,6 +804,31 @@ cob_inspect_characters_intern (struct cob_inspect_state *st, cob_field *f1)
 	if (len == 0) {
 		/* inspecting either a zero-length field or
 		   AFTER ... has not found a place to start the conversion */
+		return;
+	}
+
+	if (st->unit != 1) {
+		/* national: work on units of 2 bytes */
+		size_t	i;
+		int	n = 0;
+		if (st->replacing) {
+			f1 = national_operand (&inspect_pool, f1);
+			setup_repdata (st);
+		}
+		for (i = 0; i + 1 < len; i += 2) {
+			if (st->mark[pos + i] == 0) {
+				if (st->replacing) {
+					st->repdata[pos + i] = f1->data[0];
+					st->repdata[pos + i + 1] = f1->size > 1 ? f1->data[1] : 0;
+				} else {
+					n++;
+				}
+			}
+		}
+		if (!st->replacing && n > 0) {
+			cob_add_int (f1, n, 0);
+		}
+		set_inspect_mark (st, pos, len);
 		return;
 	}
 
@@ -758,6 +943,10 @@ cob_inspect_converting_intern (
 		goto end;
 	}
 
+	if (st->unit != 1) {
+		f1 = national_operand (&inspect_pool, (cob_field *)f1);
+		f2 = national_operand (&inspect_pool, (cob_field *)f2);
+	}
 	if (unlikely (!f1)) {
 		cob_update_low_value ();
 		f1 = &str_cob_low;
@@ -765,6 +954,27 @@ cob_inspect_converting_intern (
 	if (unlikely (!f2)) {
 		cob_update_low_value ();
 		f2 = &str_cob_low;
+	}
+	if (st->unit != 1 && f1->size != f2->size
+	 && COB_FIELD_TYPE (f2) == COB_TYPE_ALPHANUMERIC_ALL) {
+		alloc_figurative (f2, f1);
+		f2 = &alpha_fld;
+	}
+	if (st->unit != 1 && f1->size == f2->size) {
+		/* national: convert unit by unit, the first match counts */
+		unsigned char	*cur = st->start;
+		unsigned char	*const cur_end = st->start + len;
+		for (; cur + 1 < cur_end; cur += 2) {
+			size_t	k;
+			for (k = 0; k + 1 < f1->size; k += 2) {
+				if (cur[0] == f1->data[k] && cur[1] == f1->data[k + 1]) {
+					cur[0] = f2->data[k];
+					cur[1] = f2->data[k + 1];
+					break;
+				}
+			}
+		}
+		goto end;
 	}
 	if (f1->size != f2->size) {
 		if (COB_FIELD_TYPE (f2) == COB_TYPE_ALPHANUMERIC_ALL) {
@@ -953,10 +1163,13 @@ cob_string_init_intern (struct cob_string_state *st, cob_field *dst, cob_field *
 		st->ptr = &st->ptr_copy;
 	}
 	st->offset = 0;
+	st->unit = is_utf16_data (dst) ? 2 : 1;
+	national_pool_clear (&string_pool);
 	cobglobptr->cob_exception_code = 0;
 
 	if (st->ptr) {
-		st->offset = cob_get_int (st->ptr) - 1;
+		/* note: the pointer counts characters */
+		st->offset = (cob_get_int (st->ptr) - 1) * (int)st->unit;
 		if (st->offset < 0 || st->offset >= (int)st->dst->size) {
 			cob_set_exception (COB_EC_OVERFLOW_STRING);
 		}
@@ -975,6 +1188,9 @@ cob_string_delimited_intern (struct cob_string_state *st, cob_field *dlm)
 	   which might be overwritten between subsequent calls to the
 	   different cob_string_* functions */
 	if (dlm) {
+		if (st->unit != 1) {
+			dlm = national_operand (&string_pool, dlm);
+		}
 		st->dlm_copy = *dlm;
 		st->dlm = &st->dlm_copy;
 	} else {
@@ -998,13 +1214,16 @@ cob_string_append_intern (struct cob_string_state *st, cob_field *src)
 		return;
 	}
 
+	if (st->unit != 1) {
+		src = national_operand (&string_pool, src);
+	}
 	src_size = src->size;
 	if (!src_size) {
 		return;
 	}
 	if (st->dlm) {
 		size = (int)(src_size - st->dlm->size + 1);
-		for (i = 0; i < size; ++i) {
+		for (i = 0; i < size; i += (int)st->unit) {
 			if (memcmp (src->data + i, st->dlm->data,
 				    st->dlm->size) == 0) {
 				src_size = i;
@@ -1018,6 +1237,7 @@ cob_string_append_intern (struct cob_string_state *st, cob_field *src)
 		st->offset += (int) src_size;
 	} else {
 		size = (int)(st->dst->size - st->offset);
+		size -= size % (int)st->unit;
 		memcpy (st->dst->data + st->offset, src->data, (size_t)size);
 		st->offset += size;
 		cob_set_exception (COB_EC_OVERFLOW_STRING);
@@ -1033,7 +1253,7 @@ static void
 cob_string_finish_intern (struct cob_string_state *st)
 {
 	if (st->ptr) {
-		cob_set_int (st->ptr, st->offset + 1);
+		cob_set_int (st->ptr, st->offset / (int)st->unit + 1);
 	}
 }
 void
@@ -1077,6 +1297,8 @@ cob_unstring_init_intern (
 	st->count = 0;
 	st->ndlms = 0;
 	st->dlm_list_size = 0;
+	st->unit = is_utf16_data (src) ? 2 : 1;
+	national_pool_clear (&unstring_pool);
 	cobglobptr->cob_exception_code = 0;
 	if (num_dlm > st->dlm_list_size) {
 		if (st->dlm_list) {
@@ -1091,7 +1313,8 @@ cob_unstring_init_intern (
 	}
 
 	if (st->ptr) {
-		st->offset = cob_get_int (st->ptr) - 1;
+		/* note: the pointer counts characters */
+		st->offset = (cob_get_int (st->ptr) - 1) * (int)st->unit;
 		if (st->offset < 0 || st->offset >= (int)st->src->size) {
 			cob_set_exception (COB_EC_OVERFLOW_UNSTRING);
 		}
@@ -1110,6 +1333,9 @@ cob_unstring_init (
 static void
 cob_unstring_delimited_intern (struct cob_unstring_state *st, cob_field *dlm, const cob_u32_t all)
 {
+	if (st->unit != 1) {
+		dlm = national_operand (&unstring_pool, dlm);
+	}
 	st->dlm_list[st->ndlms].uns_dlm = *dlm;
 	st->dlm_list[st->ndlms].uns_all = all;
 	st->ndlms++;
@@ -1156,7 +1382,15 @@ cob_unstring_into_intern (
 		   are guaranteed to be < INT_MAX by cobc */
 		match_size = cob_min_int ((int)COB_FIELD_SIZE (dst),
 					  (int)st->src->size - st->offset);
-		cob_str_memcpy (dst, start, match_size);
+		if (st->unit != 1) {
+			/* national: the target size in characters */
+			const int	dst_chars = (COB_FIELD_IS_NATIONAL (dst) && !COB_FIELD_DBCS (dst))
+				? (int)dst->size : (int)COB_FIELD_SIZE (dst) * 2;
+			match_size = cob_min_int (dst_chars,
+					  (int)st->src->size - st->offset);
+			match_size -= match_size % 2;
+		}
+		cob_str_memcpy_unit (dst, start, match_size, st->unit);
 		st->offset += match_size;
 
 	/* DELIMITED BY [ALL] x [.. OR [ALL] z] */
@@ -1175,10 +1409,10 @@ cob_unstring_into_intern (
 			const unsigned char *s = st->src->data + srsize - dlsize + 1;
 			dp = dlms.uns_dlm.data;
 
-			for (p = start; p < s; ++p) {
+			for (p = start; p < s; p += st->unit) {
 				if (!memcmp (p, dp, (size_t)dlsize)) {         /* delimiter matches */
 					match_size = (int)(p - start);             /* count in */
-					cob_str_memcpy (dst, start, match_size);   /* into */
+					cob_str_memcpy_unit (dst, start, match_size, st->unit);   /* into */
 					st->offset += match_size + dlsize;    /* with pointer */
 					dlm_data = dp;
 					dlm_size = dlsize;
@@ -1197,7 +1431,7 @@ cob_unstring_into_intern (
 		} else {
 			const unsigned char *s = st->src->data + srsize;
 			int		i;
-			for (p = start; p < s; ++p) {
+			for (p = start; p < s; p += st->unit) {
 				for (i = 0; i < st->ndlms; ++i) {
 					const struct dlm_struct dlms = st->dlm_list[i];
 					const int     dlsize = (int)dlms.uns_dlm.size;
@@ -1208,7 +1442,7 @@ cob_unstring_into_intern (
 					dp = dlms.uns_dlm.data;
 					if (!memcmp (p, dp, (size_t)dlsize)) {         /* delimiter matches */
 						match_size = (int)(p - start);             /* count in */
-						cob_str_memcpy (dst, start, match_size);   /* into */
+						cob_str_memcpy_unit (dst, start, match_size, st->unit);   /* into */
 						st->offset += match_size + dlsize;    /* with pointer */
 						dlm_data = dp;
 						dlm_size = dlsize;
@@ -1233,7 +1467,7 @@ cob_unstring_into_intern (
 		/* if none of the delimiters matched, match to end */
 		if (!found) {
 			match_size = (int)(st->src->size - st->offset);
-			cob_str_memcpy (dst, start, match_size);
+			cob_str_memcpy_unit (dst, start, match_size, st->unit);
 			st->offset = (int) st->src->size;
 		}
 	}
@@ -1246,9 +1480,14 @@ cob_unstring_into_intern (
 	/* set DELIMITER IN */
 	if (dlm) {
 		if (dlm_data) {
-			cob_str_memcpy (dlm, dlm_data, (int) dlm_size);
+			cob_str_memcpy_unit (dlm, dlm_data, (int) dlm_size, st->unit);
 		} else if (COB_FIELD_IS_NUMERIC (dlm)) {
 			cob_set_int (dlm, 0);
+		} else if (is_utf16_data (dlm)) {
+			size_t	i;
+			for (i = 0; i < dlm->size; i++) {
+				dlm->data[i] = (i % 2) ? 0x20 : 0x00;
+			}
 		} else {
 			memset (dlm->data, COB_CH_SPACE, dlm->size);
 		}
@@ -1256,7 +1495,7 @@ cob_unstring_into_intern (
 
 	/* set COUNT IN */
 	if (cnt) {
-		cob_set_int (cnt, match_size);
+		cob_set_int (cnt, match_size / (int)st->unit);
 	}
 }
 void
@@ -1289,7 +1528,7 @@ cob_unstring_finish_intern (struct cob_unstring_state *st)
 	}
 
 	if (st->ptr) {
-		cob_set_int (st->ptr, st->offset + 1);
+		cob_set_int (st->ptr, st->offset / (int)st->unit + 1);
 	}
 }
 void
@@ -1328,6 +1567,10 @@ cob_exit_strings ()
 		figurative_ptr = NULL;
 	}
 	figurative_size = 0;
+
+	national_pool_free (&inspect_pool);
+	national_pool_free (&string_pool);
+	national_pool_free (&unstring_pool);
 }
 
 void

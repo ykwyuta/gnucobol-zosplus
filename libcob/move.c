@@ -1682,9 +1682,9 @@ mixed_fit (const cob_charset *cs, const unsigned char *data, const size_t size,
 	return fit;
 }
 
-/* get the data of 'f' as UTF-16 */
-static unsigned char *
-field_to_utf16 (const cob_charset *cs, cob_field *f, size_t *size)
+/* get the data of 'f' as UTF-16 (allocated, to be freed with cob_free) */
+unsigned char *
+cob_field_to_utf16 (const cob_charset *cs, cob_field *f, size_t *size)
 {
 	unsigned char	*out;
 	if (IS_UTF16_FIELD (f)) {
@@ -1717,6 +1717,44 @@ field_to_utf16 (const cob_charset *cs, cob_field *f, size_t *size)
 	return cob_charset_to_utf16 (cs, f->data, f->size, size);
 }
 
+/* get a figurative constant / ALL literal as UTF-16 data with 'size' bytes
+   (allocated, to be freed with cob_free) */
+unsigned char *
+cob_all_to_utf16 (const cob_charset *cs, cob_field *src, const size_t size)
+{
+	unsigned char	*out = cob_fast_malloc (size + 1);
+	unsigned char	*utf16;
+	size_t		utf16_size;
+	size_t		i;
+	int		all_ff = 1, all_00 = 1;
+
+	for (i = 0; i < src->size; i++) {
+		if (src->data[i] != 0xFF) all_ff = 0;
+		if (src->data[i] != 0x00) all_00 = 0;
+	}
+	if (all_ff || all_00) {
+		/* HIGH-VALUE is X'FFFF', LOW-VALUE X'0000' */
+		memset (out, all_ff ? 0xFF : 0x00, size);
+		return out;
+	}
+	if (COB_FIELD_NATIONAL_ALL (src)) {
+		utf16 = cob_fast_malloc (src->size + 1);
+		memcpy (utf16, src->data, src->size);
+		utf16_size = src->size;
+	} else {
+		utf16 = cob_charset_to_utf16 (cs, src->data, src->size, &utf16_size);
+	}
+	if (utf16_size == 0) {
+		memset (out, 0, size);
+	} else {
+		for (i = 0; i < size; i++) {
+			out[i] = utf16[i % utf16_size];
+		}
+	}
+	cob_free (utf16);
+	return out;
+}
+
 /* MOVE from / to national (UTF-16) data */
 void
 cob_move_national (cob_field *src, cob_field *dst)
@@ -1727,31 +1765,56 @@ cob_move_national (cob_field *src, cob_field *dst)
 
 	if (COB_FIELD_TYPE (src) == COB_TYPE_ALPHANUMERIC_ALL) {
 		/* figurative constant / ALL literal to UTF-16 */
-		size_t		i;
-		int		all_ff = 1, all_00 = 1;
-		for (i = 0; i < src->size; i++) {
-			if (src->data[i] != 0xFF) all_ff = 0;
-			if (src->data[i] != 0x00) all_00 = 0;
-		}
-		if (all_ff || all_00) {
-			/* HIGH-VALUE is X'FFFF', LOW-VALUE X'0000' */
-			memset (dst->data, all_ff ? 0xFF : 0x00, dst->size);
-			return;
-		}
-		utf16 = cob_charset_to_utf16 (cs, src->data, src->size, &utf16_size);
-		if (utf16_size == 0) {
-			cob_free (utf16);
-			memset (dst->data, 0, dst->size);
-			return;
-		}
-		for (i = 0; i < dst->size; i++) {
-			dst->data[i] = utf16[i % utf16_size];
-		}
+		utf16 = cob_all_to_utf16 (cs, src, dst->size);
+		memcpy (dst->data, utf16, dst->size);
 		cob_free (utf16);
 		return;
 	}
 
-	utf16 = field_to_utf16 (cs, src, &utf16_size);
+	utf16 = cob_field_to_utf16 (cs, src, &utf16_size);
+
+	if (COB_FIELD_TYPE (dst) == COB_TYPE_NATIONAL_EDITED
+	 && COB_FIELD_PIC (dst)) {
+		/* national edited: insert B / 0 / slash, for DBCS items as
+		   full-width characters */
+		const int	dbcs = COB_FIELD_DBCS (dst) ? 1 : 0;
+		const cob_pic_symbol	*p;
+		size_t		out_size = 0, in_pos = 0;
+		unsigned char	*out = cob_fast_malloc (dst->size * 2 + 4);
+		for (p = COB_FIELD_PIC (dst); p->symbol; ++p) {
+			int	n;
+			for (n = 0; n < p->times_repeated; n++) {
+				unsigned int	ucs;
+				if (out_size + 2 > dst->size * 2) {
+					break;
+				}
+				switch (p->symbol) {
+				case 'B':
+					ucs = dbcs ? 0x3000 : 0x0020;
+					break;
+				case '0':
+					ucs = dbcs ? 0xFF10 : 0x0030;
+					break;
+				case '/':
+					ucs = dbcs ? 0xFF0F : 0x002F;
+					break;
+				default:	/* N / G */
+					if (in_pos + 1 < utf16_size) {
+						ucs = (utf16[in_pos] << 8) | utf16[in_pos + 1];
+						in_pos += 2;
+					} else {
+						ucs = dbcs ? 0x3000 : 0x0020;
+					}
+					break;
+				}
+				out[out_size++] = (unsigned char)(ucs >> 8);
+				out[out_size++] = (unsigned char)(ucs & 0xFF);
+			}
+		}
+		cob_free (utf16);
+		utf16 = out;
+		utf16_size = out_size;
+	}
 
 	if (IS_UTF16_FIELD (dst)) {
 		static const unsigned char	space16[2] = { 0x00, 0x20 };
@@ -1859,6 +1922,7 @@ cob_move (cob_field *src, cob_field *dst)
 	/* national (UTF-16) data for a data charset */
 	if (COB_MODULE_PTR && COB_MODULE_PTR->charset
 	 && (IS_UTF16_FIELD (dst)
+	  || COB_FIELD_TYPE (dst) == COB_TYPE_NATIONAL_EDITED
 	  || (IS_UTF16_FIELD (src) && !IS_UTF16_FIELD (dst)
 	   && COB_FIELD_TYPE (dst) != COB_TYPE_GROUP))) {
 		cob_move_national (src, dst);

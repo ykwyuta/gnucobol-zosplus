@@ -1,5 +1,7 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* testsuite.src/run_ebcdic.at: tests for comparison, STRING / UNSTRING /
+	  INSPECT and edited items with national data
 	* testsuite.src/run_ebcdic.at: test for CALL EXTFH with EBCDIC data
 	* testsuite.src/run_manual_screen.at: test for SCREEN SECTION with
 	  EBCDIC data

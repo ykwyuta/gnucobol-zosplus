@@ -10555,7 +10555,10 @@ cb_build_tallying_value (cb_tree x, cb_tree l)
 cb_tree
 cb_build_replacing_characters (cb_tree x, cb_tree l)
 {
-	if (CB_LITERAL_P (x) && CB_LITERAL(x)->size != 1) {
+	/* note: a national (UTF-16 / DBCS) character has 2 bytes */
+	if (CB_LITERAL_P (x)
+	 && CB_LITERAL (x)->size
+	  != (CB_TREE_CATEGORY (x) == CB_CATEGORY_NATIONAL ? COB_NATIONAL_SIZE : 1)) {
 		cb_error_x (CB_TREE (current_statement),
 			    _("operand has wrong size"));
 	}
@@ -11576,6 +11579,12 @@ validate_move (cb_tree src, cb_tree dst, const unsigned int is_value, int *move_
 			switch (CB_TREE_CATEGORY (dst)) {
 			case CB_CATEGORY_NATIONAL:
 				break;
+			case CB_CATEGORY_NATIONAL_EDITED:
+				if (cb_data_charset) {
+					/* edited by the runtime, no size check */
+					return 0;
+				}
+				goto invalid;
 			case CB_CATEGORY_NUMERIC:
 				if (is_value) {
 					goto expect_numeric;

@@ -835,3 +835,155 @@ AT_CHECK([od -An -tx1 extfh.dat | tr -d ' \n'], [0],
 [d9858396998460f14040], [])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: comparison with national items])
+AT_KEYWORDS([ebcdic data-codeset national])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. prog.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WU   PIC N(4) USAGE NATIONAL VALUE NC'東京'.
+       01 WU2  PIC N(6) USAGE NATIONAL VALUE NC'東京'.
+       01 WX   PIC X(10) VALUE '東京'.
+       01 WA   PIC X(4) VALUE 'ab'.
+       01 WUA  PIC N(4) USAGE NATIONAL VALUE NC'ab'.
+       01 WG   PIC G(2) VALUE G'東京'.
+       01 WS   PIC N(3) USAGE NATIONAL VALUE SPACES.
+       PROCEDURE DIVISION.
+           IF WU = WU2 DISPLAY '1 OK' ELSE DISPLAY '1 NG' END-IF
+           IF WU = WX  DISPLAY '2 OK' ELSE DISPLAY '2 NG' END-IF
+           IF WUA = WA DISPLAY '3 OK' ELSE DISPLAY '3 NG' END-IF
+           IF WUA = 'ab' DISPLAY '4 OK' ELSE DISPLAY '4 NG' END-IF
+           IF WU = NC'東京' DISPLAY '5 OK' ELSE DISPLAY '5 NG' END-IF
+           IF WS = SPACE DISPLAY '6 OK' ELSE DISPLAY '6 NG' END-IF
+           IF WU = WG  DISPLAY '7 OK' ELSE DISPLAY '7 NG' END-IF
+           IF WUA < WU DISPLAY '8 OK' ELSE DISPLAY '8 NG' END-IF
+           IF WG = G'東京' DISPLAY '9 OK' ELSE DISPLAY '9 NG' END-IF
+           IF WS = ALL NC' ' DISPLAY '10 OK' ELSE DISPLAY '10 NG' END-IF
+           IF WUA NOT = WA DISPLAY '11 NG' ELSE DISPLAY '11 OK' END-IF
+           GOBACK.
+])
+
+AT_CHECK([$COMPILE -Wno-dialect -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[1 OK
+2 OK
+3 OK
+4 OK
+5 OK
+6 OK
+7 OK
+8 OK
+9 OK
+10 OK
+11 OK
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: STRING / UNSTRING / INSPECT with national items])
+AT_KEYWORDS([ebcdic data-codeset national])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. prog.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WU   PIC N(10) USAGE NATIONAL.
+       01 WA   PIC N(4) USAGE NATIONAL VALUE NC'東京'.
+       01 WB   PIC N(4) USAGE NATIONAL VALUE NC'大阪'.
+       01 WX   PIC X(6) VALUE 'ab'.
+       01 PTR  PIC 99.
+       01 CNT  PIC 99.
+       01 U1   PIC N(3) USAGE NATIONAL.
+       01 U2   PIC N(3) USAGE NATIONAL.
+       01 U3   PIC N(3) USAGE NATIONAL.
+       01 D1   PIC N(1) USAGE NATIONAL.
+       01 C1   PIC 99.
+       01 TL   PIC 99.
+       PROCEDURE DIVISION.
+           MOVE 1 TO PTR
+           STRING WA DELIMITED BY SPACE
+                  NC'、' DELIMITED BY SIZE
+                  WB DELIMITED BY SPACE
+                  WX DELIMITED BY SPACE
+                  INTO WU WITH POINTER PTR
+           DISPLAY '<' WU '> ' PTR
+           MOVE NC'東京、大阪、名古屋' TO WU
+           MOVE 1 TO PTR
+           UNSTRING WU DELIMITED BY NC'、'
+                  INTO U1 DELIMITER IN D1 COUNT IN C1
+                       U2 U3
+                  WITH POINTER PTR TALLYING IN TL
+           DISPLAY '<' U1 '><' U2 '><' U3 '><' D1 '> ' C1 ' ' PTR
+                   ' ' TL
+           MOVE 0 TO CNT
+           INSPECT WU TALLYING CNT FOR ALL NC'、'
+           DISPLAY 'ALL: ' CNT
+           MOVE 0 TO CNT
+           INSPECT WU TALLYING CNT FOR CHARACTERS BEFORE NC'名'
+           DISPLAY 'CHARS BEFORE: ' CNT
+           MOVE 0 TO CNT
+           INSPECT WU TALLYING CNT FOR TRAILING SPACE
+           DISPLAY 'TRAILING: ' CNT
+           INSPECT WU REPLACING ALL NC'、' BY NC'・'
+           DISPLAY '<' WU '>'
+           INSPECT WU REPLACING CHARACTERS BY NC'＊' AFTER NC'屋'
+           DISPLAY '<' WU '>'
+           INSPECT WU CONVERTING NC'東大' TO NC'西小'
+           DISPLAY '<' WU '>'
+           INSPECT WU REPLACING ALL NC'＊' BY SPACE
+           DISPLAY '<' WU '>'
+           GOBACK.
+])
+
+AT_CHECK([$COMPILE -Wno-dialect -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog], [0],
+[<東京、大阪ab   > 08
+<東京 ><大阪 ><名古屋><、> 02 11 03
+ALL: 02
+CHARS BEFORE: 06
+TRAILING: 01
+<東京・大阪・名古屋 >
+<東京・大阪・名古屋＊>
+<西京・小阪・名古屋＊>
+<西京・小阪・名古屋 >
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: national and DBCS edited items])
+AT_KEYWORDS([ebcdic data-codeset national dbcs])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. prog.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WE   PIC NBNN/N0N USAGE NATIONAL.
+       01 WG   PIC GBG.
+       01 WD   PIC NN/N USAGE DISPLAY-1.
+       PROCEDURE DIVISION.
+           MOVE NC'東京大阪名' TO WE
+           DISPLAY '<' WE '> ' FUNCTION LENGTH (WE) ' '
+                   FUNCTION HEX-OF (WE)
+           MOVE G'漢字' TO WG
+           DISPLAY '<' WG '> ' FUNCTION HEX-OF (WG)
+           MOVE G'日本語' TO WD
+           DISPLAY '<' WD '> ' FUNCTION HEX-OF (WD)
+           GOBACK.
+])
+
+AT_CHECK([$COMPILE -Wno-dialect -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog], [0],
+[<東 京大/阪0名> 8 677100204EAC5927002F962A0030540D
+<漢　字> 4F58404048F2
+<日本／語> 45624566426148E7
+], [])
+
+AT_CLEANUP

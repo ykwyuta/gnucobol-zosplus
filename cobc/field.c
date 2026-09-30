@@ -3123,6 +3123,15 @@ unbounded_again:
 				break;
 			}
 			f->size = f->pic->size;
+			if (cb_data_charset
+			 && f->pic->category == CB_CATEGORY_NATIONAL_EDITED) {
+				/* DBCS / national edited: 2 bytes for each position */
+				int	i, n = 0;
+				for (i = 0; i < f->pic->lenstr; i++) {
+					n += f->pic->str[i].times_repeated;
+				}
+				f->size = n * 2;
+			}
 			if (f->pic->have_sign && f->flag_sign_separate) {
 				f->size++;
 			}
@@ -3146,6 +3155,15 @@ unbounded_again:
 			if (cb_data_charset
 			 && f->pic->category == CB_CATEGORY_NATIONAL) {
 				f->size = f->pic->size;
+			} else if (cb_data_charset
+			 && f->pic->category == CB_CATEGORY_NATIONAL_EDITED) {
+				/* 2 bytes for each character position,
+				   including the insertion characters B 0 / */
+				int	i, n = 0;
+				for (i = 0; i < f->pic->lenstr; i++) {
+					n += f->pic->str[i].times_repeated;
+				}
+				f->size = n * 2;
 			} else {
 				f->size = f->pic->size * COB_NATIONAL_SIZE;
 			}

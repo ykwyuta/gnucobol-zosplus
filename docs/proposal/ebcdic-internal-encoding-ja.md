@@ -516,6 +516,25 @@ MOVE UTF-16 の '東京' TO PIC N(3) DISPLAY-1 → 4557 4575 4040
 FUNCTION DISPLAY-OF (UTF-16項目, 1208) → UTF-8 のバイト列 E6 9D B1 E4 BA AC ...
 ```
 
+#### 比較・STRING / UNSTRING / INSPECT・編集項目
+
+| 機能 | 内容 |
+|------|------|
+| 比較 | UTF-16 の項目と英数字・DBCS・定数・表意定数を比べるときは、相手を UTF-16 に変換し、短い方を国語の空白 `0020` で補って比べる（IBM と同じくバイナリー順）。`ALL NC'...'` も使える |
+| VALUE 句 | UTF-16 項目の VALUE は実行時の MOVE で設定し、`0020` で埋める（これまでは EBCDIC の空白 `40` で埋めていた） |
+| STRING / UNSTRING / INSPECT | 受け側・対象が UTF-16 のときは 1 文字 2 バイト単位で処理する。英数字の送り側・区切り文字・表意定数は UTF-16 に変換する。POINTER、COUNT IN、TALLYING は文字数で数える。INSPECT の TALLYING / REPLACING（ALL / LEADING / FIRST / TRAILING / CHARACTERS）、CONVERTING、BEFORE / AFTER に対応 |
+| 編集項目 | `PIC NBNN/N0N`（NATIONAL 編集）と `PIC GBG`（DBCS 編集）の挿入文字 B / 0 / `/` に対応。DBCS 項目では全角の文字（空白 `4040`、`０`、`／`）を挿入する。長さは 1 桁 2 バイト |
+
+確認できた動作（CCSID 1399）:
+
+```
+STRING NC'東京' '、' NC'大阪' 'ab' INTO 国語項目 WITH POINTER → 東京、大阪ab、POINTER = 8
+UNSTRING NC'東京、大阪、名古屋' DELIMITED BY NC'、' → 東京 / 大阪 / 名古屋、COUNT = 2
+INSPECT ... CONVERTING NC'東大' TO NC'西小'       → 西京・小阪・名古屋
+MOVE NC'東京大阪名' TO PIC NBNN/N0N               → 東 京大/阪0名
+MOVE G'漢字' TO PIC GBG                             → 4F58 4040 48F2
+```
+
 #### MOVE の検査と DBCS の切れ目
 
 * コンパイル時に、IBM の規則に合わせて次をエラーにします。
@@ -552,7 +571,8 @@ EBCDIC モード（IBM-037）での既存テストの失敗は、EXTFH 関連が
 
 ### 次の作業
 
-* NATIONAL の残り: 比較（UTF-16 と英数字の比較の変換）、STRING / UNSTRING / INSPECT、NATIONAL 編集項目、ネイティブ（`-fdata-codeset` なし）の NATIONAL
+* NATIONAL の残り: 数字の NATIONAL（`PIC 9 USAGE NATIONAL`）、NATIONAL の組み込み関数（UPPER-CASE など）、ネイティブ（`-fdata-codeset` なし）の NATIONAL
+* SCREEN SECTION での DBCS の表示
 
 ## 11. まとめ
 

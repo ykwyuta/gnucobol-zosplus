@@ -1,5 +1,15 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* codegen.c (output_attr): ALL national literals get the attribute flag
+	  COB_FLAG_NATIONAL_ALL
+	* codegen.c (output_initialize_to_value): VALUE of national (UTF-16)
+	  items is set by cob_move (padding with national spaces)
+	* field.c (compute_size): size of national / DBCS edited items for data
+	  charsets is 2 bytes per character position
+	* typeck.c (validate_move): allow national literals for national edited
+	  items with data charsets
+	* typeck.c (cb_build_replacing_characters): allow national literals of
+	  one character (2 bytes)
 	* flag.def, cobc.c, cobc.h: new option -fnsymbol=dbcs|national
 	* tree.c (cb_field_is_dbcs), tree.h, parser.y, field.c, codegen.c:
 	  for a data charset with DBCS, PIC G and USAGE DISPLAY-1 are DBCS

@@ -1,5 +1,14 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* common.h: new attribute flag COB_FLAG_NATIONAL_ALL for ALL literals
+	  with national (UTF-16) data
+	* common.c (cob_cmp_national): comparison with national (UTF-16) data
+	  converts the other operand and pads with national spaces
+	* move.c (cob_all_to_utf16, cob_field_to_utf16, cob_move_national):
+	  national and DBCS edited items (insertion characters B 0 /)
+	* strings.c: STRING, UNSTRING and INSPECT with national (UTF-16) data
+	  work on characters of 2 bytes, operands are converted to UTF-16,
+	  POINTER, COUNT IN and TALLYING count characters
 	* screenio.c (screen_host_begin, screen_host_end, screen_swap_field,
 	  screen_swap_tree): screen I/O for data charsets works on copies of
 	  the fields in the host charset (with the native charset active),

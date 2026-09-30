@@ -1652,7 +1652,13 @@ output_attr (const cb_tree x)
 			id = lookup_attr (COB_TYPE_NUMERIC_DISPLAY,
 					  l->size, l->scale, flags, NULL, 0);
 		} else {
-			if (l->all) {
+			if (l->all && cb_data_charset
+			 && CB_TREE_CATEGORY (x) == CB_CATEGORY_NATIONAL
+			 && !l->dbcs) {
+				/* ALL national literal: UTF-16 data */
+				id = lookup_attr (COB_TYPE_ALPHANUMERIC_ALL, 0, 0,
+					COB_FLAG_CONSTANT | COB_FLAG_NATIONAL_ALL, NULL, 0);
+			} else if (l->all) {
 				id = lookup_attr (COB_TYPE_ALPHANUMERIC_ALL, 0, 0, COB_FLAG_CONSTANT, NULL, 0);
 			} else if (cb_data_charset
 			 && CB_TREE_CATEGORY (x) == CB_CATEGORY_NATIONAL) {
@@ -5156,6 +5162,16 @@ output_initialize_to_value (struct cb_field *f, cb_tree x,
 		init_occurs = 1;
 	} else {
 		init_occurs = 0;
+	}
+	/* national (UTF-16) items for a data charset: the runtime converts
+	   and pads with national spaces */
+	if (cb_data_charset && !init_occurs
+	 && f->pic && !f->children
+	 && (f->pic->category == CB_CATEGORY_NATIONAL
+	  || f->pic->category == CB_CATEGORY_NATIONAL_EDITED)
+	 && !cb_field_is_dbcs (f)) {
+		output_move (value, x);
+		return;
 	}
 	/* figurative constants */
 	if (CB_CONST_P (value)) {

@@ -760,6 +760,9 @@ typedef __mpz_struct mpz_t[1];
 #define COB_FIELD_BINARY_TRUNC(f)	((f)->attr->flags & COB_FLAG_BINARY_TRUNC)
 #define COB_FIELD_CONSTANT(f)		((f)->attr->flags & COB_FLAG_CONSTANT)
 #define COB_FIELD_DBCS(f)		((f)->attr->flags & COB_FLAG_DBCS)
+#define COB_FLAG_NATIONAL_ALL		(1U << 14)	/* 0x4000: ALL literal with
+							   national (UTF-16) data */
+#define COB_FIELD_NATIONAL_ALL(f)	((f)->attr->flags & COB_FLAG_NATIONAL_ALL)
 
 #define	COB_FLAG_LEADSEP		\
 	(COB_FLAG_SIGN_SEPARATE | COB_FLAG_SIGN_LEADING)
