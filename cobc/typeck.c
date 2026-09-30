@@ -11085,6 +11085,68 @@ is_floating_point_usage (const enum cb_usage usage)
 		|| usage == CB_USAGE_FP_DEC128;
 }
 
+/* check if an alphanumeric literal with mixed data (SO/SI) is within
+   DBCS data when truncated after 'cut' bytes */
+static int
+is_mixed_split (const struct cb_literal *l, const size_t cut)
+{
+	size_t	i;
+	int	in_dbcs = 0;
+	if (!cb_data_charset
+	 || !(cb_data_charset->flags & COB_CS_MIXED)
+	 || !l->raw) {
+		return 0;
+	}
+	for (i = 0; i < cut && i < l->size; i++) {
+		if (l->data[i] == cb_data_charset->so) {
+			in_dbcs = 1;
+		} else if (l->data[i] == cb_data_charset->si) {
+			in_dbcs = 0;
+		}
+	}
+	return in_dbcs;
+}
+
+/* check if 'src' may be moved to a DBCS item: DBCS or national data,
+   group items, SPACE / LOW-VALUE / HIGH-VALUE */
+static int
+is_dbcs_compatible_source (cb_tree src)
+{
+	enum cb_category	cat;
+	if (src == cb_space || src == cb_low || src == cb_high) {
+		return 1;
+	}
+	if (CB_CONST_P (src)) {
+		return 0;
+	}
+	cat = CB_TREE_CATEGORY (src);
+	if (cat == CB_CATEGORY_NATIONAL
+	 || cat == CB_CATEGORY_NATIONAL_EDITED) {
+		return 1;
+	}
+	if (CB_LITERAL_P (src)) {
+		/* an alphanumeric literal with spaces only */
+		const struct cb_literal	*l = CB_LITERAL (src);
+		cob_u32_t	i;
+		if (cat != CB_CATEGORY_ALPHANUMERIC || l->raw) {
+			return 0;
+		}
+		for (i = 0; i < l->size; i++) {
+			if (l->data[i] != ' ') {
+				return 0;
+			}
+		}
+		return 1;
+	}
+	if (CB_REF_OR_FIELD_P (src)) {
+		return CB_FIELD_PTR (src)->children != NULL;
+	}
+	if (CB_INTRINSIC_P (src)) {
+		return 0;
+	}
+	return 1;
+}
+
 int
 validate_move (cb_tree src, cb_tree dst, const unsigned int is_value, int *move_zero)
 {
@@ -11138,6 +11200,24 @@ validate_move (cb_tree src, cb_tree dst, const unsigned int is_value, int *move_
 	fdst = CB_FIELD_PTR (dst);
 	if (fdst->flag_internal_constant || fdst->flag_constant) {
 		goto invalid;
+	}
+	/* DBCS items (data charset with DBCS): only DBCS / national data */
+	if (cb_data_charset && (cb_data_charset->flags & COB_CS_MIXED)) {
+		if (cb_field_is_dbcs (fdst)
+		 && !is_dbcs_compatible_source (src)) {
+			cb_error_x (loc, _("non-DBCS data cannot be moved to DBCS item '%s'"),
+				cb_name (dst));
+			return -1;
+		}
+		if (CB_REF_OR_FIELD_P (src)
+		 && cb_field_is_dbcs (CB_FIELD_PTR (src))
+		 && !fdst->children
+		 && CB_TREE_CATEGORY (dst) != CB_CATEGORY_NATIONAL
+		 && CB_TREE_CATEGORY (dst) != CB_CATEGORY_NATIONAL_EDITED) {
+			cb_error_x (loc, _("DBCS item '%s' cannot be moved to non-DBCS item '%s'"),
+				cb_name (src), cb_name (dst));
+			return -1;
+		}
 	}
 	switch (CB_TREE_TAG (src)) {
 	case CB_TAG_CONST:
@@ -11682,6 +11762,11 @@ validate_move (cb_tree src, cb_tree dst, const unsigned int is_value, int *move_
 					i++;
 				}
 				if ((int)i > size) {
+					if (!fdst->flag_justified
+					 && is_mixed_split (l, (size_t)size)) {
+						cb_warning_x (cb_warn_truncate, loc,
+							_("truncation splits DBCS data, SI is missing"));
+					}
 					size = (signed int)i;
 					goto size_overflow;
 				}
@@ -12734,6 +12819,24 @@ cb_build_move_field (cb_tree src, cb_tree dst)
 	return CB_BUILD_FUNCALL_2 ("cob_move", src, dst);
 }
 
+/* check for national (UTF-16) data, which is not DBCS */
+static int
+is_utf16_national (cb_tree x)
+{
+	const enum cb_category	cat = CB_TREE_CATEGORY (x);
+	if (cat != CB_CATEGORY_NATIONAL
+	 && cat != CB_CATEGORY_NATIONAL_EDITED) {
+		return 0;
+	}
+	if (CB_LITERAL_P (x)) {
+		return !CB_LITERAL (x)->dbcs;
+	}
+	if (CB_REF_OR_FIELD_P (x)) {
+		return !cb_field_is_dbcs (CB_FIELD_PTR (x));
+	}
+	return 1;
+}
+
 cb_tree
 cb_build_move (cb_tree src, cb_tree dst)
 {
@@ -12877,7 +12980,11 @@ cb_build_move (cb_tree src, cb_tree dst)
 #endif
 
 	/* Output optimal code */
-	if (src == cb_zero) {
+	if (cb_data_charset
+	 && (is_utf16_national (src) || is_utf16_national (dst))) {
+		/* conversion to / from UTF-16 is done at runtime */
+		ret = CB_BUILD_FUNCALL_2 ("cob_move", src, dst);
+	} else if (src == cb_zero) {
 		ret = cb_build_move_zero (dst);
 	} else if (src == cb_space) {
 		ret = cb_build_move_space (dst);

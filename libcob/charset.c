@@ -665,6 +665,276 @@ cob_charset_mixed_to_dbcs (const cob_charset *cs, const unsigned char *src,
 	return out;
 }
 
+/* conversion between arbitrary charsets (given by iconv names),
+   used for national (UTF-16) data */
+
+#ifdef	HAVE_ICONV
+#define MAX_ICONV_PAIRS 16
+static struct iconv_pair_entry {
+	char		*to;
+	char		*from;
+	iconv_t		cd;
+} iconv_pairs[MAX_ICONV_PAIRS];
+static int	iconv_pair_count = 0;
+
+static iconv_t
+get_iconv_pair (const char *to, const char *from)
+{
+	iconv_t		cd;
+	int		i;
+	for (i = 0; i < iconv_pair_count; i++) {
+		if (!strcmp (iconv_pairs[i].to, to)
+		 && !strcmp (iconv_pairs[i].from, from)) {
+			return iconv_pairs[i].cd;
+		}
+	}
+	cd = iconv_open (to, from);
+	if (iconv_pair_count < MAX_ICONV_PAIRS) {
+		i = iconv_pair_count++;
+		iconv_pairs[i].to = cob_strdup (to);
+		iconv_pairs[i].from = cob_strdup (from);
+		iconv_pairs[i].cd = cd;
+	} else if (cd != (iconv_t)-1) {
+		/* cache full: keep it open for the last slot */
+		i = MAX_ICONV_PAIRS - 1;
+		if (iconv_pairs[i].cd != (iconv_t)-1) {
+			iconv_close (iconv_pairs[i].cd);
+		}
+		cob_free (iconv_pairs[i].to);
+		cob_free (iconv_pairs[i].from);
+		iconv_pairs[i].to = cob_strdup (to);
+		iconv_pairs[i].from = cob_strdup (from);
+		iconv_pairs[i].cd = cd;
+	}
+	return cd;
+}
+
+/* convert with iconv, replacing invalid / unconvertible input by 'subst'
+   (with a size of 'subst_len'), for UTF-16 input the invalid unit
+   is skipped as a whole */
+static size_t
+convert_iconv_subst (iconv_t cd, const unsigned char *src, const size_t len,
+	unsigned char *out, const size_t outsize,
+	const unsigned char *subst, const size_t subst_len, const size_t unit)
+{
+	ICONV_CONST char	*in = (ICONV_CONST char *)src;
+	char	*o = (char *)out;
+	size_t	inleft = len;
+	size_t	oleft = outsize;
+
+	(void)iconv (cd, NULL, NULL, NULL, NULL);
+	while (inleft > 0) {
+		if (iconv (cd, &in, &inleft, &o, &oleft) != (size_t)-1) {
+			break;
+		}
+		if (errno == E2BIG || oleft < subst_len) {
+			break;
+		}
+		/* invalid or incomplete input: substitute and go on */
+		if (inleft < unit) {
+			inleft = 0;
+		} else {
+			in += unit;
+			inleft -= unit;
+		}
+		memcpy (o, subst, subst_len);
+		o += subst_len;
+		oleft -= subst_len;
+	}
+	/* write final shift sequence (SI), if any */
+	(void)iconv (cd, NULL, NULL, &o, &oleft);
+	return (size_t)(o - (char *)out);
+}
+#endif
+
+/* iconv name of a CCSID, for example 1399 -> "IBM1399";
+   'buff' needs at least 16 bytes */
+const char *
+cob_charset_ccsid_name (const int ccsid, char *buff)
+{
+	switch (ccsid) {
+	case 1200:
+	case 1201:
+	case 13488:
+		return "UTF-16BE";
+	case 1202:
+		return "UTF-16LE";
+	case 1208:
+		return "UTF-8";
+	case 367:
+		return "ASCII";
+	case 819:
+		return "ISO-8859-1";
+	case 932:
+		return "CP932";
+	case 5050:
+	case 954:
+		return "EUC-JP";
+	default:
+		sprintf (buff, "IBM%03d", ccsid);
+		return buff;
+	}
+}
+
+/* convert 'size' bytes from charset 'from' to charset 'to' (iconv names);
+   returns an allocated buffer (to be freed with cob_free) and its size,
+   NULL if the conversion is not possible */
+unsigned char *
+cob_charset_convert (const char *to, const char *from,
+	const unsigned char *src, const size_t size, size_t *outsize)
+{
+#ifdef	HAVE_ICONV
+	static const unsigned char	subst_utf16[2] = { 0xFF, 0xFD };
+	const unsigned char	*subst;
+	unsigned char		subst_buff[4];
+	size_t			subst_len;
+	size_t			unit = 1;
+	unsigned char		*out;
+	size_t			max;
+	iconv_t		cd = get_iconv_pair (to, from);
+
+	if (cd == (iconv_t)-1) {
+		return NULL;
+	}
+	if (!strncmp (from, "UTF-16", 6)) {
+		unit = 2;
+	}
+	if (!strcmp (to, "UTF-16BE")) {
+		subst = subst_utf16;
+		subst_len = 2;
+	} else if (!strcmp (to, "UTF-16LE")) {
+		subst_buff[0] = 0xFD;
+		subst_buff[1] = 0xFF;
+		subst = subst_buff;
+		subst_len = 2;
+	} else if (!strncmp (to, "IBM", 3)) {
+		subst_buff[0] = 0x6F;	/* '?' in all EBCDIC charsets */
+		subst = subst_buff;
+		subst_len = 1;
+	} else {
+		subst_buff[0] = '?';
+		subst = subst_buff;
+		subst_len = 1;
+	}
+	/* worst cases: 1 byte to 4 bytes (UTF-8 / UTF-16 surrogates),
+	   2 bytes to 4 (SO + DBCS + SI) */
+	max = size * 4 + 16;
+	out = cob_fast_malloc (max + 1);
+	*outsize = convert_iconv_subst (cd, src, size, out, max,
+		subst, subst_len, unit);
+	out[*outsize] = 0;
+	return out;
+#else
+	COB_UNUSED (to);
+	COB_UNUSED (from);
+	COB_UNUSED (src);
+	COB_UNUSED (size);
+	COB_UNUSED (outsize);
+	return NULL;
+#endif
+}
+
+/* convert data (in the data charset, with SO/SI for DBCS) to UTF-16 */
+unsigned char *
+cob_charset_to_utf16 (const cob_charset *cs, const unsigned char *src,
+	const size_t size, size_t *outsize)
+{
+	unsigned char	*out;
+	size_t		i;
+	if (cs->iconv_name) {
+		out = cob_charset_convert ("UTF-16BE", cs->iconv_name, src, size, outsize);
+		if (out) {
+			return out;
+		}
+	}
+	/* fallback: single byte table to the host (ISO-8859-1 like) */
+	out = cob_fast_malloc (size * 2 + 1);
+	for (i = 0; i < size; i++) {
+		out[i * 2] = 0;
+		out[i * 2 + 1] = COB_CS_TO_HOST (cs, src[i]);
+	}
+	*outsize = size * 2;
+	out[*outsize] = 0;
+	return out;
+}
+
+/* convert UTF-16 data to the data charset (with SO/SI for DBCS) */
+unsigned char *
+cob_charset_from_utf16 (const cob_charset *cs, const unsigned char *src,
+	const size_t size, size_t *outsize)
+{
+	unsigned char	*out;
+	size_t		i;
+	if (cs->iconv_name) {
+		out = cob_charset_convert (cs->iconv_name, "UTF-16BE", src, size, outsize);
+		if (out) {
+			return out;
+		}
+	}
+	out = cob_fast_malloc (size / 2 + 1);
+	for (i = 0; i + 1 < size; i += 2) {
+		out[i / 2] = src[i] ? COB_CS_FROM_HOST (cs, '?')
+			: COB_CS_FROM_HOST (cs, src[i + 1]);
+	}
+	*outsize = size / 2;
+	out[*outsize] = 0;
+	return out;
+}
+
+/* convert UTF-16 data to host text (terminated by NUL) */
+unsigned char *
+cob_charset_utf16_to_host (const cob_charset *cs, const unsigned char *src,
+	const size_t size, size_t *outsize)
+{
+	const char	*host = cob_get_host_codeset ();
+	unsigned char	*data, *out;
+	size_t		data_size;
+	if (host) {
+		out = cob_charset_convert (host, "UTF-16BE", src, size, outsize);
+		if (out) {
+			return out;
+		}
+	}
+	data = cob_charset_from_utf16 (cs, src, size, &data_size);
+	out = cob_charset_text_to_host (cs, data, data_size, outsize);
+	cob_free (data);
+	return out;
+}
+
+/* convert host text to UTF-16 data */
+unsigned char *
+cob_charset_utf16_from_host (const cob_charset *cs, const unsigned char *src,
+	const size_t size, size_t *outsize)
+{
+	const char	*host = cob_get_host_codeset ();
+	unsigned char	*data, *out;
+	size_t		data_size;
+	if (host) {
+		out = cob_charset_convert ("UTF-16BE", host, src, size, outsize);
+		if (out) {
+			return out;
+		}
+	}
+	data = cob_charset_text_from_host (cs, src, size, &data_size);
+	out = cob_charset_to_utf16 (cs, data, data_size, outsize);
+	cob_free (data);
+	return out;
+}
+
+/* convert pure DBCS data to mixed data by adding SO/SI */
+unsigned char *
+cob_charset_dbcs_to_mixed (const cob_charset *cs, const unsigned char *src,
+	const size_t size, size_t *outsize)
+{
+	unsigned char	*out = cob_fast_malloc (size + 3);
+	out[0] = cs->so;
+	memcpy (out + 1, src, size);
+	out[size + 1] = cs->si;
+	out[size + 2] = 0;
+	*outsize = size + 2;
+	return out;
+}
+
 /* check if text conversion changes the size (uses iconv) */
 int
 cob_charset_text_is_variable (const cob_charset *cs)
@@ -696,6 +966,14 @@ cob_exit_charset (void)
 		}
 	}
 	iconv_cache_count = 0;
+	for (i = 0; i < iconv_pair_count; i++) {
+		if (iconv_pairs[i].cd != (iconv_t)-1) {
+			iconv_close (iconv_pairs[i].cd);
+		}
+		cob_free (iconv_pairs[i].to);
+		cob_free (iconv_pairs[i].from);
+	}
+	iconv_pair_count = 0;
 #endif
 	if (host_codeset) {
 		cob_free (host_codeset);

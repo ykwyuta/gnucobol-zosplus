@@ -767,6 +767,8 @@ struct cb_literal {
 	short			all;	/* ALL */
 	short			raw;	/* data is not converted to the data charset
 					   (hexadecimal literal) */
+	short			dbcs;	/* DBCS literal (N / G for a data charset
+					   with DBCS), otherwise national is UTF-16 */
 };
 
 #define CB_LITERAL(x)	(CB_TREE_CAST (CB_TAG_LITERAL, struct cb_literal, x))
@@ -807,6 +809,7 @@ struct cb_picture {
 	cob_u32_t		have_sign;	/* Have 'S' */
 	unsigned int flag_is_calculated	: 1;	/* is calculated */
 	unsigned int variable_length	: 1;	/* Starts with 'L' */
+	unsigned int flag_dbcs_g	: 1;	/* has 'G' (DBCS) */
 };
 
 #define CB_PICTURE(x)	(CB_TREE_CAST (CB_TAG_PICTURE, struct cb_picture, x))
@@ -1008,6 +1011,8 @@ struct cb_field {
 	unsigned int flag_is_verified	: 1;	/* Has been verified */
 
 	unsigned int flag_had_definition_note : 1;	/* had its defintion output */
+	unsigned int flag_usage_dbcs	: 1;	/* USAGE DISPLAY-1 */
+	unsigned int flag_usage_national	: 1;	/* explicit USAGE NATIONAL */
 };
 
 #define CB_FIELD(x)		(CB_TREE_CAST (CB_TAG_FIELD, struct cb_field, x))
@@ -2106,6 +2111,9 @@ extern cb_tree			cb_build_national_literal (const void *,
 							       const size_t);
 extern cb_tree			cb_build_dbcs_literal (const void *,
 						   const size_t);
+extern cb_tree			cb_build_utf16_literal (const void *,
+						   const size_t);
+extern int			cb_field_is_dbcs (const struct cb_field *);
 extern cb_tree			cb_build_numsize_literal (const void *,
 							  const size_t,
 							  const int);

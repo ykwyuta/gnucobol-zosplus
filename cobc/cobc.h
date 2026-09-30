@@ -509,6 +509,7 @@ extern const char		*cb_ebcdic_table;
 extern const cob_charset	*cb_data_charset;	/* -fdata-codeset, NULL = native */
 extern int			cb_default_byte_is_char;
 extern const char		*cb_source_codeset;	/* -fsource-codeset (iconv name) */
+extern int			cb_nsymbol_national;	/* -fnsymbol=national */
 
 /* Functions */
 

@@ -1546,10 +1546,25 @@ read_literal (const char mark, const enum cb_literal_type literal_type)
 		cb_error (_("%s literal requires a data codeset with DBCS"), "G");
 		type = CB_LITERAL_N;
 	}
-	if ((type == CB_LITERAL_N || type == CB_LITERAL_NC || type == CB_LITERAL_G)
+	if (cb_data_charset) {
+		/* dialect checks, national literals are implemented here */
+		if (type == CB_LITERAL_N) {
+			(void)cb_verify (cb_national_literals, _("national literal"));
+		} else if (type == CB_LITERAL_NC) {
+			(void)cb_verify (cb_nationalc_literals, _("national-character literal"));
+		}
+	}
+	if ((type == CB_LITERAL_G
+	  || (type == CB_LITERAL_N && !cb_nsymbol_national))
 	 && cb_data_charset && (cb_data_charset->flags & COB_CS_MIXED)) {
 		/* DBCS literal: convert to the data charset without SO/SI */
 		yylval = cb_build_dbcs_literal (plex_buff, i);
+		return;
+	}
+	if ((type == CB_LITERAL_N || type == CB_LITERAL_NC)
+	 && cb_data_charset) {
+		/* national literal: convert to UTF-16 */
+		yylval = cb_build_utf16_literal (plex_buff, i);
 		return;
 	}
 	if ( type != CB_LITERAL_N && type != CB_LITERAL_NC ) {

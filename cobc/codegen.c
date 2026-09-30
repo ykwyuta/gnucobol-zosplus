@@ -1654,6 +1654,11 @@ output_attr (const cb_tree x)
 		} else {
 			if (l->all) {
 				id = lookup_attr (COB_TYPE_ALPHANUMERIC_ALL, 0, 0, COB_FLAG_CONSTANT, NULL, 0);
+			} else if (cb_data_charset
+			 && CB_TREE_CATEGORY (x) == CB_CATEGORY_NATIONAL) {
+				/* national literal: UTF-16 or DBCS data */
+				id = lookup_attr (COB_TYPE_NATIONAL, 0, 0,
+					COB_FLAG_CONSTANT | (l->dbcs ? COB_FLAG_DBCS : 0), NULL, 0);
 			} else {
 				id = lookup_attr (COB_TYPE_ALPHANUMERIC, 0, 0, COB_FLAG_CONSTANT, NULL, 0);
 			}
@@ -1664,7 +1669,13 @@ output_attr (const cb_tree x)
 		struct cb_reference	*r = CB_REFERENCE (x);
 		struct cb_field		*f = CB_FIELD (r->value);
 		flags = 0;
-		if (r->offset) {
+		if (r->offset && cb_data_charset && f->pic
+		 && (f->pic->category == CB_CATEGORY_NATIONAL
+		  || f->pic->category == CB_CATEGORY_NATIONAL_EDITED)) {
+			/* reference-modified national item stays national */
+			id = lookup_attr (COB_TYPE_NATIONAL, 0, 0,
+				cb_field_is_dbcs (f) ? COB_FLAG_DBCS : 0, NULL, 0);
+		} else if (r->offset) {
 			id = lookup_attr (COB_TYPE_ALPHANUMERIC, 0, 0, 0, NULL, 0);
 		} else {
 			int type = cb_tree_type (x, f);
@@ -1700,6 +1711,9 @@ output_attr (const cb_tree x)
 				}
 				if (f->flag_is_pointer) {
 					flags |= COB_FLAG_IS_POINTER;
+				}
+				if (cb_field_is_dbcs (f)) {
+					flags |= COB_FLAG_DBCS;
 				}
 				if (cb_binary_truncate &&
 				    f->usage == CB_USAGE_BINARY &&
@@ -5970,6 +5984,14 @@ output_initialize (struct cb_initialize *p)
 				output_init_comment_and_source_ref (f);
 			}
 			output_initialize_uniform (p->var, f, (unsigned char)c, f->size);
+			output_initialize_chaining (f, p);
+			return;
+		}
+		if (!f->children && cb_data_charset) {
+			/* elementary item without uniform character (national),
+			   FIXME: should be done in general, but national is
+			   only implemented for data charsets */
+			output_initialize_one (p, p->var);
 			output_initialize_chaining (f, p);
 			return;
 		}

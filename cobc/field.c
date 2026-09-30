@@ -571,6 +571,8 @@ same_level:
 	if (f->parent) {
 		struct cb_field *parent = f->parent;
 		f->usage = parent->usage;
+		f->flag_usage_dbcs = parent->flag_usage_dbcs;
+		f->flag_usage_national = parent->flag_usage_national;
 		f->indexes = parent->indexes;
 		f->flag_sign_leading = parent->flag_sign_leading;
 		f->flag_sign_separate = parent->flag_sign_separate;
@@ -3139,9 +3141,9 @@ unbounded_again:
 			}
 #endif
 			/* note: PIC N (and G) already count 2 bytes per character,
-			   for DBCS data charsets use that size
+			   for data charsets (DBCS and UTF-16) use that size
 			   (FIXME: this should be done in general) */
-			if (cb_data_charset && (cb_data_charset->flags & COB_CS_MIXED)
+			if (cb_data_charset
 			 && f->pic->category == CB_CATEGORY_NATIONAL) {
 				f->size = f->pic->size;
 			} else {

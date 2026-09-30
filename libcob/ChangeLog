@@ -1,5 +1,16 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* common.h: new attribute flag COB_FLAG_DBCS
+	* charset.c (cob_charset_convert, cob_charset_to_utf16,
+	  cob_charset_from_utf16, cob_charset_utf16_to_host,
+	  cob_charset_utf16_from_host, cob_charset_dbcs_to_mixed,
+	  cob_charset_ccsid_name): conversion of national (UTF-16) data
+	* move.c (cob_move_national): MOVE from / to national (UTF-16) items
+	  for data charsets, converting from / to DBCS and alphanumeric data
+	  without splitting DBCS characters
+	* intrinsic.c (cob_intr_display_of, cob_intr_national_of): implemented
+	  for data charsets, including the optional CCSID argument
+	* termio.c: DISPLAY / ACCEPT of national (UTF-16) items
 	* mlio.c: XML PARSE / GENERATE and JSON PARSE / GENERATE convert
 	  between the data charset and the host charset used by libxml2 / json-c
 	* reportio.c: report lines, SPACE / ZERO and sums use the data charset

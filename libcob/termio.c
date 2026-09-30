@@ -221,11 +221,19 @@ display_alnum (const cob_field *f, FILE *fp)
 	const unsigned char	*to_host = cs->to_host;
 
 	/* the data is converted to the host charset */
+	if (to_host && COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f)) {
+		/* national item: UTF-16 */
+		size_t	size;
+		unsigned char	*host = cob_charset_utf16_to_host (cs, f->data, f->size, &size);
+		fwrite (host, 1, size, fp);
+		cob_free (host);
+		return;
+	}
 	if (to_host && cob_charset_text_is_variable (cs)) {
 		/* text conversion via iconv (for example for DBCS) */
 		size_t	size;
 		unsigned char	*host;
-		if (COB_FIELD_IS_NATIONAL (f) && (cs->flags & COB_CS_MIXED)) {
+		if (COB_FIELD_IS_DBCS (f)) {
 			/* DBCS item (PIC G / N): add SO / SI for the conversion */
 			unsigned char	*mixed = cob_fast_malloc (f->size + 2);
 			mixed[0] = cs->so;
@@ -1140,11 +1148,24 @@ cob_accept (cob_field *f)
 		p[size++] = (char) ipchr;
 	}
 	/* the input is in host charset */
+	if (COB_CS->from_host && COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f)) {
+		/* national item: UTF-16 */
+		static const cob_field_attr	national_attr =
+			{COB_TYPE_NATIONAL, 0, 0, 0, NULL};
+		size_t	data_size;
+		unsigned char	*data = cob_charset_utf16_from_host (COB_CS, p, size, &data_size);
+		temp.data = data;
+		temp.size = data_size;
+		temp.attr = &national_attr;
+		cob_move (&temp, f);
+		cob_free (data);
+		return;
+	}
 	if (COB_CS->from_host && cob_charset_text_is_variable (COB_CS)) {
 		/* text conversion via iconv (for example for DBCS) */
 		size_t	data_size;
 		unsigned char	*data = cob_charset_text_from_host (COB_CS, p, size, &data_size);
-		if (COB_FIELD_IS_NATIONAL (f) && (COB_CS->flags & COB_CS_MIXED)) {
+		if (COB_FIELD_IS_DBCS (f)) {
 			/* DBCS item (PIC G / N): remove SO / SI */
 			unsigned char	*dbcs = cob_charset_mixed_to_dbcs (COB_CS,
 					data, data_size, &data_size);

@@ -2896,7 +2896,77 @@ cb_build_dbcs_literal (const void *data, const size_t size)
 	dbcs[dbcs_size] = 0;
 	l = cb_build_national_literal (dbcs, dbcs_size);
 	CB_LITERAL (l)->raw = 1;
+	CB_LITERAL (l)->dbcs = 1;
 	return l;
+}
+
+/* build a national literal (N"..." / NC"...") for a data charset:
+   convert from the source charset to UTF-16 (big-endian, as IBM) */
+cb_tree
+cb_build_utf16_literal (const void *data, const size_t size)
+{
+	cb_tree			l;
+	const size_t	max = size * 4 + 4;
+	unsigned char	*utf16 = cobc_parse_malloc (max);
+	size_t		utf16_size = 0;
+	int		error = 0;
+#ifdef	HAVE_ICONV
+	iconv_t		cd = iconv_open ("UTF-16BE", cb_source_codeset);
+	if (cd == (iconv_t)-1) {
+		cb_error (_("cannot convert from '%s' to '%s'"),
+			cb_source_codeset, "UTF-16BE");
+		error = 1;
+	} else {
+		ICONV_CONST char	*in = (ICONV_CONST char *)data;
+		size_t		inleft = size;
+		char		*o = (char *)utf16;
+		size_t		oleft = max;
+		if (iconv (cd, &in, &inleft, &o, &oleft) == (size_t)-1) {
+			error = 1;
+		} else {
+			utf16_size = max - oleft;
+		}
+		iconv_close (cd);
+	}
+#else
+	error = 1;
+#endif
+	if (error) {
+		char		lit_out[CB_ERR_LITMAX + 1] = { 0 };
+		literal_for_diagnostic (lit_out, data);
+		cb_error (_("literal '%s' cannot be converted to data codeset %s"),
+			lit_out, "UTF-16");
+		/* go on with a space */
+		utf16[0] = 0;
+		utf16[1] = ' ';
+		utf16_size = 2;
+	}
+	l = cb_build_national_literal (utf16, utf16_size);
+	CB_LITERAL (l)->raw = 1;
+	return l;
+}
+
+/* check if the field is a DBCS item (PIC G, USAGE DISPLAY-1, or PIC N
+   with -fnsymbol=dbcs) for a data charset with DBCS;
+   otherwise national items are UTF-16 */
+int
+cb_field_is_dbcs (const struct cb_field *f)
+{
+	if (!cb_data_charset
+	 || !(cb_data_charset->flags & COB_CS_MIXED)
+	 || f->children
+	 || !f->pic
+	 || (f->pic->category != CB_CATEGORY_NATIONAL
+	  && f->pic->category != CB_CATEGORY_NATIONAL_EDITED)) {
+		return 0;
+	}
+	if (f->pic->flag_dbcs_g || f->flag_usage_dbcs) {
+		return 1;
+	}
+	if (f->flag_usage_national) {
+		return 0;
+	}
+	return !cb_nsymbol_national;
 }
 
 cb_tree
@@ -3682,6 +3752,7 @@ repeat:
 		if (c == 'G' && cb_data_charset
 		 && (cb_data_charset->flags & COB_CS_MIXED)) {
 			c = 'N';
+			pic->flag_dbcs_g = 1;
 		}
 
 		/* Check grammar and category */
@@ -3719,9 +3790,8 @@ repeat:
 		case 'N':
 			if (!(category & PIC_NATIONAL)) {
 				category |= PIC_NATIONAL;
-				/* for a DBCS data charset PIC N is DBCS */
-				if (!cb_data_charset
-				 || !(cb_data_charset->flags & COB_CS_MIXED)) {
+				/* with a data charset PIC N is DBCS or UTF-16 */
+				if (!cb_data_charset) {
 					CB_UNFINISHED ("USAGE NATIONAL");
 				}
 			}
@@ -7231,7 +7301,12 @@ cb_build_intrinsic (cb_tree func, cb_tree args, cb_tree refmod,
 		cb_error_x (func, _("FUNCTION '%s' unknown"), name);
 		return cb_error_node;
 	}
-	if (cbp->active == CB_FEATURE_NOT_IMPLEMENTED) {
+	if (cbp->active == CB_FEATURE_NOT_IMPLEMENTED
+	 && !(cb_data_charset
+	   && (cbp->intr_enum == CB_INTR_DISPLAY_OF
+	    || cbp->intr_enum == CB_INTR_NATIONAL_OF))) {
+		/* note: DISPLAY-OF / NATIONAL-OF are implemented for
+		   data charsets (-fdata-codeset) */
 		cb_error_x (func, _("FUNCTION '%s' is not implemented"), name);
 		return cb_error_node;
 	}
@@ -7469,6 +7544,21 @@ cb_build_intrinsic (cb_tree func, cb_tree args, cb_tree refmod,
 	case CB_INTR_DISPLAY_OF:
 	case CB_INTR_NATIONAL_OF:
 		/* TODO: resolve for literals */
+		x = CB_VALUE (args);
+		catg = cb_tree_category (x);
+		if (cbp->intr_enum == CB_INTR_DISPLAY_OF
+		 ? catg != CB_CATEGORY_NATIONAL
+		 : (catg != CB_CATEGORY_ALPHANUMERIC
+		 && catg != CB_CATEGORY_ALPHABETIC
+		 && catg != CB_CATEGORY_NATIONAL)) {
+			cb_error_x (func, _("FUNCTION '%s' has invalid argument"), name);
+			return cb_error_node;
+		}
+		if (numargs == 2
+		 && cb_tree_category (CB_VALUE (CB_CHAIN (args))) != CB_CATEGORY_NUMERIC) {
+			cb_error_x (func, _("FUNCTION '%s' has invalid argument"), name);
+			return cb_error_node;
+		}
 		return make_intrinsic (func, cbp, args, cb_int1, refmod, 0);
 
 

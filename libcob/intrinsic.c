@@ -7245,17 +7245,83 @@ cob_intr_char_national (cob_field *srcfield)
 	error_not_implemented ();
 }
 
-/* implementation of FUNCTION DISPLAY-OF - alphanumeric for national character
-   FIXME: Not implemented! */
+/* get the optional CCSID argument of DISPLAY-OF / NATIONAL-OF,
+   returns the iconv name or NULL for the data charset */
+static const char *
+get_ccsid_arg (const int params, va_list args, char *buff)
+{
+	cob_field	*f;
+	int		ccsid;
+	if (params < 2) {
+		return NULL;
+	}
+	f = va_arg (args, cob_field *);
+	ccsid = cob_get_int (f);
+	if (ccsid <= 0) {
+		cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
+		return NULL;
+	}
+	return cob_charset_ccsid_name (ccsid, buff);
+}
+
+/* store an allocated result buffer as function result */
+static cob_field *
+set_converted_result (unsigned char *data, const size_t size,
+	const cob_field_attr *attr, const int offset, const int length)
+{
+	cob_field	field;
+	COB_FIELD_INIT (size, NULL, attr);
+	make_field_entry (&field);
+	if (size) {
+		memcpy (curr_field->data, data, size);
+	}
+	cob_free (data);
+	if (unlikely (offset > 0)) {
+		calc_ref_mod (curr_field, offset, length);
+	}
+	return curr_field;
+}
+
+/* implementation of FUNCTION DISPLAY-OF - alphanumeric for national character:
+   converts from UTF-16 to the data charset or the CCSID given as second
+   argument (implemented for data charsets, see -fdata-codeset) */
 cob_field *
 cob_intr_display_of (const int offset, const int length,
 		     const int params, ...)
 {
-	COB_UNUSED (offset);
-	COB_UNUSED (length);
-	COB_UNUSED (params);
+	const cob_charset	*cs = COB_CS;
+	cob_field	*src;
+	const char	*to;
+	char		buff[16];
+	unsigned char	*out = NULL;
+	size_t		size = 0;
+	va_list		args;
 
-	error_not_implemented ();
+	va_start (args, params);
+	src = va_arg (args, cob_field *);
+	to = get_ccsid_arg (params, args, buff);
+	va_end (args);
+
+	if (COB_FIELD_IS_DBCS (src)) {
+		/* DBCS: only add SO/SI */
+		out = cob_charset_dbcs_to_mixed (cs, src->data, src->size, &size);
+		if (to && cs->iconv_name) {
+			unsigned char	*conv = cob_charset_convert (to,
+				cs->iconv_name, out, size, &size);
+			cob_free (out);
+			out = conv;
+		}
+	} else if (to) {
+		out = cob_charset_convert (to, "UTF-16BE", src->data, src->size, &size);
+	} else {
+		out = cob_charset_from_utf16 (cs, src->data, src->size, &size);
+	}
+	if (!out) {
+		cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
+		out = cob_fast_malloc (1);
+		size = 0;
+	}
+	return set_converted_result (out, size, &const_alpha_attr, offset, length);
 }
 
 /* implementation of FUNCTION EXCEPTION-FILE-N
@@ -7284,14 +7350,49 @@ cob_intr_integer_of_boolean (cob_field *srcfield)
 	error_not_implemented ();
 }
 
+/* implementation of FUNCTION NATIONAL-OF - national for alphanumeric
+   characters: converts from the data charset or the CCSID given as second
+   argument to UTF-16 (implemented for data charsets, see -fdata-codeset) */
 cob_field *
 cob_intr_national_of (const int offset, const int length, const int params, ...)
 {
-	COB_UNUSED (offset);
-	COB_UNUSED (length);
-	COB_UNUSED (params);
+	static const cob_field_attr	national_attr =
+		{COB_TYPE_NATIONAL, 0, 0, 0, NULL};
+	const cob_charset	*cs = COB_CS;
+	cob_field	*src;
+	const char	*from;
+	char		buff[16];
+	unsigned char	*out = NULL;
+	size_t		size = 0;
+	va_list		args;
 
-	error_not_implemented ();
+	va_start (args, params);
+	src = va_arg (args, cob_field *);
+	from = get_ccsid_arg (params, args, buff);
+	va_end (args);
+
+	if (COB_FIELD_IS_NATIONAL (src) && !COB_FIELD_DBCS (src)) {
+		/* already UTF-16 */
+		out = cob_fast_malloc (src->size + 1);
+		memcpy (out, src->data, src->size);
+		size = src->size;
+	} else if (COB_FIELD_IS_DBCS (src)) {
+		size_t		mixed_size;
+		unsigned char	*mixed = cob_charset_dbcs_to_mixed (cs,
+					src->data, src->size, &mixed_size);
+		out = cob_charset_to_utf16 (cs, mixed, mixed_size, &size);
+		cob_free (mixed);
+	} else if (from) {
+		out = cob_charset_convert ("UTF-16BE", from, src->data, src->size, &size);
+	} else {
+		out = cob_charset_to_utf16 (cs, src->data, src->size, &size);
+	}
+	if (!out) {
+		cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
+		out = cob_fast_malloc (1);
+		size = 0;
+	}
+	return set_converted_result (out, size, &national_attr, offset, length);
 }
 
 cob_field *

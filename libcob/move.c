@@ -1597,6 +1597,205 @@ cob_move_all (cob_field *src, cob_field *dst)
 	cob_free (p);
 }
 
+/* national (UTF-16) data for a data charset other than the native one:
+   MOVE converts between UTF-16, DBCS and the (mixed) data charset */
+
+#define IS_UTF16_FIELD(f)	\
+	(COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f))
+
+/* store 'size' bytes into 'dst', truncating on 'unit' boundaries and
+   padding with 'pad' (with a size of 'unit') */
+static void
+store_national (cob_field *dst, const unsigned char *data, size_t size,
+	const unsigned char *pad, const size_t unit)
+{
+	size_t		dsize = dst->size;
+	size_t		i;
+	unsigned char	*d = dst->data;
+
+	if (size > dsize) {
+		size_t	cut = dsize - dsize % unit;
+		if (COB_FIELD_JUSTIFIED (dst)) {
+			data += size - cut;
+		}
+		size = cut;
+	} else if (COB_FIELD_JUSTIFIED (dst) && size < dsize) {
+		size_t	lead = dsize - size;
+		for (i = 0; i < lead; i++) {
+			d[i] = pad[(i + (unit - lead % unit)) % unit];
+		}
+		memcpy (d + lead, data, size);
+		return;
+	}
+	memcpy (d, data, size);
+	for (i = size; i < dsize; i++) {
+		d[i] = pad[(i - size) % unit];
+	}
+}
+
+/* length of mixed data (with SO/SI) that fits into 'max' bytes without
+   splitting a DBCS character; 'need_si' is set if an SI has to be
+   added at the end (which is included in the returned length) */
+static size_t
+mixed_fit (const cob_charset *cs, const unsigned char *data, const size_t size,
+	const size_t max, int *need_si)
+{
+	size_t		i = 0, fit = 0;
+	int		in_dbcs = 0;
+
+	*need_si = 0;
+	if (size <= max) {
+		return size;
+	}
+	while (i < size) {
+		size_t	len;
+		if (data[i] == cs->so) {
+			len = 1;
+		} else if (data[i] == cs->si) {
+			len = 1;
+		} else {
+			len = in_dbcs ? 2 : 1;
+		}
+		/* SO + one character + SI must fit */
+		if (i + len + ((data[i] != cs->si
+		             && (in_dbcs || data[i] == cs->so)) ? 1 : 0) > max) {
+			break;
+		}
+		if (data[i] == cs->so) {
+			in_dbcs = 1;
+		} else if (data[i] == cs->si) {
+			in_dbcs = 0;
+		}
+		i += len;
+		fit = i;
+	}
+	if (in_dbcs) {
+		*need_si = 1;
+		/* an SO directly at the end is removed */
+		if (fit > 0 && data[fit - 1] == cs->so) {
+			fit--;
+			*need_si = 0;
+		} else {
+			fit++;
+		}
+	}
+	return fit;
+}
+
+/* get the data of 'f' as UTF-16 */
+static unsigned char *
+field_to_utf16 (const cob_charset *cs, cob_field *f, size_t *size)
+{
+	unsigned char	*out;
+	if (IS_UTF16_FIELD (f)) {
+		out = cob_fast_malloc (f->size + 1);
+		memcpy (out, f->data, f->size);
+		*size = f->size;
+		return out;
+	}
+	if (COB_FIELD_IS_DBCS (f)) {
+		size_t		mixed_size;
+		unsigned char	*mixed = cob_charset_dbcs_to_mixed (cs,
+					f->data, f->size, &mixed_size);
+		out = cob_charset_to_utf16 (cs, mixed, mixed_size, size);
+		cob_free (mixed);
+		return out;
+	}
+	if (COB_FIELD_IS_NUMERIC (f)) {
+		/* numeric: as unsigned integer / decimal digits */
+		cob_field	temp;
+		unsigned char	*buff;
+		temp.size = COB_FIELD_DIGITS (f) > 0 ? COB_FIELD_DIGITS (f) : 1;
+		buff = cob_fast_malloc (temp.size + 1);
+		temp.data = buff;
+		temp.attr = &const_alpha_attr;
+		cob_move (f, &temp);
+		out = cob_charset_to_utf16 (cs, buff, temp.size, size);
+		cob_free (buff);
+		return out;
+	}
+	return cob_charset_to_utf16 (cs, f->data, f->size, size);
+}
+
+/* MOVE from / to national (UTF-16) data */
+void
+cob_move_national (cob_field *src, cob_field *dst)
+{
+	const cob_charset	*cs = COB_CS;
+	unsigned char	*utf16;
+	size_t		utf16_size;
+
+	if (COB_FIELD_TYPE (src) == COB_TYPE_ALPHANUMERIC_ALL) {
+		/* figurative constant / ALL literal to UTF-16 */
+		size_t		i;
+		int		all_ff = 1, all_00 = 1;
+		for (i = 0; i < src->size; i++) {
+			if (src->data[i] != 0xFF) all_ff = 0;
+			if (src->data[i] != 0x00) all_00 = 0;
+		}
+		if (all_ff || all_00) {
+			/* HIGH-VALUE is X'FFFF', LOW-VALUE X'0000' */
+			memset (dst->data, all_ff ? 0xFF : 0x00, dst->size);
+			return;
+		}
+		utf16 = cob_charset_to_utf16 (cs, src->data, src->size, &utf16_size);
+		if (utf16_size == 0) {
+			cob_free (utf16);
+			memset (dst->data, 0, dst->size);
+			return;
+		}
+		for (i = 0; i < dst->size; i++) {
+			dst->data[i] = utf16[i % utf16_size];
+		}
+		cob_free (utf16);
+		return;
+	}
+
+	utf16 = field_to_utf16 (cs, src, &utf16_size);
+
+	if (IS_UTF16_FIELD (dst)) {
+		static const unsigned char	space16[2] = { 0x00, 0x20 };
+		store_national (dst, utf16, utf16_size, space16, 2);
+	} else if (COB_FIELD_IS_DBCS (dst)) {
+		size_t		mixed_size, dbcs_size;
+		unsigned char	*mixed = cob_charset_from_utf16 (cs, utf16,
+					utf16_size, &mixed_size);
+		unsigned char	*dbcs = cob_charset_mixed_to_dbcs (cs, mixed,
+					mixed_size, &dbcs_size);
+		store_national (dst, dbcs, dbcs_size, cs->dbcs_space, 2);
+		cob_free (dbcs);
+		cob_free (mixed);
+	} else {
+		size_t		data_size;
+		unsigned char	*data = cob_charset_from_utf16 (cs, utf16,
+					utf16_size, &data_size);
+		if (COB_FIELD_IS_NUMERIC (dst)
+		 || COB_FIELD_TYPE (dst) == COB_TYPE_ALPHANUMERIC_EDITED) {
+			cob_field	temp;
+			temp.size = data_size;
+			temp.data = data;
+			temp.attr = &const_alpha_attr;
+			cob_move (&temp, dst);
+		} else {
+			unsigned char	pad = cs->space;
+			if ((cs->flags & COB_CS_MIXED)
+			 && !COB_FIELD_JUSTIFIED (dst)
+			 && data_size > dst->size) {
+				/* don't split DBCS characters */
+				int	need_si;
+				data_size = mixed_fit (cs, data, data_size,
+						dst->size, &need_si);
+				if (need_si) {
+					data[data_size - 1] = cs->si;
+				}
+			}
+			store_national (dst, data, data_size, &pad, 1);
+		}
+		cob_free (data);
+	}
+	cob_free (utf16);
+}
+
 /*
  * Move data the same way as 'MVC' instruction on IBM works,
  * left to right, byte by byte
@@ -1656,6 +1855,14 @@ cob_move (cob_field *src, cob_field *dst)
 		data[0] = COB_CH_SPACE;
 		data[1] = 0;
 		src = &temp;
+	}
+	/* national (UTF-16) data for a data charset */
+	if (COB_MODULE_PTR && COB_MODULE_PTR->charset
+	 && (IS_UTF16_FIELD (dst)
+	  || (IS_UTF16_FIELD (src) && !IS_UTF16_FIELD (dst)
+	   && COB_FIELD_TYPE (dst) != COB_TYPE_GROUP))) {
+		cob_move_national (src, dst);
+		return;
 	}
 	if (COB_FIELD_TYPE (src) == COB_TYPE_ALPHANUMERIC_ALL) {
 		cob_move_all (src, dst);

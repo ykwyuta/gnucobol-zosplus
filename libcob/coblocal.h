@@ -530,6 +530,20 @@ COB_HIDDEN unsigned char	*cob_charset_text_from_host	(const cob_charset *,
 COB_HIDDEN int		cob_charset_text_is_variable	(const cob_charset *);
 COB_HIDDEN unsigned char	*cob_charset_mixed_to_dbcs	(const cob_charset *,
 					const unsigned char *, const size_t, size_t *);
+COB_HIDDEN const char	*cob_charset_ccsid_name	(const int, char *);
+COB_HIDDEN unsigned char	*cob_charset_convert	(const char *, const char *,
+					const unsigned char *, const size_t, size_t *);
+COB_HIDDEN unsigned char	*cob_charset_to_utf16	(const cob_charset *,
+					const unsigned char *, const size_t, size_t *);
+COB_HIDDEN unsigned char	*cob_charset_from_utf16	(const cob_charset *,
+					const unsigned char *, const size_t, size_t *);
+COB_HIDDEN unsigned char	*cob_charset_utf16_to_host	(const cob_charset *,
+					const unsigned char *, const size_t, size_t *);
+COB_HIDDEN unsigned char	*cob_charset_utf16_from_host	(const cob_charset *,
+					const unsigned char *, const size_t, size_t *);
+COB_HIDDEN unsigned char	*cob_charset_dbcs_to_mixed	(const cob_charset *,
+					const unsigned char *, const size_t, size_t *);
+COB_HIDDEN void		cob_move_national	(cob_field *, cob_field *);
 COB_HIDDEN void		cob_exit_charset	(void);
 COB_HIDDEN void		cob_init_cconv		(cob_global *);
 COB_HIDDEN void		cob_init_termio		(cob_global *, cob_settings *);

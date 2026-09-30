@@ -119,6 +119,7 @@ enum compile_level {
 #define CB_FLAG_GETOPT_GENTABLE             27
 #define CB_FLAG_GETOPT_DATA_CODESET         28
 #define CB_FLAG_GETOPT_SOURCE_CODESET       29
+#define CB_FLAG_GETOPT_NSYMBOL              30
 
 /* Info display limits */
 #define	CB_IMSG_SIZE		24
@@ -268,6 +269,7 @@ const char		*cb_ebcdic_table = NULL;
 const cob_charset	*cb_data_charset = NULL;	/* NULL = native */
 static int		data_codeset_by_option = 0;
 const char		*cb_source_codeset = "UTF-8";
+int			cb_nsymbol_national = 0;
 int			cb_depend_output = 0;
 int			cb_depend_output_only = 0;
 int			cb_depend_add_phony = 0;
@@ -4001,6 +4003,17 @@ process_command_line (const int argc, char **argv)
 				cobc_err_exit (COBC_INV_PAR, "-fsource-codeset");
 			}
 			cb_source_codeset = cobc_main_strdup (cob_optarg);
+			break;
+
+		case CB_FLAG_GETOPT_NSYMBOL:
+			/* -fnsymbol=<dbcs/national> */
+			if (!cb_strcasecmp (cob_optarg, "dbcs")) {
+				cb_nsymbol_national = 0;
+			} else if (!cb_strcasecmp (cob_optarg, "national")) {
+				cb_nsymbol_national = 1;
+			} else {
+				cobc_err_exit (COBC_INV_PAR, "-fnsymbol");
+			}
 			break;
 
 		case CB_FLAG_GETOPT_DEFAULT_COLSEQ:

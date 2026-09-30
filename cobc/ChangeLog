@@ -1,5 +1,22 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* flag.def, cobc.c, cobc.h: new option -fnsymbol=dbcs|national
+	* tree.c (cb_field_is_dbcs), tree.h, parser.y, field.c, codegen.c:
+	  for a data charset with DBCS, PIC G and USAGE DISPLAY-1 are DBCS
+	  items, explicit USAGE NATIONAL is UTF-16 and PIC N depends on
+	  -fnsymbol; DBCS items and literals get the new attribute flag
+	  COB_FLAG_DBCS, national literals are generated as national data
+	* tree.c (cb_build_utf16_literal), scanner.l: for data charsets,
+	  NC"..." and (with -fnsymbol=national) N"..." literals are converted
+	  to UTF-16 (big-endian)
+	* typeck.c (cb_build_move): MOVE from / to national (UTF-16) items is
+	  done by cob_move for data charsets
+	* typeck.c (validate_move): check MOVE with DBCS items, warn about
+	  truncated literals that split DBCS data
+	* tree.c (cb_build_intrinsic): DISPLAY-OF and NATIONAL-OF are
+	  available for data charsets
+	* codegen.c (output_initialize): INITIALIZE of an elementary national
+	  item for data charsets
 	* codegen.c (output_report_one_field): report literals in data charset
 	* tree.c (cb_build_picture), parser.y, field.c: for a data charset
 	  with DBCS, PIC G is accepted (as PIC N), PIC N and USAGE DISPLAY-1

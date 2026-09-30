@@ -591,3 +591,183 @@ AT_CHECK([COB_DBCS_USER_TABLE=user.tbl COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./
 ])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: national items (UTF-16)])
+AT_KEYWORDS([ebcdic data-codeset dbcs national nsymbol])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-G         PIC G(2) VALUE G'漢字'.
+       01  WK-N         PIC N(2) VALUE N'日本'.
+       01  WK-U         PIC N(4) USAGE NATIONAL VALUE NC'東京ab'.
+       01  WK-U2        PIC N(6) USAGE NATIONAL.
+       01  WK-X         PIC X(10) VALUE 'ｶﾅ漢字'.
+       01  WK-D         PIC N(3) USAGE DISPLAY-1.
+       01  WK-IN        PIC N(4) USAGE NATIONAL.
+       PROCEDURE        DIVISION.
+           DISPLAY '<' WK-U '> ' FUNCTION HEX-OF (WK-U)
+           DISPLAY FUNCTION HEX-OF (WK-N) ' ' FUNCTION LENGTH (WK-U)
+           MOVE WK-X TO WK-U2
+           DISPLAY '<' WK-U2 '> ' FUNCTION HEX-OF (WK-U2)
+           MOVE WK-G TO WK-U2
+           DISPLAY FUNCTION HEX-OF (WK-U2)
+           MOVE WK-U TO WK-D
+           DISPLAY '<' WK-D '> ' FUNCTION HEX-OF (WK-D)
+           MOVE SPACE TO WK-U2
+           DISPLAY FUNCTION HEX-OF (WK-U2)
+           MOVE HIGH-VALUE TO WK-U2
+           DISPLAY FUNCTION HEX-OF (WK-U2)
+           MOVE N'あ' TO WK-U2
+           DISPLAY FUNCTION HEX-OF (WK-U2)
+           INITIALIZE WK-U2
+           DISPLAY FUNCTION HEX-OF (WK-U2)
+           ACCEPT WK-IN
+           DISPLAY '<' WK-IN '> ' FUNCTION HEX-OF (WK-IN)
+           STOP RUN.
+])
+
+AT_DATA([input.txt], [大阪x
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog < input.txt], [0],
+[<東京ab> 67714EAC00610062
+45624566 4
+<ｶﾅ漢字  > FF76FF856F225B5700200020
+6F225B570020002000200020
+<東京　> 455745754040
+002000200020002000200020
+FFFFFFFFFFFFFFFFFFFFFFFF
+304200200020002000200020
+002000200020002000200020
+<大阪x > 5927962A00780020
+], [])
+
+# with -fnsymbol=national PIC N and N literals are UTF-16
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 -fnsymbol=national -o prog2 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog2 < input.txt], [0],
+[<東京ab> 67714EAC00610062
+65E5672C 4
+<ｶﾅ漢字  > FF76FF856F225B5700200020
+6F225B570020002000200020
+<東京　> 455745754040
+002000200020002000200020
+FFFFFFFFFFFFFFFFFFFFFFFF
+304200200020002000200020
+002000200020002000200020
+<大阪x > 5927962A00780020
+], [])
+
+AT_CHECK([$COMPILE_ONLY -fdata-codeset=IBM-1399 -fnsymbol=utf8 prog.cob], [1], [],
+[cobc: error: invalid parameter: -fnsymbol
+])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: NATIONAL-OF and DISPLAY-OF])
+AT_KEYWORDS([ebcdic data-codeset dbcs national functions])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-X         PIC X(10) VALUE 'ｶﾅ漢字'.
+       01  WK-G         PIC G(2) VALUE G'東京'.
+       01  WK-U         PIC N(6) USAGE NATIONAL.
+       01  WK-X2        PIC X(12).
+       01  WK-UTF8      PIC X(12).
+       PROCEDURE        DIVISION.
+           MOVE FUNCTION NATIONAL-OF (WK-X) TO WK-U
+           DISPLAY FUNCTION HEX-OF (WK-U)
+           MOVE FUNCTION DISPLAY-OF (WK-U) TO WK-X2
+           DISPLAY '<' WK-X2 '> ' FUNCTION HEX-OF (WK-X2)
+           MOVE FUNCTION NATIONAL-OF (WK-G) TO WK-U
+           DISPLAY '<' WK-U '> ' FUNCTION HEX-OF (WK-U)
+           MOVE FUNCTION DISPLAY-OF (WK-U, 1208) TO WK-UTF8
+           DISPLAY FUNCTION HEX-OF (WK-UTF8)
+           MOVE FUNCTION NATIONAL-OF (WK-UTF8, 1208) TO WK-U
+           DISPLAY FUNCTION HEX-OF (WK-U)
+           DISPLAY FUNCTION LENGTH (FUNCTION NATIONAL-OF (WK-X))
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog], [0],
+[FF76FF856F225B5700200020
+<ｶﾅ漢字    > 668C0E4F5848F20F40404040
+<東京    > 67714EAC0020002000200020
+E69DB1E4BAAC202020204040
+67714EAC0020002000200020
+000000006
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: MOVE with DBCS items])
+AT_KEYWORDS([ebcdic data-codeset dbcs])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-G         PIC G(4).
+       01  WK-X         PIC X(10) VALUE 'A漢字B'.
+       01  GRP.
+           05 GX        PIC X(8).
+       PROCEDURE        DIVISION.
+           MOVE WK-X TO WK-G
+           MOVE 'ABC' TO WK-G
+           MOVE ZERO TO WK-G
+           MOVE WK-G TO WK-X
+           MOVE SPACE TO WK-G
+           MOVE '  ' TO WK-G
+           MOVE GRP TO WK-G
+           MOVE WK-G TO GRP
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE_ONLY -fdata-codeset=IBM-1399 prog.cob], [1], [],
+[prog.cob:11: error: non-DBCS data cannot be moved to DBCS item 'WK-G'
+prog.cob:12: error: non-DBCS data cannot be moved to DBCS item 'WK-G'
+prog.cob:13: error: non-DBCS data cannot be moved to DBCS item 'WK-G'
+prog.cob:14: error: DBCS item 'WK-G' cannot be moved to non-DBCS item 'WK-X'
+])
+
+# truncated mixed data: missing SI / split DBCS character
+AT_DATA([prog2.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog2.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-X         PIC X(10) VALUE 'A漢字B'.
+       01  WK-X4        PIC X(4).
+       01  WK-X5        PIC X(5).
+       PROCEDURE        DIVISION.
+           MOVE WK-X TO WK-X4
+           DISPLAY '<' WK-X4 '> ' FUNCTION HEX-OF (WK-X4)
+           MOVE WK-X TO WK-X5
+           DISPLAY '<' WK-X5 '> ' FUNCTION HEX-OF (WK-X5)
+           MOVE 'A漢字B' TO WK-X5
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -Wtruncate -fdata-codeset=IBM-1399 prog2.cob], [0], [],
+[prog2.cob:14: warning: truncation splits DBCS data, SI is missing
+prog2.cob:14: warning: value size exceeds data size
+prog2.cob:14: note: value size is 8
+prog2.cob:8: note: 'WK-X5' defined here as PIC X(5)
+])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog2], [0],
+[<A漢> C10E4F58
+<A漢?> C10E4F5848
+], [])
+
+AT_CLEANUP

@@ -431,7 +431,7 @@ DISPLAY / ACCEPT と LINE SEQUENTIAL はホストのテキストとして読み�
 * 方言 `ibm-jp`（`config/ibm-jp.conf`：IBM 方言＋CCSID 1399）を追加した。`cobc -std=ibm-jp` で使える
 * 見つけた既存の不具合: COLLATING SEQUENCE を指定しない SORT / MERGE が、直前の SORT で指定した照合順を引き継いでいた（ネイティブでは ASCII 指定が「表なし」になるため表面化していなかった）
 
-### P3（日本語 DBCS）: 混在データを実装（PIC G / N は未対応）
+### P3（日本語 DBCS）: 完了（混在データ、DBCS 項目、NATIONAL）
 
 GnuCOBOL 3.x では PIC G / DISPLAY-1（DBCS）が未実装（PENDING）、PIC N（NATIONAL）も UTF-16 の仮実装です。PIC G / N の本格対応はコンパイラの型の作業になるため、まず実務でいちばん多い **PIC X 項目の中の日本語（SO / SI で囲まれた混在データ）** に対応しました。
 
@@ -484,6 +484,46 @@ glibc の iconv は、IBM の利用者定義領域 `0x6941`〜`0x7FFE` を Unico
 
 未対応: コンパイル時（ソースの定数）への対応表の適用、Shift_JIS の端末での外字領域（F040〜）への対応付け
 
+#### DBCS と NATIONAL（UTF-16）の区別
+
+IBM Enterprise COBOL にならい、DBCS 項目と NATIONAL（UTF-16）項目を区別します。何も指定しない PIC N の扱いは、IBM のコンパイラ・オプション NSYMBOL にならった `-fnsymbol` で決めます（国内のホスト資産に多い NSYMBOL(DBCS) に合わせ、既定は `dbcs`）。
+
+| 記述 | 混在 CCSID（930 / 939 / 1390 / 1399） | それ以外のデータ文字コード（037） |
+|------|------|------|
+| `PIC G`、`USAGE DISPLAY-1` | DBCS | （エラー / 未対応） |
+| `PIC N ... USAGE NATIONAL`（明示） | UTF-16 | UTF-16 |
+| `PIC N`（USAGE なし） | `-fnsymbol=dbcs`（既定）: DBCS、`-fnsymbol=national`: UTF-16 | UTF-16 |
+| `G'...'` | DBCS | （エラー） |
+| `N'...'` | `-fnsymbol` に従う | UTF-16 |
+| `NC'...'` | UTF-16 | UTF-16 |
+
+実行時には、項目の属性の新しいフラグ `COB_FLAG_DBCS` で DBCS と UTF-16 を区別します。UTF-16 は IBM と同じくビッグエンディアン（CCSID 1200）で、1 文字 2 バイトです。
+
+| 機能 | 内容 |
+|------|------|
+| MOVE | UTF-16 項目との MOVE は実行時に変換する（英数字・DBCS → UTF-16、UTF-16 → DBCS）。空白は `0020`、HIGH-VALUE / LOW-VALUE は `FFFF` / `0000`。英数字の受け側では DBCS 文字の途中で切らず、SI を補う |
+| INITIALIZE | UTF-16 項目は `0020`、DBCS 項目は `4040` で埋める |
+| DISPLAY / ACCEPT | UTF-16 とホストの文字コードの間で iconv により直接変換する |
+| `FUNCTION NATIONAL-OF` | 英数字（混在）・DBCS データを UTF-16 に変換する。第 2 引数で変換元の CCSID を指定できる（例: 1208 = UTF-8、943、1399） |
+| `FUNCTION DISPLAY-OF` | UTF-16 をデータ文字コードに変換する。第 2 引数で変換先の CCSID を指定できる |
+
+確認できた動作（CCSID 1399）:
+
+```
+NC'東京ab'（PIC N(4) NATIONAL） → 6771 4EAC 0061 0062
+MOVE 'ｶﾅ漢字' TO 国語項目（UTF-16）  → FF76 FF85 6F22 5B57 0020 0020
+MOVE UTF-16 の '東京' TO PIC N(3) DISPLAY-1 → 4557 4575 4040
+FUNCTION DISPLAY-OF (UTF-16項目, 1208) → UTF-8 のバイト列 E6 9D B1 E4 BA AC ...
+```
+
+#### MOVE の検査と DBCS の切れ目
+
+* コンパイル時に、IBM の規則に合わせて次をエラーにします。
+  * DBCS 項目に英数字・数字のデータを MOVE する（許されるのは DBCS / NATIONAL のデータ、集団項目、SPACE / HIGH-VALUE / LOW-VALUE、空白だけの定数）
+  * DBCS 項目を英数字などの基本項目に MOVE する（受け側が集団項目、DBCS、NATIONAL なら可）
+* 英数字の定数が受け側より長く、DBCS の途中で切り捨てられる場合は、`-Wtruncate` で「SI が欠ける」旨の警告を出します。
+* 英数字同士の MOVE は、IBM と同じくバイト単位のままです（SI が欠けたり、2 バイト文字の途中で切れたりすることがあります）。そうしたデータも、表示などの変換では異常終了せず、欠けた文字を代替文字（`?`）にして出力します。
+
 ### P4（周辺機能）: REPORT WRITER と XML / JSON を実装
 
 | 項目 | 内容 |
@@ -497,8 +537,8 @@ EBCDIC モード（IBM-037）での失敗件数は、REPORT WRITER が 23 件か
 
 ### 次の作業
 
-* P3 の残り: USAGE NATIONAL（UTF-16）との区別と NATIONAL-OF / DISPLAY-OF、DBCS の途中で切れた場合の扱い、英数字と DBCS 項目の間の MOVE の検査
 * P4 の残り: SCREEN SECTION（screenio.c）、EXTFH / FCD
+* NATIONAL の残り: 比較（UTF-16 と英数字の比較の変換）、STRING / UNSTRING / INSPECT、NATIONAL 編集項目、ネイティブ（`-fdata-codeset` なし）の NATIONAL
 
 ## 11. まとめ
 

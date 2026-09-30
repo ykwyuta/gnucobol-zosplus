@@ -8168,6 +8168,7 @@ usage_screen_report:
 | DISPLAY_1
   {
 	check_and_set_usage (CB_USAGE_NATIONAL);
+	current_field->flag_usage_dbcs = 1;
 	if (!cb_data_charset
 	 || !(cb_data_charset->flags & COB_CS_MIXED)) {
 		CB_PENDING ("DBCS");
@@ -8176,7 +8177,10 @@ usage_screen_report:
 | NATIONAL
   {
 	check_and_set_usage (CB_USAGE_NATIONAL);
-	CB_UNFINISHED ("USAGE NATIONAL");
+	current_field->flag_usage_national = 1;
+	if (!cb_data_charset) {
+		CB_UNFINISHED ("USAGE NATIONAL");
+	}
   }
 | UTF_8
   {
@@ -8440,6 +8444,7 @@ usage:
 | DISPLAY_1
   {
 	check_and_set_usage (CB_USAGE_NATIONAL);
+	current_field->flag_usage_dbcs = 1;
 	if (!cb_data_charset
 	 || !(cb_data_charset->flags & COB_CS_MIXED)) {
 		CB_PENDING ("DBCS");
@@ -8448,7 +8453,10 @@ usage:
 | NATIONAL
   {
 	check_and_set_usage (CB_USAGE_NATIONAL);
-	CB_UNFINISHED ("USAGE NATIONAL");
+	current_field->flag_usage_national = 1;
+	if (!cb_data_charset) {
+		CB_UNFINISHED ("USAGE NATIONAL");
+	}
   }
 | UTF_8
   {

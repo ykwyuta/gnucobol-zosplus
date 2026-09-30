@@ -742,6 +742,9 @@ typedef __mpz_struct mpz_t[1];
 #define COB_FLAG_REAL_SIGN		(1U << 10)	/* 0x0400 */
 #define COB_FLAG_BINARY_TRUNC		(1U << 11)	/* 0x0800 */
 #define COB_FLAG_CONSTANT		(1U << 12)	/* 0x1000 */
+#define COB_FLAG_DBCS			(1U << 13)	/* 0x2000: national item / literal
+							   is DBCS (data charset with DBCS),
+							   otherwise UTF-16 */
 
 #define COB_FIELD_HAVE_SIGN(f)		((f)->attr->flags & COB_FLAG_HAVE_SIGN)
 #define COB_FIELD_SIGN_SEPARATE(f)	((f)->attr->flags & COB_FLAG_SIGN_SEPARATE)
@@ -756,6 +759,7 @@ typedef __mpz_struct mpz_t[1];
 #define COB_FIELD_REAL_SIGN(f)		((f)->attr->flags & COB_FLAG_REAL_SIGN)
 #define COB_FIELD_BINARY_TRUNC(f)	((f)->attr->flags & COB_FLAG_BINARY_TRUNC)
 #define COB_FIELD_CONSTANT(f)		((f)->attr->flags & COB_FLAG_CONSTANT)
+#define COB_FIELD_DBCS(f)		((f)->attr->flags & COB_FLAG_DBCS)
 
 #define	COB_FLAG_LEADSEP		\
 	(COB_FLAG_SIGN_SEPARATE | COB_FLAG_SIGN_LEADING)
@@ -780,6 +784,7 @@ typedef __mpz_struct mpz_t[1];
 #define COB_FIELD_IS_ALNUM(f)	(COB_FIELD_TYPE (f) == COB_TYPE_ALPHANUMERIC)
 #define COB_FIELD_IS_ANY_ALNUM(f)	(COB_FIELD_TYPE (f) & COB_TYPE_ALNUM)
 #define COB_FIELD_IS_NATIONAL(f)	(COB_FIELD_TYPE (f) & COB_TYPE_NATIONAL)
+#define COB_FIELD_IS_DBCS(f)	(COB_FIELD_IS_NATIONAL (f) && COB_FIELD_DBCS (f))
 
 
 #define	COB_DISPLAY_SIGN_ASCII	0
