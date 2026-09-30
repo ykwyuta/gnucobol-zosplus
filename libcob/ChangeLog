@@ -1,5 +1,7 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* charset.c: user-defined DBCS characters ("Gaiji") can be mapped
+	  with a table given by COB_DBCS_USER_TABLE (for UTF-8 hosts)
 	* charset.c (cob_charset_mixed_to_dbcs), termio.c: DISPLAY / ACCEPT of
 	  DBCS items (PIC G / N) add / remove SO/SI for the conversion
 	* charset.c (cob_charset_text_to_host, cob_charset_text_from_host,

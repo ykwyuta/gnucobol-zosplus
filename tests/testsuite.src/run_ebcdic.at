@@ -554,3 +554,40 @@ AT_CHECK([$COMPILE_ONLY -fdata-codeset=IBM-1399 prog2.cob], [1], [],
 ])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: user-defined DBCS characters])
+AT_KEYWORDS([ebcdic data-codeset dbcs gaiji])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-GAIJI     PIC X(8) VALUE X'0E694169420F'.
+       01  WK-IN        PIC X(8).
+       PROCEDURE        DIVISION.
+           DISPLAY '<' WK-GAIJI '>'
+           ACCEPT WK-IN
+           DISPLAY FUNCTION HEX-OF (WK-IN)
+           STOP RUN.
+])
+
+AT_DATA([user.tbl], [# user-defined characters
+6941 U+9AD9
+6942 FA11
+zzzz
+])
+
+AT_DATA([input.txt], [髙﨑
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_DBCS_USER_TABLE=user.tbl COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog < input.txt], [0],
+[<髙﨑  >
+0E694169420F4040
+],
+[libcob: prog.cob:9: warning: invalid entry in COB_DBCS_USER_TABLE 'user.tbl', line 4
+])
+
+AT_CLEANUP

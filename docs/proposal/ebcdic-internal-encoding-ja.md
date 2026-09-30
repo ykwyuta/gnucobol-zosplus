@@ -470,9 +470,23 @@ PIC N(3) DISPLAY-1 N'日本' → 4562 4566 4040
 01 REC: X(2) 'AB' + G(2) G'東京' → C1 C2 4557 4575
 ```
 
+#### 外字（利用者定義文字）
+
+glibc の iconv は、IBM の利用者定義領域 `0x6941`〜`0x7FFE` を Unicode の私用領域 `U+E000`〜`U+F111` に規則的に対応付けます（`U+E000 + (上位バイト - 0x69) * 190 + (下位バイト - 0x41)`）。そのため外字は、何もしなくても UTF-8 の私用領域の文字として往復で失われません。
+
+実際の文字に対応付けたい場合は、環境変数 `COB_DBCS_USER_TABLE` で対応表を指定します（UTF-8 の端末のとき、DISPLAY / ACCEPT / LINE SEQUENTIAL などの両方向に適用）。
+
+```
+# 外字の対応表: EBCDIC の DBCS コード（16 進） Unicode
+6941 U+9AD9     # 髙
+6942 FA11       # 﨑
+```
+
+未対応: コンパイル時（ソースの定数）への対応表の適用、Shift_JIS の端末での外字領域（F040〜）への対応付け
+
 ### 次の作業
 
-* P3 の残り: USAGE NATIONAL（UTF-16）との区別と NATIONAL-OF / DISPLAY-OF、外字の対応表、DBCS の途中で切れた場合の扱い、英数字と DBCS 項目の間の MOVE の検査
+* P3 の残り: USAGE NATIONAL（UTF-16）との区別と NATIONAL-OF / DISPLAY-OF、DBCS の途中で切れた場合の扱い、英数字と DBCS 項目の間の MOVE の検査
 * P4: SCREEN SECTION、XML / JSON、REPORT WRITER、EXTFH
 
 ## 11. まとめ

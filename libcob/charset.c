@@ -381,6 +381,190 @@ convert_iconv (iconv_t cd, const unsigned char *src, const size_t len,
 }
 #endif
 
+/* User-defined DBCS characters ("Gaiji"):
+   iconv maps the IBM user-defined area 0x6941 - 0x7FFE to the Unicode
+   private use area U+E000 - U+F111; a table given with the environment
+   variable COB_DBCS_USER_TABLE maps these to other Unicode characters
+   (for UTF-8 hosts), lines have the format
+     <EBCDIC DBCS code in hex> <Unicode code point, optionally U+>
+   for example "6941 U+9AD9" */
+
+#define USER_PUA_FIRST	0xE000U
+#define USER_ROW_SIZE	190U	/* trail bytes 0x41 - 0xFE */
+#define USER_COUNT	(23U * USER_ROW_SIZE)	/* lead bytes 0x69 - 0x7F */
+
+static int		user_table_checked = 0;
+static unsigned int	*user_to_ucs = NULL;	/* index: PUA code - USER_PUA_FIRST */
+
+static void
+load_user_table (void)
+{
+	const char	*name;
+	FILE	*fp;
+	char	line[COB_MINI_BUFF];
+	int	line_no = 0;
+
+	user_table_checked = 1;
+	name = getenv ("COB_DBCS_USER_TABLE");
+	if (!name || !*name) {
+		return;
+	}
+	fp = fopen (name, "r");
+	if (!fp) {
+		cob_runtime_warning (_("cannot open %s '%s'"), "COB_DBCS_USER_TABLE", name);
+		return;
+	}
+	user_to_ucs = cob_malloc (USER_COUNT * sizeof (unsigned int));
+	while (fgets (line, (int)sizeof (line), fp)) {
+		char		*p = line, *e;
+		unsigned long	code, ucs;
+		line_no++;
+		while (*p == ' ' || *p == '\t') p++;
+		if (*p == '#' || *p == '\n' || *p == '\r' || *p == 0) {
+			continue;
+		}
+		code = strtoul (p, &e, 16);
+		p = e;
+		while (*p == ' ' || *p == '\t') p++;
+		if (*p == 'U' || *p == 'u') {
+			p++;
+			if (*p == '+') p++;
+		}
+		ucs = strtoul (p, &e, 16);
+		if (e == p
+		 || (code >> 8) < 0x69 || (code >> 8) > 0x7F
+		 || (code & 0xFF) < 0x41 || (code & 0xFF) > 0xFE
+		 || ucs == 0 || ucs > 0x10FFFF) {
+			cob_runtime_warning (_("invalid entry in %s '%s', line %d"),
+				"COB_DBCS_USER_TABLE", name, line_no);
+			continue;
+		}
+		user_to_ucs[((code >> 8) - 0x69) * USER_ROW_SIZE + (code & 0xFF) - 0x41]
+			= (unsigned int)ucs;
+	}
+	fclose (fp);
+}
+
+/* check if the user table is to be applied (DBCS charset, UTF-8 host) */
+static int
+use_user_table (const cob_charset *cs)
+{
+	const char	*host;
+	if (!(cs->flags & COB_CS_MIXED)) {
+		return 0;
+	}
+	if (!user_table_checked) {
+		load_user_table ();
+	}
+	if (!user_to_ucs) {
+		return 0;
+	}
+	host = cob_get_host_codeset ();
+	return host && (!strcasecmp (host, "UTF-8") || !strcasecmp (host, "UTF8"));
+}
+
+/* decode one UTF-8 character, returns its length (1 for invalid data) */
+static size_t
+utf8_decode (const unsigned char *p, const unsigned char *end, unsigned int *ucs)
+{
+	size_t	len, i;
+	if (*p < 0x80) {
+		*ucs = *p;
+		return 1;
+	} else if ((*p & 0xE0) == 0xC0) {
+		len = 2;
+		*ucs = *p & 0x1F;
+	} else if ((*p & 0xF0) == 0xE0) {
+		len = 3;
+		*ucs = *p & 0x0F;
+	} else if ((*p & 0xF8) == 0xF0) {
+		len = 4;
+		*ucs = *p & 0x07;
+	} else {
+		*ucs = *p;
+		return 1;
+	}
+	if (p + len > end) {
+		*ucs = *p;
+		return 1;
+	}
+	for (i = 1; i < len; i++) {
+		if ((p[i] & 0xC0) != 0x80) {
+			*ucs = *p;
+			return 1;
+		}
+		*ucs = (*ucs << 6) | (p[i] & 0x3F);
+	}
+	return len;
+}
+
+static size_t
+utf8_encode (unsigned int ucs, unsigned char *out)
+{
+	if (ucs < 0x80) {
+		out[0] = (unsigned char)ucs;
+		return 1;
+	} else if (ucs < 0x800) {
+		out[0] = (unsigned char)(0xC0 | (ucs >> 6));
+		out[1] = (unsigned char)(0x80 | (ucs & 0x3F));
+		return 2;
+	} else if (ucs < 0x10000) {
+		out[0] = (unsigned char)(0xE0 | (ucs >> 12));
+		out[1] = (unsigned char)(0x80 | ((ucs >> 6) & 0x3F));
+		out[2] = (unsigned char)(0x80 | (ucs & 0x3F));
+		return 3;
+	}
+	out[0] = (unsigned char)(0xF0 | (ucs >> 18));
+	out[1] = (unsigned char)(0x80 | ((ucs >> 12) & 0x3F));
+	out[2] = (unsigned char)(0x80 | ((ucs >> 6) & 0x3F));
+	out[3] = (unsigned char)(0x80 | (ucs & 0x3F));
+	return 4;
+}
+
+/* replace characters in UTF-8 text using the user table:
+   'to_host' set: private use area -> user character, otherwise reverse;
+   returns an allocated buffer and its size */
+static unsigned char *
+apply_user_table (const unsigned char *src, const size_t size,
+	const int to_host, size_t *outsize)
+{
+	/* a 3 byte PUA character may become 4 bytes */
+	unsigned char	*out = cob_fast_malloc (size * 2 + 1);
+	const unsigned char	*p = src, *end = src + size;
+	size_t		o = 0;
+
+	while (p < end) {
+		unsigned int	ucs;
+		const size_t	len = utf8_decode (p, end, &ucs);
+		unsigned int	mapped = 0;
+		if (len > 1) {
+			if (to_host) {
+				if (ucs >= USER_PUA_FIRST && ucs < USER_PUA_FIRST + USER_COUNT) {
+					mapped = user_to_ucs[ucs - USER_PUA_FIRST];
+				}
+			} else {
+				unsigned int	i;
+				for (i = 0; i < USER_COUNT; i++) {
+					if (user_to_ucs[i] == ucs) {
+						mapped = USER_PUA_FIRST + i;
+						break;
+					}
+				}
+			}
+		}
+		if (mapped) {
+			o += utf8_encode (mapped, out + o);
+		} else {
+			memcpy (out + o, p, len);
+			o += len;
+		}
+		p += len;
+	}
+	out[o] = 0;
+	*outsize = o;
+	return out;
+}
+
 /* convert text from data to host charset;
    returns an allocated buffer (to be freed with cob_free) with a
    terminating NUL and its size (without that) in 'outsize' */
@@ -399,6 +583,11 @@ cob_charset_text_to_host (const cob_charset *cs, const unsigned char *src,
 		*outsize = convert_iconv (ic->to_host, src, size, out, max,
 			(unsigned char)'?');
 		out[*outsize] = 0;
+		if (use_user_table (cs)) {
+			unsigned char	*mapped = apply_user_table (out, *outsize, 1, outsize);
+			cob_free (out);
+			out = mapped;
+		}
 		return out;
 	}
 #endif
@@ -423,10 +612,19 @@ cob_charset_text_from_host (const cob_charset *cs, const unsigned char *src,
 	if (ic) {
 		/* a DBCS character needs up to 4 bytes (SO + 2 + SI) */
 		const size_t	max = size * 2 + 16;
+		unsigned char	*mapped = NULL;
+		size_t		in_size = size;
+		if (use_user_table (cs)) {
+			mapped = apply_user_table (src, size, 0, &in_size);
+			src = mapped;
+		}
 		out = cob_fast_malloc (max + 1);
-		*outsize = convert_iconv (ic->from_host, src, size, out, max,
+		*outsize = convert_iconv (ic->from_host, src, in_size, out, max,
 			COB_CS_FROM_HOST (cs, '?'));
 		out[*outsize] = 0;
+		if (mapped) {
+			cob_free (mapped);
+		}
 		return out;
 	}
 #endif
@@ -503,6 +701,11 @@ cob_exit_charset (void)
 		cob_free (host_codeset);
 		host_codeset = NULL;
 	}
+	if (user_to_ucs) {
+		cob_free (user_to_ucs);
+		user_to_ucs = NULL;
+	}
+	user_table_checked = 0;
 	host_codeset_checked = 0;
 	host_codeset_explicit = 0;
 }
