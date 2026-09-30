@@ -1,5 +1,7 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* testsuite.src/run_manual_screen.at: test for DBCS input with ACCEPT
+	  field AT
 	* testsuite.src/run_manual_screen.at: test for DBCS input in SCREEN
 	  SECTION
 	* testsuite.src/run_manual_screen.at: test for SCREEN SECTION with DBCS

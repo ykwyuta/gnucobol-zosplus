@@ -1,5 +1,9 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* screenio.c (screen_dbcs_term_begin, screen_dbcs_term_end,
+	  screen_dbcs_encode): DBCS input for ACCEPT field [AT], DBCS
+	  characters are only accepted if the data with SO/SI still fits into
+	  the item (like on a 3270 terminal)
 	* screenio.c (screen_dbcs_key, screen_dbcs_append,
 	  screen_dbcs_write_back): input of DBCS (and other non-ASCII)
 	  characters in SCREEN SECTION ACCEPT for data charsets with DBCS,
