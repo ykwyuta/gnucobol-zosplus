@@ -3138,7 +3138,15 @@ unbounded_again:
 				break;
 			}
 #endif
-			f->size = f->pic->size * COB_NATIONAL_SIZE;
+			/* note: PIC N (and G) already count 2 bytes per character,
+			   for DBCS data charsets use that size
+			   (FIXME: this should be done in general) */
+			if (cb_data_charset && (cb_data_charset->flags & COB_CS_MIXED)
+			 && f->pic->category == CB_CATEGORY_NATIONAL) {
+				f->size = f->pic->size;
+			} else {
+				f->size = f->pic->size * COB_NATIONAL_SIZE;
+			}
 			break;
 		case CB_USAGE_PACKED:
 #if 0	/* should be always available here */

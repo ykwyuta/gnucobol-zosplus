@@ -1,5 +1,7 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* charset.c (cob_charset_mixed_to_dbcs), termio.c: DISPLAY / ACCEPT of
+	  DBCS items (PIC G / N) add / remove SO/SI for the conversion
 	* charset.c (cob_charset_text_to_host, cob_charset_text_from_host,
 	  cob_get_host_codeset, cob_exit_charset), common.h: text conversion
 	  with iconv for DISPLAY, ACCEPT, LINE SEQUENTIAL files, environment and

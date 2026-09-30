@@ -450,9 +450,29 @@ ACCEPT '日本ｶﾅx'     → 0E 4562 4566 0F 66 8C A7
 DISPLAY / LINE SEQUENTIAL はホストの文字コードの日本語として出力される
 ```
 
+#### DBCS 項目（PIC G / PIC N）
+
+混在 CCSID（930 / 939 / 1390 / 1399）を指定したときは、IBM の DBCS 項目として次のように扱います（ネイティブでは従来どおり PIC G は不正、PIC N は NATIONAL の仮実装）。
+
+| 項目 | 内容 |
+|------|------|
+| PICTURE | `PIC G(n)` を受け付ける（内部では PIC N と同じ）。`PIC N(n)` と `USAGE DISPLAY-1` は、1 文字 2 バイトで SO / SI を含まない DBCS 項目になる |
+| 定数 | `G'漢字'` / `N'日本'` はソースの文字コードから変換し、SO / SI を外した DBCS データになる。1 バイト文字を含む場合はエラー（空白は DBCS の空白 `4040` にする） |
+| 初期値・MOVE | 空白埋めは EBCDIC の空白 `40` を 2 つ並べるため、そのまま DBCS の空白 `4040` になる |
+| DISPLAY / ACCEPT | SO / SI を補って iconv で変換する。ACCEPT では SO / SI を外し、1 バイト文字は捨てる（空白は DBCS の空白） |
+| 既存の不具合 | `PIC N ... USAGE NATIONAL / DISPLAY-1` の長さが 2 重に 2 倍されていた（NATIONAL の仮実装）。DBCS の文字コードのときだけ直した |
+
+確認できた動作（CCSID 1399）:
+
+```
+PIC G(4) VALUE G'漢字'   → 4F58 48F2 4040 4040
+PIC N(3) DISPLAY-1 N'日本' → 4562 4566 4040
+01 REC: X(2) 'AB' + G(2) G'東京' → C1 C2 4557 4575
+```
+
 ### 次の作業
 
-* P3 の残り: PIC G / PIC N（USAGE DISPLAY-1、SO / SI なしの DBCS）、G"..." / N"..." 定数、NATIONAL-OF / DISPLAY-OF、外字の対応表、DBCS の途中で切れた場合の扱い
+* P3 の残り: USAGE NATIONAL（UTF-16）との区別と NATIONAL-OF / DISPLAY-OF、外字の対応表、DBCS の途中で切れた場合の扱い、英数字と DBCS 項目の間の MOVE の検査
 * P4: SCREEN SECTION、XML / JSON、REPORT WRITER、EXTFH
 
 ## 11. まとめ

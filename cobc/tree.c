@@ -2824,6 +2824,81 @@ cb_build_national_literal (const void *data, const size_t size)
 	return l;
 }
 
+/* build a DBCS literal (N"..." / G"..." for a data charset with DBCS):
+   the source text is converted to the data charset and the SO/SI
+   are removed; single-byte spaces are converted to DBCS spaces, other
+   single-byte characters are invalid */
+cb_tree
+cb_build_dbcs_literal (const void *data, const size_t size)
+{
+	cb_tree			l;
+	unsigned char	*dbcs = cobc_parse_malloc (size * 2 + 16);
+	size_t		dbcs_size = 0;
+	int		error = 0;
+#ifdef	HAVE_ICONV
+	iconv_t		cd = iconv_open (cb_data_charset->iconv_name, cb_source_codeset);
+	if (cd == (iconv_t)-1) {
+		cb_error (_("cannot convert from '%s' to '%s'"),
+			cb_source_codeset, cb_data_charset->iconv_name);
+		error = 1;
+	} else {
+		ICONV_CONST char	*in = (ICONV_CONST char *)data;
+		size_t		inleft = size;
+		const size_t	max = size * 2 + 16;
+		unsigned char	*mixed = cobc_malloc (max);
+		char		*o = (char *)mixed;
+		size_t		oleft = max;
+		if (iconv (cd, &in, &inleft, &o, &oleft) == (size_t)-1
+		 || iconv (cd, NULL, NULL, &o, &oleft) == (size_t)-1) {
+			error = 1;
+		} else {
+			/* strip SO/SI, convert SBCS space */
+			const unsigned char	*p = mixed;
+			const unsigned char	*end = (unsigned char *)o;
+			int		in_dbcs = 0;
+			for (; p < end; p++) {
+				if (*p == cb_data_charset->so) {
+					in_dbcs = 1;
+				} else if (*p == cb_data_charset->si) {
+					in_dbcs = 0;
+				} else if (in_dbcs) {
+					dbcs[dbcs_size++] = *p;
+				} else if (*p == cb_data_charset->space) {
+					dbcs[dbcs_size++] = cb_data_charset->dbcs_space[0];
+					dbcs[dbcs_size++] = cb_data_charset->dbcs_space[1];
+				} else {
+					error = 2;
+					break;
+				}
+			}
+		}
+		cobc_free (mixed);
+		iconv_close (cd);
+	}
+#else
+	error = 1;
+#endif
+	if (error) {
+		char		lit_out[CB_ERR_LITMAX + 1] = { 0 };
+		literal_for_diagnostic (lit_out, data);
+		if (error == 2) {
+			cb_error (_("DBCS literal '%s' contains single-byte characters"),
+				lit_out);
+		} else {
+			cb_error (_("literal '%s' cannot be converted to data codeset %s"),
+				lit_out, cb_data_charset->name);
+		}
+		/* go on with DBCS spaces */
+		dbcs[0] = cb_data_charset->dbcs_space[0];
+		dbcs[1] = cb_data_charset->dbcs_space[1];
+		dbcs_size = 2;
+	}
+	dbcs[dbcs_size] = 0;
+	l = cb_build_national_literal (dbcs, dbcs_size);
+	CB_LITERAL (l)->raw = 1;
+	return l;
+}
+
 cb_tree
 cb_concat_literals (const cb_tree x1, const cb_tree x2)
 {
@@ -3602,6 +3677,13 @@ repeat:
 			}
 		}
 
+		/* PIC G: DBCS (IBM), handled as PIC N, only for data in a
+		   charset with DBCS (-fdata-codeset=IBM-930 ...) */
+		if (c == 'G' && cb_data_charset
+		 && (cb_data_charset->flags & COB_CS_MIXED)) {
+			c = 'N';
+		}
+
 		/* Check grammar and category */
 		switch (c) {
 		case '9':
@@ -3637,7 +3719,11 @@ repeat:
 		case 'N':
 			if (!(category & PIC_NATIONAL)) {
 				category |= PIC_NATIONAL;
-				CB_UNFINISHED ("USAGE NATIONAL");
+				/* for a DBCS data charset PIC N is DBCS */
+				if (!cb_data_charset
+				 || !(cb_data_charset->flags & COB_CS_MIXED)) {
+					CB_UNFINISHED ("USAGE NATIONAL");
+				}
 			}
 			x_digits += n * 2;
 			break;

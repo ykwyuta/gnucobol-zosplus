@@ -1,5 +1,11 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* tree.c (cb_build_picture), parser.y, field.c: for a data charset
+	  with DBCS, PIC G is accepted (as PIC N), PIC N and USAGE DISPLAY-1
+	  are DBCS items (2 bytes per character, without SO/SI) and their
+	  size is no more doubled for USAGE NATIONAL
+	* scanner.l, tree.c (cb_build_dbcs_literal): G"..." literals and, for
+	  a data charset with DBCS, N"..." literals are converted to DBCS
 	* flag.def, cobc.c, cobc.h: new option -fsource-codeset (default UTF-8)
 	* tree.c (cb_convert_literal_to_data), scanner.l: alphanumeric literals
 	  with non-ASCII characters are converted with iconv from the source

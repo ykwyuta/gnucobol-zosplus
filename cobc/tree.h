@@ -2104,6 +2104,8 @@ extern cb_tree			cb_build_alphanumeric_literal (const void *,
 							       const size_t);
 extern cb_tree			cb_build_national_literal (const void *,
 							       const size_t);
+extern cb_tree			cb_build_dbcs_literal (const void *,
+						   const size_t);
 extern cb_tree			cb_build_numsize_literal (const void *,
 							  const size_t,
 							  const int);

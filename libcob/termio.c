@@ -224,7 +224,18 @@ display_alnum (const cob_field *f, FILE *fp)
 	if (to_host && cob_charset_text_is_variable (cs)) {
 		/* text conversion via iconv (for example for DBCS) */
 		size_t	size;
-		unsigned char	*host = cob_charset_text_to_host (cs, f->data, f->size, &size);
+		unsigned char	*host;
+		if (COB_FIELD_IS_NATIONAL (f) && (cs->flags & COB_CS_MIXED)) {
+			/* DBCS item (PIC G / N): add SO / SI for the conversion */
+			unsigned char	*mixed = cob_fast_malloc (f->size + 2);
+			mixed[0] = cs->so;
+			memcpy (mixed + 1, f->data, f->size);
+			mixed[f->size + 1] = cs->si;
+			host = cob_charset_text_to_host (cs, mixed, f->size + 2, &size);
+			cob_free (mixed);
+		} else {
+			host = cob_charset_text_to_host (cs, f->data, f->size, &size);
+		}
 		fwrite (host, 1, size, fp);
 		cob_free (host);
 		return;
@@ -1133,6 +1144,13 @@ cob_accept (cob_field *f)
 		/* text conversion via iconv (for example for DBCS) */
 		size_t	data_size;
 		unsigned char	*data = cob_charset_text_from_host (COB_CS, p, size, &data_size);
+		if (COB_FIELD_IS_NATIONAL (f) && (COB_CS->flags & COB_CS_MIXED)) {
+			/* DBCS item (PIC G / N): remove SO / SI */
+			unsigned char	*dbcs = cob_charset_mixed_to_dbcs (COB_CS,
+					data, data_size, &data_size);
+			cob_free (data);
+			data = dbcs;
+		}
 		temp.data = data;
 		temp.size = data_size;
 		if (COB_FIELD_TYPE(f) == COB_TYPE_NUMERIC_DISPLAY) {

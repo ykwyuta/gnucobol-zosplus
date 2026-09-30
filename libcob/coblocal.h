@@ -528,6 +528,8 @@ COB_HIDDEN unsigned char	*cob_charset_text_to_host	(const cob_charset *,
 COB_HIDDEN unsigned char	*cob_charset_text_from_host	(const cob_charset *,
 					const unsigned char *, const size_t, size_t *);
 COB_HIDDEN int		cob_charset_text_is_variable	(const cob_charset *);
+COB_HIDDEN unsigned char	*cob_charset_mixed_to_dbcs	(const cob_charset *,
+					const unsigned char *, const size_t, size_t *);
 COB_HIDDEN void		cob_exit_charset	(void);
 COB_HIDDEN void		cob_init_cconv		(cob_global *);
 COB_HIDDEN void		cob_init_termio		(cob_global *, cob_settings *);

@@ -8168,7 +8168,10 @@ usage_screen_report:
 | DISPLAY_1
   {
 	check_and_set_usage (CB_USAGE_NATIONAL);
-	CB_PENDING ("DBCS");
+	if (!cb_data_charset
+	 || !(cb_data_charset->flags & COB_CS_MIXED)) {
+		CB_PENDING ("DBCS");
+	}
   }
 | NATIONAL
   {
@@ -8437,7 +8440,10 @@ usage:
 | DISPLAY_1
   {
 	check_and_set_usage (CB_USAGE_NATIONAL);
-	CB_PENDING ("DBCS");
+	if (!cb_data_charset
+	 || !(cb_data_charset->flags & COB_CS_MIXED)) {
+		CB_PENDING ("DBCS");
+	}
   }
 | NATIONAL
   {

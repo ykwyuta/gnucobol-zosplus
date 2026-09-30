@@ -143,7 +143,8 @@ enum cb_literal_type {
 	CB_LITERAL_DEFAULT,
 	CB_LITERAL_U,  /* UTF-8, work-in-progress */
 	CB_LITERAL_N,
-	CB_LITERAL_NC
+	CB_LITERAL_NC,
+	CB_LITERAL_G
 };
 
 enum cb_sym_ebcdic_state {
@@ -413,6 +414,12 @@ N[''""] {
 	/* N national string (UTF16) literal */
 	/* TODO: national string - needs different handling */
 	read_literal (yytext [1], CB_LITERAL_N);
+	RETURN_TOK (LITERAL);
+}
+
+G[''""] {
+	/* G DBCS literal (IBM), for DBCS data charsets */
+	read_literal (yytext [1], CB_LITERAL_G);
 	RETURN_TOK (LITERAL);
 }
 
@@ -1408,8 +1415,9 @@ scan_ebcdic_char (int c)
 }
 
 static void
-read_literal (const char mark, const enum cb_literal_type type)
+read_literal (const char mark, const enum cb_literal_type literal_type)
 {
+	enum cb_literal_type	type = literal_type;
 	size_t		i;
 	int			c;
 	int			literal_error = 0;
@@ -1521,7 +1529,7 @@ read_literal (const char mark, const enum cb_literal_type type)
 	if (!i) {
 		cb_verify (cb_zero_length_lit, _("zero-length literal"));
 		cb_warning (COBC_WARN_FILLER,
- 			    ( type == CB_LITERAL_N || type == CB_LITERAL_NC ) ?
+ 			    ( type == CB_LITERAL_N || type == CB_LITERAL_NC || type == CB_LITERAL_G ) ?
 			    _("national literal has zero length; a SPACE will be assumed") :
 			    _("alphanumeric literal has zero length; a SPACE will be assumed")
 			);
@@ -1533,6 +1541,17 @@ read_literal (const char mark, const enum cb_literal_type type)
 
 	/* build literal with given size */
 	plex_buff[i] = 0;
+	if (type == CB_LITERAL_G
+	 && (!cb_data_charset || !(cb_data_charset->flags & COB_CS_MIXED))) {
+		cb_error (_("%s literal requires a data codeset with DBCS"), "G");
+		type = CB_LITERAL_N;
+	}
+	if ((type == CB_LITERAL_N || type == CB_LITERAL_NC || type == CB_LITERAL_G)
+	 && cb_data_charset && (cb_data_charset->flags & COB_CS_MIXED)) {
+		/* DBCS literal: convert to the data charset without SO/SI */
+		yylval = cb_build_dbcs_literal (plex_buff, i);
+		return;
+	}
 	if ( type != CB_LITERAL_N && type != CB_LITERAL_NC ) {
 		yylval = cb_build_alphanumeric_literal (plex_buff, i);
 		if (type == CB_LITERAL_U) {

@@ -493,3 +493,64 @@ AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 -fsource-codeset=ASCII prog.cob], [1]
 ])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: DBCS items PIC G / PIC N])
+AT_KEYWORDS([ebcdic data-codeset dbcs national])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-G         PIC G(4) VALUE G'漢字'.
+       01  WK-N         PIC N(3) USAGE DISPLAY-1 VALUE N'日本'.
+       01  WK-S         PIC G(2) VALUE SPACES.
+       01  WK-IN        PIC G(3).
+       01  WK-REC.
+           05 WK-A      PIC X(2) VALUE 'AB'.
+           05 WK-B      PIC G(2) VALUE G'東京'.
+       PROCEDURE        DIVISION.
+           DISPLAY '<' WK-G '> ' FUNCTION HEX-OF (WK-G)
+           DISPLAY '<' WK-N '> ' FUNCTION HEX-OF (WK-N)
+           DISPLAY FUNCTION HEX-OF (WK-S) ' ' FUNCTION LENGTH (WK-G)
+           MOVE WK-N TO WK-G
+           DISPLAY '<' WK-G '> ' FUNCTION HEX-OF (WK-G)
+           IF WK-G = N'日本'
+              DISPLAY 'EQUAL'
+           END-IF
+           DISPLAY FUNCTION HEX-OF (WK-REC)
+           ACCEPT WK-IN
+           DISPLAY '<' WK-IN '> ' FUNCTION HEX-OF (WK-IN)
+           STOP RUN.
+])
+
+AT_DATA([input.txt], [大阪 x
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog < input.txt], [0],
+[<漢字　　> 4F5848F240404040
+<日本　> 456245664040
+40404040 4
+<日本　　> 4562456640404040
+EQUAL
+C1C245574575
+<大阪　> 455B45914040
+], [])
+
+AT_DATA([prog2.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog2.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-G         PIC G(2) VALUE G'漢a'.
+       PROCEDURE        DIVISION.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE_ONLY -fdata-codeset=IBM-1399 prog2.cob], [1], [],
+[prog2.cob:6: error: DBCS literal '漢a' contains single-byte characters
+])
+
+AT_CLEANUP

@@ -438,6 +438,35 @@ cob_charset_text_from_host (const cob_charset *cs, const unsigned char *src,
 	return out;
 }
 
+/* convert mixed SBCS / DBCS data (with SO/SI) to pure DBCS data:
+   SO and SI are removed, single byte spaces are changed to DBCS spaces,
+   other single byte characters are dropped;
+   returns an allocated buffer (to be freed with cob_free) and its size */
+unsigned char *
+cob_charset_mixed_to_dbcs (const cob_charset *cs, const unsigned char *src,
+	const size_t size, size_t *outsize)
+{
+	unsigned char	*out = cob_fast_malloc (size * 2 + 1);
+	size_t		i, o = 0;
+	int		in_dbcs = 0;
+
+	for (i = 0; i < size; i++) {
+		if (src[i] == cs->so) {
+			in_dbcs = 1;
+		} else if (src[i] == cs->si) {
+			in_dbcs = 0;
+		} else if (in_dbcs) {
+			out[o++] = src[i];
+		} else if (src[i] == cs->space) {
+			out[o++] = cs->dbcs_space[0];
+			out[o++] = cs->dbcs_space[1];
+		}
+	}
+	out[o] = 0;
+	*outsize = o;
+	return out;
+}
+
 /* check if text conversion changes the size (uses iconv) */
 int
 cob_charset_text_is_variable (const cob_charset *cs)
