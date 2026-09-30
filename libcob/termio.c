@@ -217,9 +217,18 @@ display_alnum (const cob_field *f, FILE *fp)
 {
 	const unsigned char *end = f->data + f->size;
 	unsigned char *p = f->data;
-	const unsigned char	*to_host = COB_CS->to_host;
+	const cob_charset	*cs = COB_CS;
+	const unsigned char	*to_host = cs->to_host;
 
 	/* the data is converted to the host charset */
+	if (to_host && cob_charset_text_is_variable (cs)) {
+		/* text conversion via iconv (for example for DBCS) */
+		size_t	size;
+		unsigned char	*host = cob_charset_text_to_host (cs, f->data, f->size, &size);
+		fwrite (host, 1, size, fp);
+		cob_free (host);
+		return;
+	}
 	while (p != end) {
 		const int chr = to_host ? to_host[*p++] : *p++;
 		if (putc (chr, fp) != chr) {
@@ -1120,6 +1129,21 @@ cob_accept (cob_field *f)
 		p[size++] = (char) ipchr;
 	}
 	/* the input is in host charset */
+	if (COB_CS->from_host && cob_charset_text_is_variable (COB_CS)) {
+		/* text conversion via iconv (for example for DBCS) */
+		size_t	data_size;
+		unsigned char	*data = cob_charset_text_from_host (COB_CS, p, size, &data_size);
+		temp.data = data;
+		temp.size = data_size;
+		if (COB_FIELD_TYPE(f) == COB_TYPE_NUMERIC_DISPLAY) {
+			if (temp.size > f->size) {
+				temp.size = f->size;
+			}
+		}
+		cob_move (&temp, f);
+		cob_free (data);
+		return;
+	}
 	cob_charset_from_host (COB_CS, p, size);
 	temp.size = size;
 	if (COB_FIELD_TYPE(f) == COB_TYPE_NUMERIC_DISPLAY) {

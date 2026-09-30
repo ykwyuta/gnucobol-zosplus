@@ -1537,6 +1537,9 @@ read_literal (const char mark, const enum cb_literal_type type)
 		yylval = cb_build_alphanumeric_literal (plex_buff, i);
 		if (type == CB_LITERAL_U) {
 			CB_UNFINISHED (_("UTF-8 literal"));
+		} else if (cb_data_charset) {
+			/* non-ASCII (for example Japanese) literals for EBCDIC data */
+			cb_convert_literal_to_data (yylval);
 		}
 	} else {
 		/* poor-man's conversion iso-8859 -> utf-16 */

@@ -1309,6 +1309,10 @@ typedef struct __cob_charset {
 	const unsigned char	*to_lower;
 	const unsigned char	*to_host;	/* NULL: identical to host */
 	const unsigned char	*from_host;	/* NULL: identical to host */
+
+	/* name for iconv, used for text conversion (including DBCS)
+	   between data and host charset; NULL: use the tables above */
+	const char		*iconv_name;
 } cob_charset;
 
 COB_EXPIMP const cob_charset	cob_charset_native;

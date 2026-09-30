@@ -2593,14 +2593,36 @@ sequential_rewrite (cob_file *f, const int opt)
 static unsigned char	*ls_conv_buff = NULL;
 static size_t		ls_conv_size = 0;
 
+/* check if LINE SEQUENTIAL data needs conversion */
+static COB_INLINE int
+lineseq_converts (cob_file *f)
+{
+	return COB_CS->to_host && !f->sort_collating;
+}
+
 /* return the record data to be written, converted to host charset
-   if necessary (in a buffer that is valid until the next call) */
+   if necessary (in a buffer that is valid until the next call);
+   'hsize' is set to the size of the returned data, which may differ
+   from 'size' for text conversion with iconv (DBCS) */
 static unsigned char *
-lineseq_host_data (cob_file *f, const size_t size)
+lineseq_host_data (cob_file *f, const size_t size, size_t *hsize)
 {
 	const cob_charset	*cs = COB_CS;
-	if (!cs->to_host || f->sort_collating || size == 0) {
+	*hsize = size;
+	if (!lineseq_converts (f) || size == 0) {
 		return f->record->data;
+	}
+	if (cob_charset_text_is_variable (cs)) {
+		size_t	conv_size;
+		unsigned char	*conv = cob_charset_text_to_host (cs, f->record->data,
+				size, &conv_size);
+		if (ls_conv_buff) {
+			cob_free (ls_conv_buff);
+		}
+		ls_conv_buff = conv;
+		ls_conv_size = conv_size;
+		*hsize = conv_size;
+		return ls_conv_buff;
 	}
 	if (size > ls_conv_size) {
 		if (ls_conv_buff) {
@@ -2614,10 +2636,15 @@ lineseq_host_data (cob_file *f, const size_t size)
 	return ls_conv_buff;
 }
 
+static unsigned char	*ls_read_buff = NULL;
+static size_t		ls_read_size = 0;
+
 static int
 lineseq_read (cob_file *f, const int read_opts)
 {
 	const unsigned char	*from_host;
+	int		use_iconv;
+	size_t		read_max;
 	FILE	*fp;
 	unsigned char	*dataptr;
 	size_t		i = 0;
@@ -2648,8 +2675,26 @@ lineseq_read (cob_file *f, const int read_opts)
 	COB_UNUSED (read_opts);
 #endif
 
-	from_host = f->sort_collating ? NULL : COB_CS->from_host;
-	dataptr = f->record->data;
+	/* note: for text conversion with iconv the complete line is read
+	         into a separate buffer (its size in the host charset
+	         may be bigger than the record) and converted afterwards */
+	use_iconv = lineseq_converts (f) && cob_charset_text_is_variable (COB_CS);
+	from_host = (lineseq_converts (f) && !use_iconv)
+		? COB_CS->from_host : NULL;
+	if (use_iconv) {
+		read_max = f->record_max * 4 + 16;
+		if (read_max > ls_read_size) {
+			if (ls_read_buff) {
+				cob_free (ls_read_buff);
+			}
+			ls_read_size = read_max;
+			ls_read_buff = cob_malloc (ls_read_size);
+		}
+		dataptr = ls_read_buff;
+	} else {
+		read_max = f->record_max;
+		dataptr = f->record->data;
+	}
 again:
 	fp = (FILE *)f->file;
 	/* save last position at start of line; needed for REWRITE (I-O only) */
@@ -2729,10 +2774,10 @@ again:
 			continue;
 		}
 #endif
-		if (i < f->record_max) {
+		if (i < read_max) {
 			*dataptr++ = from_host ? from_host[(unsigned char)n] : (unsigned char)n;
 			i++;
-			if (i == f->record_max
+			if (i == read_max
 			 && (cobsetptr->cob_ls_split)) {
 				/* If record is too long, then simulate end
 				 * so balance becomes the next record read */
@@ -2751,7 +2796,7 @@ again:
 				break;
 			}
 		} else
-		if (i == f->record_max) {
+		if (i == read_max) {
 			sts = COB_STATUS_04_SUCCESS_INCOMPLETE;
 		}
 	}
@@ -2783,6 +2828,26 @@ again:
 				}
 			}
 		}
+	}
+	/* text conversion with iconv (DBCS): convert the complete line */
+	if (use_iconv) {
+		size_t	conv_size = 0;
+		unsigned char	*conv = NULL;
+		if (i > 0) {
+			conv = cob_charset_text_from_host (COB_CS,
+				ls_read_buff, i, &conv_size);
+		}
+		if (conv_size > f->record_max) {
+			conv_size = f->record_max;
+			if (sts == COB_STATUS_00_SUCCESS) {
+				sts = COB_STATUS_04_SUCCESS_INCOMPLETE;
+			}
+		}
+		if (conv) {
+			memcpy (f->record->data, conv, conv_size);
+			cob_free (conv);
+		}
+		i = conv_size;
 	}
 	if (i < f->record_max) {
 		/* Fill the record with spaces */
@@ -2887,7 +2952,8 @@ lineseq_write (cob_file *f, const int opt)
 
 	/* Write to the file */
 	if (size) {
-		unsigned char	*data = lineseq_host_data (f, size);
+		size_t		hsize;
+		unsigned char	*data = lineseq_host_data (f, size, &hsize);
 		errno = 0;
 #if 0 /* Note: file specific features are 4.x only ... */
 		if ((f->file_features & COB_FILE_LS_VALIDATE)) {
@@ -2897,17 +2963,17 @@ lineseq_write (cob_file *f, const int opt)
 		 && !f->sort_collating /* pre-validated */) {
 #endif
 			register unsigned char	*p = data;
-			const unsigned char *p_max = p + size;
+			const unsigned char *p_max = p + hsize;
 			while (p < p_max) {
 				if (IS_BAD_CHAR (*p)) {
 					return COB_STATUS_71_BAD_CHAR;
 				}
 				p++;
 			}
-			COB_CHECKED_FWRITE (fp, data, size);
+			COB_CHECKED_FWRITE (fp, data, hsize);
 		} else if (cobsetptr->cob_ls_nulls) {
 			register unsigned char	*p = data;
-			const unsigned char *p_max = p + size;
+			const unsigned char *p_max = p + hsize;
 			while (p < p_max) {
 				if (*p < ' ') {
 					COB_CHECKED_FPUTC (0, fp);
@@ -2915,7 +2981,7 @@ lineseq_write (cob_file *f, const int opt)
 				COB_CHECKED_FPUTC (*p++, fp);
 			}
 		} else {
-			COB_CHECKED_FWRITE (fp, data, size);
+			COB_CHECKED_FWRITE (fp, data, hsize);
 		}
 	}
 
@@ -2962,7 +3028,8 @@ static int
 lineseq_rewrite (cob_file *f, const int opt)
 {
 	FILE	*fp = (FILE *)f->file;
-	const size_t		size = f->record->size;
+	const size_t		rec_size = f->record->size;
+	size_t		size;	/* size of the (converted) data to write */
 	size_t		psize, slotlen;
 	off_t		curroff;
 	unsigned char	*data;
@@ -2974,7 +3041,7 @@ lineseq_rewrite (cob_file *f, const int opt)
 #endif
 
 	curroff = ftell (fp);	/* Current file position */
-	data = lineseq_host_data (f, size);
+	data = lineseq_host_data (f, rec_size, &size);
 
 	psize = size;
 	slotlen = curroff - f->record_off - 1;
@@ -8971,6 +9038,11 @@ cob_exit_fileio (void)
 		cob_free (ls_conv_buff);
 		ls_conv_buff = NULL;
 		ls_conv_size = 0;
+	}
+	if (ls_read_buff) {
+		cob_free (ls_read_buff);
+		ls_read_buff = NULL;
+		ls_read_size = 0;
 	}
 
 #if	defined(WITH_INDEX_EXTFH) || defined(WITH_SEQRA_EXTFH)

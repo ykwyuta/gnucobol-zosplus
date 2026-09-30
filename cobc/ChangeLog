@@ -1,5 +1,12 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* flag.def, cobc.c, cobc.h: new option -fsource-codeset (default UTF-8)
+	* tree.c (cb_convert_literal_to_data), scanner.l: alphanumeric literals
+	  with non-ASCII characters are converted with iconv from the source
+	  codeset to the data charset (for example Japanese to IBM-1399 with
+	  SO/SI) when scanned
+	* tree.c (concat_literals): concatenation of literals in data charset
+	  (hexadecimal / converted) with other literals
 	* tree.c (cb_data_is_ebcdic), typeck.c, codegen.c, parser.y: ALPHABET
 	  ASCII / STANDARD-1 / EBCDIC, default collating sequences and CODE-SET
 	  depend on the data charset instead of COB_EBCDIC_MACHINE; the

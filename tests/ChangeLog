@@ -1,5 +1,6 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* testsuite.src/run_ebcdic.at: tests for Japanese literals and DBCS
 	* testsuite.src/configuration.at: adjusted for data-codeset
 	* testsuite.src/run_ebcdic.at: new tests for -fdata-codeset
 

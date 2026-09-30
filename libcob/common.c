@@ -963,6 +963,7 @@ cob_terminate_routines (void)
 	cob_exit_intrinsic ();
 	cob_exit_strings ();
 	cob_exit_numeric ();
+	cob_exit_charset ();
 
 	cob_exit_common_modules ();
 	if (module_unload == COB_IMMEDIATE) {
@@ -2303,12 +2304,10 @@ cob_move_intermediate (cob_field *dst, const void *src, const size_t size)
 	/* note: if the target is numeric then cob_move will convert
 	         on the fly to numeric as necessary */
 	if (cs->from_host && size > 0) {
-		const unsigned char	*s = src;
-		unsigned char	*converted = cob_fast_malloc (size);
-		size_t		i;
-		for (i = 0; i < size; i++) {
-			converted[i] = cs->from_host[s[i]];
-		}
+		size_t		converted_size;
+		unsigned char	*converted = cob_charset_text_from_host (cs, src, size,
+				&converted_size);
+		intermediate.size = converted_size;
 		intermediate.data = converted;
 		cob_move (&intermediate, dst);
 		cob_free (converted);

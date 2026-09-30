@@ -118,6 +118,7 @@ enum compile_level {
 #define CB_FLAG_GETOPT_DEPEND_ON_THE_SIDE   26
 #define CB_FLAG_GETOPT_GENTABLE             27
 #define CB_FLAG_GETOPT_DATA_CODESET         28
+#define CB_FLAG_GETOPT_SOURCE_CODESET       29
 
 /* Info display limits */
 #define	CB_IMSG_SIZE		24
@@ -266,6 +267,7 @@ FILE			*cb_depend_file = NULL;
 const char		*cb_ebcdic_table = NULL;
 const cob_charset	*cb_data_charset = NULL;	/* NULL = native */
 static int		data_codeset_by_option = 0;
+const char		*cb_source_codeset = "UTF-8";
 int			cb_depend_output = 0;
 int			cb_depend_output_only = 0;
 int			cb_depend_add_phony = 0;
@@ -3991,6 +3993,14 @@ process_command_line (const int argc, char **argv)
 				cb_data_charset = NULL;
 			}
 			data_codeset_by_option = 1;
+			break;
+
+		case CB_FLAG_GETOPT_SOURCE_CODESET:
+			/* -fsource-codeset=<iconv name> */
+			if (!*cob_optarg) {
+				cobc_err_exit (COBC_INV_PAR, "-fsource-codeset");
+			}
+			cb_source_codeset = cobc_main_strdup (cob_optarg);
 			break;
 
 		case CB_FLAG_GETOPT_DEFAULT_COLSEQ:

@@ -2276,6 +2276,7 @@ extern cb_tree		cb_build_ml_suppress_checks (struct cb_ml_generate_tree *);
 
 extern int			cb_literal_value (cb_tree);
 extern int			cb_literal_data_value (cb_tree);
+extern void			cb_convert_literal_to_data (cb_tree);
 
 /* parser.y */
 extern int		non_const_word;

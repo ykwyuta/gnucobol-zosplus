@@ -23,7 +23,15 @@
 #include "config.h"
 
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#ifdef	HAVE_ICONV
+#include <iconv.h>
+#endif
+#ifdef	HAVE_LANGINFO_CODESET
+#include <langinfo.h>
+#endif
 
 /* include internal and external libcob definitions, forcing exports */
 #define	COB_LIB_EXPIMP
@@ -55,6 +63,7 @@ const cob_charset	cob_charset_native = {
 	native_ctype,
 	native_upper,
 	native_lower,
+	NULL,
 	NULL,
 	NULL
 };
@@ -100,7 +109,7 @@ static char		ebcdic_spaces[COB_SPACES_ALPHABETIC_BYTE_LENGTH];
 static char		ebcdic_zeroes[COB_ZEROES_ALPHABETIC_BYTE_LENGTH];
 
 /* the characters used by the runtime are invariant in all EBCDIC charsets */
-#define COB_EBCDIC_CHARSET(cname, name, ccsid, flags, so, si, dbcs_space) \
+#define COB_EBCDIC_CHARSET(cname, name, ccsid, flags, so, si, dbcs_space, iconv_name) \
 const cob_charset	cob_charset_##cname = { \
 	name, ccsid, COB_CS_EBCDIC | (flags), \
 	0x40, 0xF0, 0x4E, 0x60, 0x4B, 0x6B, 0x5C, 0x61, 0x7F, 0x7D, \
@@ -113,14 +122,15 @@ const cob_charset	cob_charset_##cname = { \
 	cname##_upper, \
 	cname##_lower, \
 	cname##_to_host, \
-	cname##_from_host \
+	cname##_from_host, \
+	iconv_name \
 }
 
-COB_EBCDIC_CHARSET (ibm037, "IBM-037", 37, 0, 0, 0, 0);
-COB_EBCDIC_CHARSET (ibm930, "IBM-930", 930, COB_CS_MIXED, 0x0E, 0x0F, 0x40);
-COB_EBCDIC_CHARSET (ibm939, "IBM-939", 939, COB_CS_MIXED, 0x0E, 0x0F, 0x40);
-COB_EBCDIC_CHARSET (ibm1390, "IBM-1390", 1390, COB_CS_MIXED, 0x0E, 0x0F, 0x40);
-COB_EBCDIC_CHARSET (ibm1399, "IBM-1399", 1399, COB_CS_MIXED, 0x0E, 0x0F, 0x40);
+COB_EBCDIC_CHARSET (ibm037, "IBM-037", 37, 0, 0, 0, 0, "IBM037");
+COB_EBCDIC_CHARSET (ibm930, "IBM-930", 930, COB_CS_MIXED, 0x0E, 0x0F, 0x40, "IBM930");
+COB_EBCDIC_CHARSET (ibm939, "IBM-939", 939, COB_CS_MIXED, 0x0E, 0x0F, 0x40, "IBM939");
+COB_EBCDIC_CHARSET (ibm1390, "IBM-1390", 1390, COB_CS_MIXED, 0x0E, 0x0F, 0x40, "IBM1390");
+COB_EBCDIC_CHARSET (ibm1399, "IBM-1399", 1399, COB_CS_MIXED, 0x0E, 0x0F, 0x40, "IBM1399");
 
 static const cob_charset	*const known_charsets[] = {
 	&cob_charset_ibm037,
@@ -242,4 +252,228 @@ cob_charset_field_release (const cob_field *orig, cob_field *used)
 	if (used && used != orig) {
 		cob_free (used->data);
 	}
+}
+
+/* Text conversion between data and host charset, used at the boundaries
+   to the "outside world" where the text may contain DBCS characters
+   (DISPLAY, ACCEPT, LINE SEQUENTIAL files, environment, command line);
+   uses iconv when available (the host charset is taken from the
+   environment variable COB_HOST_CODESET or from the locale), otherwise
+   the single byte tables of the charset */
+
+static int	host_codeset_checked = 0;
+static char	*host_codeset = NULL;
+static int	host_codeset_explicit = 0;
+
+#ifdef	HAVE_ICONV
+#define MAX_ICONV_CACHE 8
+static struct iconv_cache_entry {
+	const cob_charset	*cs;
+	iconv_t		to_host;
+	iconv_t		from_host;
+	int		failed;
+} iconv_cache[MAX_ICONV_CACHE];
+static int	iconv_cache_count = 0;
+#endif
+
+static void
+check_host_codeset (void)
+{
+	const char	*name;
+	if (host_codeset_checked) {
+		return;
+	}
+	host_codeset_checked = 1;
+	name = getenv ("COB_HOST_CODESET");
+	if (name && *name) {
+		host_codeset_explicit = 1;
+	} else {
+#ifdef	HAVE_LANGINFO_CODESET
+		name = nl_langinfo (CODESET);
+#else
+		name = NULL;
+#endif
+	}
+	if (name && *name) {
+		host_codeset = cob_strdup (name);
+	}
+}
+
+/* return the iconv name of the host charset, NULL if the single byte
+   tables are to be used */
+const char *
+cob_get_host_codeset (void)
+{
+	check_host_codeset ();
+	if (!host_codeset) {
+		return NULL;
+	}
+	/* an ASCII locale (like "C") cannot represent more than the tables,
+	   so only use iconv if explicit requested */
+	if (!host_codeset_explicit
+	 && (!strcmp (host_codeset, "ANSI_X3.4-1968")
+	  || !strcmp (host_codeset, "US-ASCII")
+	  || !strcmp (host_codeset, "ASCII")
+	  || !strcmp (host_codeset, "646"))) {
+		return NULL;
+	}
+	return host_codeset;
+}
+
+#ifdef	HAVE_ICONV
+static struct iconv_cache_entry *
+get_iconv (const cob_charset *cs)
+{
+	const char	*host = cob_get_host_codeset ();
+	int		i;
+
+	if (!cs->iconv_name || !host) {
+		return NULL;
+	}
+	for (i = 0; i < iconv_cache_count; i++) {
+		if (iconv_cache[i].cs == cs) {
+			return iconv_cache[i].failed ? NULL : &iconv_cache[i];
+		}
+	}
+	if (iconv_cache_count == MAX_ICONV_CACHE) {
+		return NULL;
+	}
+	i = iconv_cache_count++;
+	iconv_cache[i].cs = cs;
+	iconv_cache[i].to_host = iconv_open (host, cs->iconv_name);
+	iconv_cache[i].from_host = iconv_open (cs->iconv_name, host);
+	if (iconv_cache[i].to_host == (iconv_t)-1
+	 || iconv_cache[i].from_host == (iconv_t)-1) {
+		iconv_cache[i].failed = 1;
+		return NULL;
+	}
+	return &iconv_cache[i];
+}
+
+/* convert with iconv, replacing invalid / unconvertible input by 'subst';
+   returns the number of bytes stored in 'out' */
+static size_t
+convert_iconv (iconv_t cd, const unsigned char *src, const size_t len,
+	unsigned char *out, const size_t outsize, const unsigned char subst)
+{
+	ICONV_CONST char	*in = (ICONV_CONST char *)src;
+	char	*o = (char *)out;
+	size_t	inleft = len;
+	size_t	oleft = outsize;
+
+	(void)iconv (cd, NULL, NULL, NULL, NULL);
+	while (inleft > 0) {
+		if (iconv (cd, &in, &inleft, &o, &oleft) != (size_t)-1) {
+			break;
+		}
+		if (errno == E2BIG || oleft == 0) {
+			break;
+		}
+		/* invalid or incomplete input: substitute and go on */
+		in++;
+		inleft--;
+		*o++ = (char)subst;
+		oleft--;
+	}
+	/* write final shift sequence, if any */
+	(void)iconv (cd, NULL, NULL, &o, &oleft);
+	return (size_t)(o - (char *)out);
+}
+#endif
+
+/* convert text from data to host charset;
+   returns an allocated buffer (to be freed with cob_free) with a
+   terminating NUL and its size (without that) in 'outsize' */
+unsigned char *
+cob_charset_text_to_host (const cob_charset *cs, const unsigned char *src,
+	const size_t size, size_t *outsize)
+{
+	unsigned char	*out;
+#ifdef	HAVE_ICONV
+	struct iconv_cache_entry	*ic = get_iconv (cs);
+	if (ic) {
+		/* EBCDIC DBCS (2 bytes) or SBCS katakana (1 byte) may need
+		   up to 3 bytes in UTF-8 */
+		const size_t	max = size * 4 + 16;
+		out = cob_fast_malloc (max + 1);
+		*outsize = convert_iconv (ic->to_host, src, size, out, max,
+			(unsigned char)'?');
+		out[*outsize] = 0;
+		return out;
+	}
+#endif
+	out = cob_fast_malloc (size + 1);
+	memcpy (out, src, size);
+	cob_charset_to_host (cs, out, size);
+	out[size] = 0;
+	*outsize = size;
+	return out;
+}
+
+/* convert text from host to data charset;
+   returns an allocated buffer (to be freed with cob_free) and its size
+   in 'outsize' - which may differ from 'size' (SO/SI for DBCS) */
+unsigned char *
+cob_charset_text_from_host (const cob_charset *cs, const unsigned char *src,
+	const size_t size, size_t *outsize)
+{
+	unsigned char	*out;
+#ifdef	HAVE_ICONV
+	struct iconv_cache_entry	*ic = get_iconv (cs);
+	if (ic) {
+		/* a DBCS character needs up to 4 bytes (SO + 2 + SI) */
+		const size_t	max = size * 2 + 16;
+		out = cob_fast_malloc (max + 1);
+		*outsize = convert_iconv (ic->from_host, src, size, out, max,
+			COB_CS_FROM_HOST (cs, '?'));
+		out[*outsize] = 0;
+		return out;
+	}
+#endif
+	out = cob_fast_malloc (size + 1);
+	memcpy (out, src, size);
+	cob_charset_from_host (cs, out, size);
+	out[size] = 0;
+	*outsize = size;
+	return out;
+}
+
+/* check if text conversion changes the size (uses iconv) */
+int
+cob_charset_text_is_variable (const cob_charset *cs)
+{
+#ifdef	HAVE_ICONV
+	return get_iconv (cs) != NULL;
+#else
+	COB_UNUSED (cs);
+	return 0;
+#endif
+}
+
+void
+cob_exit_charset (void)
+{
+#ifdef	HAVE_ICONV
+	int	i;
+	for (i = 0; i < iconv_cache_count; i++) {
+		if (!iconv_cache[i].failed) {
+			iconv_close (iconv_cache[i].to_host);
+			iconv_close (iconv_cache[i].from_host);
+		} else {
+			if (iconv_cache[i].to_host != (iconv_t)-1) {
+				iconv_close (iconv_cache[i].to_host);
+			}
+			if (iconv_cache[i].from_host != (iconv_t)-1) {
+				iconv_close (iconv_cache[i].from_host);
+			}
+		}
+	}
+	iconv_cache_count = 0;
+#endif
+	if (host_codeset) {
+		cob_free (host_codeset);
+		host_codeset = NULL;
+	}
+	host_codeset_checked = 0;
+	host_codeset_explicit = 0;
 }

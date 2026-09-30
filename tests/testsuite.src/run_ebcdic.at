@@ -415,3 +415,81 @@ EBCDIC order
 AT_CHECK([cat ascii.dat], [0], [Ab1 ], [])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: Japanese literals and DBCS])
+AT_KEYWORDS([ebcdic data-codeset dbcs])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       ENVIRONMENT      DIVISION.
+       INPUT-OUTPUT     SECTION.
+       FILE-CONTROL.
+           SELECT LSF  ASSIGN TO 'ls.txt'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA             DIVISION.
+       FILE             SECTION.
+       FD  LSF.
+       01  LS-REC       PIC X(20).
+       WORKING-STORAGE  SECTION.
+       01  WK-MSG       PIC X(20) VALUE 'ｺﾝﾆﾁﾊ 漢字ABC'.
+       01  WK-X         PIC X(10).
+       01  WK-IN        PIC X(12).
+       PROCEDURE        DIVISION.
+           DISPLAY '<' WK-MSG '>'
+           DISPLAY FUNCTION HEX-OF (WK-MSG)
+           MOVE '日本語' TO WK-X
+           DISPLAY '<' WK-X '> ' FUNCTION LENGTH ('日本語')
+           DISPLAY 'メッセージ' & '!'
+           ACCEPT WK-IN
+           DISPLAY '<' WK-IN '> ' FUNCTION HEX-OF (WK-IN)
+           OPEN OUTPUT LSF
+           WRITE LS-REC FROM WK-MSG
+           CLOSE LSF
+           OPEN INPUT LSF
+           READ LSF
+           CLOSE LSF
+           IF LS-REC NOT = WK-MSG
+              DISPLAY 'LINE SEQUENTIAL: ' FUNCTION HEX-OF (LS-REC)
+           END-IF
+           STOP RUN.
+])
+
+AT_DATA([input.txt], [日本ｶﾅx
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog < input.txt], [0],
+[<ｺﾝﾆﾁﾊ 漢字ABC     >
+70BC8D779B400E4F5848F20FC1C2C34040404040
+<日本語  > 8
+メッセージ!
+<日本ｶﾅx   > 0E456245660F668CA7404040
+], [])
+AT_CHECK([cat ls.txt], [0],
+[ｺﾝﾆﾁﾊ 漢字ABC
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: -fsource-codeset])
+AT_KEYWORDS([ebcdic data-codeset dbcs])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       PROCEDURE        DIVISION.
+           DISPLAY '漢字'
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 -fsource-codeset=NOT-A-CODESET prog.cob], [1], [],
+[prog.cob:5: error: cannot convert from 'NOT-A-CODESET' to 'IBM1399'
+])
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 -fsource-codeset=ASCII prog.cob], [1], [],
+[prog.cob:5: error: literal '漢字' cannot be converted to data codeset IBM-1399
+])
+
+AT_CLEANUP

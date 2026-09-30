@@ -431,9 +431,28 @@ DISPLAY / ACCEPT と LINE SEQUENTIAL はホストのテキストとして読み�
 * 方言 `ibm-jp`（`config/ibm-jp.conf`：IBM 方言＋CCSID 1399）を追加した。`cobc -std=ibm-jp` で使える
 * 見つけた既存の不具合: COLLATING SEQUENCE を指定しない SORT / MERGE が、直前の SORT で指定した照合順を引き継いでいた（ネイティブでは ASCII 指定が「表なし」になるため表面化していなかった）
 
+### P3（日本語 DBCS）: 混在データを実装（PIC G / N は未対応）
+
+GnuCOBOL 3.x では PIC G / DISPLAY-1（DBCS）が未実装（PENDING）、PIC N（NATIONAL）も UTF-16 の仮実装です。PIC G / N の本格対応はコンパイラの型の作業になるため、まず実務でいちばん多い **PIC X 項目の中の日本語（SO / SI で囲まれた混在データ）** に対応しました。
+
+| 項目 | 内容 |
+|------|------|
+| 実行時の変換 | DISPLAY、ACCEPT、LINE SEQUENTIAL、環境変数・コマンド行は、iconv でデータ文字コード（例: `IBM1399`）とホストの文字コードを変換する。ホストの文字コードは環境変数 `COB_HOST_CODESET`、なければロケール（`nl_langinfo (CODESET)`）から決める。ASCII のロケール（`C` など）では従来どおり 1 バイトの表を使う |
+| 日本語の定数 | ソースの英数字定数に ASCII 以外の文字があれば、字句解析の時点で iconv によりソースの文字コード（`-fsource-codeset`、既定 UTF-8）からデータ文字コードへ変換する。`'日本語'` は `0E 4562 4566 48E7 0F` のように SO / SI 付きの 8 バイトになり、項目の長さの検査もこの長さで行う |
+| 連結 | 16 進定数や変換済みの定数と通常の定数を `&` で連結した場合も正しく変換する |
+| 試験 | 日本語の定数、ACCEPT（UTF-8 入力）、LINE SEQUENTIAL の往復、`-fsource-codeset` の誤り |
+
+確認できた動作（CCSID 1399、端末 UTF-8 / Shift_JIS）:
+
+```
+VALUE 'ｺﾝﾆﾁﾊ 漢字ABC' → 70 BC 8D 77 9B 40 0E 4F58 48F2 0F C1 C2 C3 ...
+ACCEPT '日本ｶﾅx'     → 0E 4562 4566 0F 66 8C A7
+DISPLAY / LINE SEQUENTIAL はホストの文字コードの日本語として出力される
+```
+
 ### 次の作業
 
-* P3: DBCS（PIC G / N、SO / SI を含む混在定数、端末への表示）
+* P3 の残り: PIC G / PIC N（USAGE DISPLAY-1、SO / SI なしの DBCS）、G"..." / N"..." 定数、NATIONAL-OF / DISPLAY-OF、外字の対応表、DBCS の途中で切れた場合の扱い
 * P4: SCREEN SECTION、XML / JSON、REPORT WRITER、EXTFH
 
 ## 11. まとめ

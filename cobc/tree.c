@@ -31,6 +31,9 @@
 #endif
 #include <ctype.h>
 #include <limits.h>
+#ifdef	HAVE_ICONV
+#include <iconv.h>
+#endif
 #ifndef LLONG_MAX
 #ifdef LONG_LONG_MAX
 #define LLONG_MAX LONG_LONG_MAX
@@ -1084,6 +1087,22 @@ concat_literals (const cb_tree left, const cb_tree right)
 
 	memcpy (p->data, ldata, lsize);
 	memcpy (p->data + lsize, rdata, rsize);
+
+	/* if one part is already in the data charset ("raw") then the
+	   result is too, so convert the other part */
+	{
+		const int	lraw = CB_LITERAL_P (left) && CB_LITERAL (left)->raw;
+		const int	rraw = CB_LITERAL_P (right) && CB_LITERAL (right)->raw;
+		if (lraw || rraw) {
+			if (!lraw) {
+				cb_data_convert (p->data, lsize);
+			}
+			if (!rraw) {
+				cb_data_convert (p->data + lsize, rsize);
+			}
+			p->raw = 1;
+		}
+	}
 
 	return p;
 }
@@ -7549,6 +7568,72 @@ cb_data_convert (unsigned char *data, const size_t size)
 			*data = tab[*data];
 		}
 	}
+}
+
+/* convert an alphanumeric literal containing non-ASCII characters
+   (for example Japanese in UTF-8) from the source codeset to the data
+   charset (for example IBM-1399 with SO/SI for DBCS) using iconv;
+   the result is stored "raw" as it is in the data charset already,
+   note: this changes the size of the literal */
+void
+cb_convert_literal_to_data (cb_tree x)
+{
+	struct cb_literal	*l;
+	size_t		i;
+
+	if (!cb_data_charset || !cb_data_charset->iconv_name
+	 || !CB_LITERAL_P (x)) {
+		return;
+	}
+	l = CB_LITERAL (x);
+	if (l->raw) {
+		return;
+	}
+	for (i = 0; i < l->size; i++) {
+		if (l->data[i] >= 0x80) {
+			break;
+		}
+	}
+	if (i == l->size) {
+		/* ASCII only - converted by table later */
+		return;
+	}
+#ifdef	HAVE_ICONV
+	{
+		iconv_t		cd = iconv_open (cb_data_charset->iconv_name, cb_source_codeset);
+		ICONV_CONST char	*in = (ICONV_CONST char *)l->data;
+		size_t		inleft = l->size;
+		const size_t	max = l->size * 2 + 16;
+		unsigned char	*out;
+		char		*o;
+		size_t		oleft = max;
+
+		if (cd == (iconv_t)-1) {
+			cb_error_x (x, _("cannot convert from '%s' to '%s'"),
+				cb_source_codeset, cb_data_charset->iconv_name);
+			return;
+		}
+		out = cobc_parse_malloc (max + 1);
+		o = (char *)out;
+		if (iconv (cd, &in, &inleft, &o, &oleft) == (size_t)-1
+		 || iconv (cd, NULL, NULL, &o, &oleft) == (size_t)-1) {
+			char		lit_out[CB_ERR_LITMAX + 1] = { 0 };
+			literal_for_diagnostic (lit_out, (void *)l->data);
+			cb_error_x (x, _("literal '%s' cannot be converted to data codeset %s"),
+				lit_out, cb_data_charset->name);
+			iconv_close (cd);
+			return;
+		}
+		iconv_close (cd);
+		l->size = (cob_u32_t)(o - (char *)out);
+		out[l->size] = 0;
+		l->data = out;
+		l->raw = 1;
+	}
+#else
+	cb_error_x (x, _("conversion of literals to data codeset %s needs iconv"),
+		cb_data_charset->name);
+#endif
 }
 
 enum cb_colseq cb_default_colseq = CB_COLSEQ_NATIVE;

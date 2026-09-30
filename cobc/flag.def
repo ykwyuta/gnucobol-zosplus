@@ -106,6 +106,12 @@ CB_FLAG_NQ (1, "data-codeset", CB_FLAG_GETOPT_DATA_CODESET,
 	  "                        IBM-037, IBM-930, IBM-939, IBM-1390, IBM-1399\n"
 	  "                        * default: NATIVE"))
 
+CB_FLAG_NQ (1, "source-codeset", CB_FLAG_GETOPT_SOURCE_CODESET,
+	_("  -fsource-codeset=<codeset>\tcharacter set of the source, used to convert\n"
+	  "                        non-ASCII literals for -fdata-codeset, for example\n"
+	  "                        UTF-8, SHIFT_JIS, CP932, EUC-JP\n"
+	  "                        * default: UTF-8"))
+
 CB_FLAG_NQ (1, "default-colseq", CB_FLAG_GETOPT_DEFAULT_COLSEQ,
 	_("  -fdefault-colseq=[ASCII|EBCDIC|NATIVE]\tdefine default collating sequence\n"
 	  "                        * default: NATIVE"))
