@@ -642,6 +642,7 @@ extern cob_u8_t ascii_to_ebcdic[256];
 
 /* conversion of data (literals, figurative constants, ...) from the
    host charset to the data charset (-fdata-codeset) */
+extern int		cb_data_is_ebcdic (void);
 extern unsigned char	cb_data_char (const unsigned char);
 extern void		cb_data_convert (unsigned char *, const size_t);
 

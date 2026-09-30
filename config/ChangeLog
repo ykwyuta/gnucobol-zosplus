@@ -1,3 +1,8 @@
+2026-09-30  ykwyuta <ykwyuta@gmail.com>
+
+	* ibm-jp.conf: new dialect IBM COBOL with data in Japanese EBCDIC
+	* *.conf: added data-codeset
+
 
 2026-07-07	Oğuzcan Kırmemiş <oguzcan.kirmemis@gmail.com>
 

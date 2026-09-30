@@ -1,5 +1,15 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* tree.c (cb_data_is_ebcdic), typeck.c, codegen.c, parser.y: ALPHABET
+	  ASCII / STANDARD-1 / EBCDIC, default collating sequences and CODE-SET
+	  depend on the data charset instead of COB_EBCDIC_MACHINE; the
+	  ASCII <-> EBCDIC tables are taken from the data charset
+	* config.def, config.c, cobc.c: new configuration data-codeset
+	  (overridden by -fdata-codeset)
+	* parser.y (_sort_collating): SORT / MERGE without COLLATING SEQUENCE
+	  use the program's collating sequence instead of the one of the last
+	  SORT / MERGE with COLLATING SEQUENCE
+	* help.c: add dialect ibm-jp
 	experimental support for data in EBCDIC (P1 of
 	docs/proposal/ebcdic-internal-encoding-ja.md):
 	* flag.def, cobc.c, cobc.h: new option -fdata-codeset=<codeset> to

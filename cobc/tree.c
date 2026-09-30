@@ -7513,6 +7513,21 @@ cb_build_ml_suppress_checks (struct cb_ml_generate_tree *tree)
 }
 
 
+/* check if the data (the "native" character set of the program)
+   is EBCDIC: either by -fdata-codeset or on an EBCDIC host */
+int
+cb_data_is_ebcdic (void)
+{
+	if (cb_data_charset) {
+		return (cb_data_charset->flags & COB_CS_EBCDIC) != 0;
+	}
+#ifdef	COB_EBCDIC_HOST
+	return 1;
+#else
+	return 0;
+#endif
+}
+
 /* convert a single character from host to data charset */
 unsigned char
 cb_data_char (const unsigned char c)

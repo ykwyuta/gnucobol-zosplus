@@ -21,7 +21,7 @@
 
 configdir = @COB_CONFIG_DIR@
 config_DATA = default.conf cobol85.conf cobol2002.conf cobol2014.conf \
-	acu.conf mf.conf ibm.conf mvs.conf bs2000.conf realia.conf rm.conf \
+	acu.conf mf.conf ibm.conf ibm-jp.conf mvs.conf bs2000.conf realia.conf rm.conf \
 	acu-strict.conf mf-strict.conf ibm-strict.conf mvs-strict.conf \
 	bs2000-strict.conf realia-strict.conf rm-strict.conf xopen.conf \
 	gcos.conf gcos-strict.conf lax.conf-inc \

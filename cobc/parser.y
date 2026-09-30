@@ -989,15 +989,11 @@ check_relaxed_syntax (const enum cobc_hd lev)
 
 static void
 prepare_default_collation (enum cb_colseq colseq) {
-	switch (colseq) {
-#ifdef COB_EBCDIC_MACHINE
-	case CB_COLSEQ_ASCII:
-#else
-	case CB_COLSEQ_EBCDIC:
-#endif
+	/* only a non-native collation needs a table */
+	if ((colseq == CB_COLSEQ_ASCII && cb_data_is_ebcdic ())
+	 || (colseq == CB_COLSEQ_EBCDIC && !cb_data_is_ebcdic ())) {
 		alphanumeric_collation = build_colseq (colseq);
-		break;
-	default:
+	} else {
 		alphanumeric_collation = NULL;
 	}
 	national_collation = NULL; /* TODO: default national collation */
@@ -6957,14 +6953,16 @@ code_set_clause:
 			CB_PENDING ("custom CODE-SET");
 			current_file->code_set = al;
 			break;
-#ifdef	COB_EBCDIC_MACHINE
 		case CB_ALPHABET_ASCII:
-#else
 		case CB_ALPHABET_EBCDIC:
-#endif
-			CB_UNFINISHED ("CODE-SET");
-			current_file->code_set = al;
-			break;
+			/* only a CODE-SET differing from the data charset needs
+			   a conversion (for EBCDIC data: ASCII, otherwise: EBCDIC) */
+			if ((al->alphabet_type == CB_ALPHABET_ASCII) == (cb_data_is_ebcdic () != 0)) {
+				CB_UNFINISHED ("CODE-SET");
+				current_file->code_set = al;
+				break;
+			}
+			/* Fall through */
 		default:
 			if (get_warn_opt_value (cb_warn_additional) != COBC_WARN_DISABLED) {
 				cb_note_x (cb_warn_additional, $3, _("ignoring CODE-SET '%s'"),
@@ -16843,6 +16841,12 @@ _sort_duplicates:
 
 _sort_collating:
   /* empty */
+  {
+	/* no COLLATING SEQUENCE: use the program's one (not the one of an
+	   earlier SORT / MERGE or a file) */
+	alphanumeric_collation = NULL;
+	national_collation = NULL;
+  }
 | collating_sequence
 ;
 

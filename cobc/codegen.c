@@ -3663,11 +3663,11 @@ output_param (cb_tree x, int id)
 		const struct cb_alphabet_name	*abp = CB_ALPHABET_NAME (x);
 		switch (abp->alphabet_type) {
 		case CB_ALPHABET_ASCII:
-#ifdef	COB_EBCDIC_MACHINE
-			gen_ebcdic_ascii |= 1;
-			output ("cob_ebcdic_ascii");
-			break;
-#endif
+			if (cb_data_is_ebcdic ()) {
+				gen_ebcdic_ascii |= 1;
+				output ("cob_ebcdic_ascii");
+				break;
+			}
 			/* Fall through for ASCII */
 		case CB_ALPHABET_NATIVE:
 			if (current_prog->collating_sequence) {
@@ -3678,17 +3678,17 @@ output_param (cb_tree x, int id)
 			}
 			break;
 		case CB_ALPHABET_EBCDIC:
-#ifdef	COB_EBCDIC_MACHINE
-			if (current_prog->collating_sequence) {
-				gen_native |= 1;
-				output ("cob_native");
+			if (cb_data_is_ebcdic ()) {
+				if (current_prog->collating_sequence) {
+					gen_native |= 1;
+					output ("cob_native");
+				} else {
+					output ("NULL");
+				}
 			} else {
-				output ("NULL");
+				output ("cob_ascii_ebcdic");
+				gen_ascii_ebcdic |= 1;
 			}
-#else
-			output ("cob_ascii_ebcdic");
-			gen_ascii_ebcdic |= 1;
-#endif
 			break;
 		case CB_ALPHABET_CUSTOM:
 			gen_custom = 1;
@@ -3829,24 +3829,24 @@ output_param (cb_tree x, int id)
 			const struct cb_alphabet_name	*rbp = CB_ALPHABET_NAME (rx);
 			switch (rbp->alphabet_type) {
 			case CB_ALPHABET_ASCII:
-#ifdef	COB_EBCDIC_MACHINE
-				gen_ebcdic_ascii |= 2;
-				output ("&f_ebcdic_ascii");
-				break;
-#endif
+				if (cb_data_is_ebcdic ()) {
+					gen_ebcdic_ascii |= 2;
+					output ("&f_ebcdic_ascii");
+					break;
+				}
 			/* Fall through for ASCII */
 			case CB_ALPHABET_NATIVE:
 				gen_native |= 2;
 				output ("&f_native");
 				break;
 			case CB_ALPHABET_EBCDIC:
-#ifdef	COB_EBCDIC_MACHINE
-				gen_native |= 2;
-				output ("&f_native");
-#else
-				output ("&f_ascii_ebcdic");
-				gen_ascii_ebcdic |= 2;
-#endif
+				if (cb_data_is_ebcdic ()) {
+					gen_native |= 2;
+					output ("&f_native");
+				} else {
+					output ("&f_ascii_ebcdic");
+					gen_ascii_ebcdic |= 2;
+				}
 				break;
 			case CB_ALPHABET_CUSTOM:
 				gen_custom = 1;

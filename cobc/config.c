@@ -707,6 +707,15 @@ cb_config_entry (char *buff, const char *fname, const int line)
 
 
 	case CB_ANY:
+		if (strcmp (name, "data-codeset") == 0) {
+			if (!cob_get_charset (val)) {
+				invalid_value (fname, line, name, val,
+					"NATIVE, IBM-037, IBM-930, IBM-939, IBM-1390, IBM-1399", 0, 0);
+				return -1;
+			}
+			cb_config_data_codeset = cobc_main_strdup (val);
+			break;
+		} else
 		if (strcmp (name, "assign-clause") == 0) {
 			if ((strcmp (val, "dynamic") == 0)
 			    || (strcmp (val, "mf") == 0)) {

@@ -319,3 +319,99 @@ AT_CHECK([cat ls.txt], [0],
 ], [])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: -std=ibm-jp and data-codeset])
+AT_KEYWORDS([ebcdic data-codeset configuration])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-LOW       PIC X(3) VALUE 'abz'.
+       PROCEDURE        DIVISION.
+           DISPLAY FUNCTION HEX-OF (WK-LOW)
+           STOP RUN.
+])
+
+AT_DATA([test.conf], [
+include "default.conf"
+data-codeset: IBM-4711
+])
+
+AT_CHECK([$COMPILE -std=ibm-jp prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[8182A9
+], [])
+
+# the option overrides the configuration
+AT_CHECK([$COMPILE -std=ibm-jp -fdata-codeset=IBM-930 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[6263B9
+], [])
+
+AT_CHECK([$COMPILE -conf=test.conf prog.cob], [1], [],
+[configuration error:
+test.conf:3: invalid value 'IBM-4711' for configuration tag 'data-codeset';
+	should be one of the following values: NATIVE, IBM-037, IBM-930, IBM-939, IBM-1390, IBM-1399
+])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: CODE-SET and ALPHABET])
+AT_KEYWORDS([ebcdic data-codeset runfile sort])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       ENVIRONMENT      DIVISION.
+       CONFIGURATION    SECTION.
+       SPECIAL-NAMES.
+           ALPHABET ASC IS STANDARD-1.
+       INPUT-OUTPUT     SECTION.
+       FILE-CONTROL.
+           SELECT AF ASSIGN TO 'ascii.dat'
+               ORGANIZATION IS SEQUENTIAL.
+       DATA             DIVISION.
+       FILE             SECTION.
+       FD  AF CODE-SET IS ASC.
+       01  A-REC        PIC X(4).
+       WORKING-STORAGE  SECTION.
+       01  T.
+           05 TE        PIC X OCCURS 3.
+       01  W            PIC X(4).
+       PROCEDURE        DIVISION.
+           OPEN OUTPUT AF
+           MOVE 'Ab1 ' TO A-REC
+           WRITE A-REC
+           CLOSE AF
+           OPEN INPUT AF
+           READ AF INTO W
+           CLOSE AF
+           DISPLAY W FUNCTION HEX-OF (W)
+           MOVE '1Aa' TO T
+           SORT TE ASCENDING
+           DISPLAY T
+           SORT TE ASCENDING SEQUENCE ASC
+           DISPLAY T
+           SORT TE ASCENDING
+           DISPLAY T
+           IF 'a' < 'A'
+              DISPLAY 'EBCDIC order'
+           END-IF
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -Wno-unfinished -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[Ab1 C182F140
+aA1
+1Aa
+aA1
+EBCDIC order
+], [])
+AT_CHECK([cat ascii.dat], [0], [Ab1 ], [])
+
+AT_CLEANUP

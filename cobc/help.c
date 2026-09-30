@@ -85,7 +85,7 @@ cobc_print_usage_common_options (void)
 	puts (_("  -std=<dialect>        warnings/features for a specific dialect\n"
 	        "                        <dialect> can be one of:\n"
 	        "                        default, cobol2014, cobol2002, cobol85, xopen,\n"
-	        "                        ibm-strict, ibm, mvs-strict, mvs,\n"
+	        "                        ibm-strict, ibm, ibm-jp, mvs-strict, mvs,\n"
 	        "                        mf-strict, mf, bs2000-strict, bs2000,\n"
 	        "                        acu-strict, acu, rm-strict, rm, gcos-strict,\n"
 	        "                        gcos;\n"

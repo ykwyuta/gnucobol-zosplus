@@ -265,6 +265,7 @@ FILE			*cb_listing_file = NULL;
 FILE			*cb_depend_file = NULL;
 const char		*cb_ebcdic_table = NULL;
 const cob_charset	*cb_data_charset = NULL;	/* NULL = native */
+static int		data_codeset_by_option = 0;
 int			cb_depend_output = 0;
 int			cb_depend_output_only = 0;
 int			cb_depend_add_phony = 0;
@@ -3989,6 +3990,7 @@ process_command_line (const int argc, char **argv)
 			if (cb_data_charset == &cob_charset_native) {
 				cb_data_charset = NULL;
 			}
+			data_codeset_by_option = 1;
 			break;
 
 		case CB_FLAG_GETOPT_DEFAULT_COLSEQ:
@@ -4305,10 +4307,21 @@ process_command_line (const int argc, char **argv)
 		cobc_err_exit (_("invalid parameter: %s"), "-febcdic-table");
 	}
 
-	/* EBCDIC data always uses the EBCDIC sign (zone nibble) */
+	/* data-codeset from the configuration, if not given as option */
+	if (!data_codeset_by_option && cb_config_data_codeset) {
+		cb_data_charset = cob_get_charset (cb_config_data_codeset);
+		if (cb_data_charset == &cob_charset_native) {
+			cb_data_charset = NULL;
+		}
+	}
+
+	/* EBCDIC data always uses the EBCDIC sign (zone nibble),
+	   and its tables for ASCII <-> EBCDIC translation (ALPHABET, CODE-SET) */
 	if (cb_data_charset
 	 && (cb_data_charset->flags & COB_CS_EBCDIC)) {
 		cb_ebcdic_sign = 1;
+		memcpy (ebcdic_to_ascii, cb_data_charset->to_host, 256);
+		memcpy (ascii_to_ebcdic, cb_data_charset->from_host, 256);
 	}
 
 	/* Exit on missing options */

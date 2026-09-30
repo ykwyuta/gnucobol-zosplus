@@ -3791,18 +3791,16 @@ cb_process_collating (struct cb_program *prog, cb_tree collating_sequence)
 			prog->high_value_n = (cob_u16_t)CB_ALPHABET_NAME (x)->high_val_char;
 		}
 	} else
-#ifdef COB_EBCDIC_MACHINE
-	if (CB_ALPHABET_NAME (x)->alphabet_type == CB_ALPHABET_ASCII) {
-                prog->low_value = ascii_to_ebcdic[0x00];
-                prog->high_value = ascii_to_ebcdic[0xff];
-	}
-#else
-	if (CB_ALPHABET_NAME (x)->alphabet_type == CB_ALPHABET_EBCDIC) {
-                prog->low_value = ebcdic_to_ascii[0x00];
-                prog->high_value = ebcdic_to_ascii[0xff];
-	}
-#endif
-	else {
+	if (cb_data_is_ebcdic ()
+	 && CB_ALPHABET_NAME (x)->alphabet_type == CB_ALPHABET_ASCII) {
+		prog->low_value = ascii_to_ebcdic[0x00];
+		prog->high_value = ascii_to_ebcdic[0xff];
+	} else
+	if (!cb_data_is_ebcdic ()
+	 && CB_ALPHABET_NAME (x)->alphabet_type == CB_ALPHABET_EBCDIC) {
+		prog->low_value = ebcdic_to_ascii[0x00];
+		prog->high_value = ebcdic_to_ascii[0xff];
+	} else {
 		return 0;
 	}
 
@@ -3871,21 +3869,22 @@ validate_alphabet (cb_tree alphabet)
 	/* ASCII */
 	if (ap->alphabet_type == CB_ALPHABET_ASCII) {
 		register int	*entry = ap->values;
+		const int	data_is_ebcdic = cb_data_is_ebcdic ();
 		for (n = 0; n < COB_MAX_CHAR_ALPHANUMERIC + 1; n++) {
-#ifdef	COB_EBCDIC_MACHINE
-			*entry = (int)ascii_to_ebcdic[n];
-#else
-			*entry = n;
-#endif
+			if (data_is_ebcdic) {
+				*entry = (int)ascii_to_ebcdic[n];
+			} else {
+				*entry = n;
+			}
 			entry++;
 		}
-#ifdef	COB_EBCDIC_MACHINE
-		ap->low_val_char = ascii_to_ebcdic[0x00];
-		ap->high_val_char = ascii_to_ebcdic[0xff];
-#else
-		ap->low_val_char = 0;
-		ap->high_val_char = 0xff;
-#endif
+		if (data_is_ebcdic) {
+			ap->low_val_char = ascii_to_ebcdic[0x00];
+			ap->high_val_char = ascii_to_ebcdic[0xff];
+		} else {
+			ap->low_val_char = 0;
+			ap->high_val_char = 0xff;
+		}
 		memcpy (ap->alphachr, ap->values, memsize);
 		return;
 	}
@@ -3893,21 +3892,22 @@ validate_alphabet (cb_tree alphabet)
 	/* EBCDIC */
 	if (ap->alphabet_type == CB_ALPHABET_EBCDIC) {
 		register int	*entry = ap->values;
+		const int	data_is_ebcdic = cb_data_is_ebcdic ();
 		for (n = 0; n < COB_MAX_CHAR_ALPHANUMERIC + 1; n++) {
-#ifdef	COB_EBCDIC_MACHINE
-			*entry = n;
-#else
-			*entry = (int)ebcdic_to_ascii[n];
-#endif
+			if (data_is_ebcdic) {
+				*entry = n;
+			} else {
+				*entry = (int)ebcdic_to_ascii[n];
+			}
 			entry++;
 		}
-#ifdef	COB_EBCDIC_MACHINE
-		ap->low_val_char = 0;
-		ap->high_val_char = 0xff;
-#else
-		ap->low_val_char = ebcdic_to_ascii[0x00];
-		ap->high_val_char = ebcdic_to_ascii[0xff];
-#endif
+		if (data_is_ebcdic) {
+			ap->low_val_char = 0;
+			ap->high_val_char = 0xff;
+		} else {
+			ap->low_val_char = ebcdic_to_ascii[0x00];
+			ap->high_val_char = ebcdic_to_ascii[0xff];
+		}
 		memcpy (ap->alphachr, ap->values, memsize);
 		return;
 	}

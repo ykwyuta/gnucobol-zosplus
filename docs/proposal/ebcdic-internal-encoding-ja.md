@@ -424,9 +424,15 @@ DISPLAY / ACCEPT と LINE SEQUENTIAL はホストのテキストとして読み�
 * `cob_get_s64_pic9` が EBCDIC で末尾の空白を数字として数えていた
 * DEBUG-ITEM、`-fdefaultbyte=<文字>`、SUPPRESS WHEN の文字、C$PRINTABLE、CBL_GC_HOSTED、CBL_ERROR_PROC のメッセージ、VFILE の状態コード、LOCALE-DATE / LOCALE-TIME、SUBSTITUTE-CASE、`-fdump` の表示
 
+#### P1 の残り（完了）
+
+* `ALPHABET ... IS STANDARD-1 / ASCII / EBCDIC`、既定の照合順（`-fdefault-colseq`）、`CODE-SET` は、`COB_EBCDIC_MACHINE` ではなく「データが EBCDIC か」で判断するようにした。ASCII と EBCDIC の変換表も、データ文字コードの表を使う。これで EBCDIC データのプログラムでも、`CODE-SET IS STANDARD-1` のファイルは ASCII で読み書きされ、`SEQUENCE IS STANDARD-1` の SORT は ASCII 順になる
+* 設定ファイルの項目 `data-codeset:` を追加した（すべての方言ファイルに `native` を明記。`-fdata-codeset` が優先）
+* 方言 `ibm-jp`（`config/ibm-jp.conf`：IBM 方言＋CCSID 1399）を追加した。`cobc -std=ibm-jp` で使える
+* 見つけた既存の不具合: COLLATING SEQUENCE を指定しない SORT / MERGE が、直前の SORT で指定した照合順を引き継いでいた（ネイティブでは ASCII 指定が「表なし」になるため表面化していなかった）
+
 ### 次の作業
 
-* P1 の残り: `ALPHABET ... IS EBCDIC / STANDARD-1` と `CODE-SET` を EBCDIC 内部に合わせて逆向きにする、`data-codeset` を設定ファイル（`ibm-jp.conf` など）でも指定できるようにする
 * P3: DBCS（PIC G / N、SO / SI を含む混在定数、端末への表示）
 * P4: SCREEN SECTION、XML / JSON、REPORT WRITER、EXTFH
 

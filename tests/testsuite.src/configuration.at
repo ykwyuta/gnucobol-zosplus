@@ -420,6 +420,7 @@ test.conf: missing definitions:
 	no definition of 'literal-length'
 	no definition of 'numeric-literal-length'
 	no definition of 'defaultbyte'
+	no definition of 'data-codeset'
 	no definition of 'standard-define'
 	no definition of 'format'
 	no definition of 'binary-size'
