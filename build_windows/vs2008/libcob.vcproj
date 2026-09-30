@@ -196,6 +196,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\libcob\charset.c"
+				>
+			</File>
+			<File
 				RelativePath="..\..\libcob\cobgetopt.c"
 				>
 			</File>

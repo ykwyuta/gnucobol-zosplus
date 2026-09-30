@@ -585,9 +585,16 @@ typedef __mpz_struct mpz_t[1];
 
 /* EBCDIC determination */
 
+/* COB_EBCDIC_HOST: the C compiler / host OS uses EBCDIC as its execution
+   character set (for example z/OS); this is about host strings like
+   file names, messages and the terminal - not about COBOL data, which
+   may use a different character set, see cob_charset below;
+   COB_EBCDIC_MACHINE is the historic name, kept for compatibility */
 #if ' ' == 0x40
+#define	COB_EBCDIC_HOST
 #define	COB_EBCDIC_MACHINE
 #else
+#undef	COB_EBCDIC_HOST
 #undef	COB_EBCDIC_MACHINE
 #endif
 
@@ -1248,6 +1255,56 @@ typedef struct __cob_screen {
 	int			attr;		/* COB_SCREEN_TYPE_ATTRIBUTE */
 } cob_screen;
 
+/* Character set of COBOL data ("data codeset"), may differ from
+   the host character set (see COB_EBCDIC_HOST);
+   a module without an explicit charset uses cob_charset_native */
+
+/* character classes in cob_charset.ctype */
+#define COB_CT_DIGIT	0x01U
+#define COB_CT_UPPER	0x02U
+#define COB_CT_LOWER	0x04U
+#define COB_CT_SPACE	0x08U	/* space character of the charset only */
+#define COB_CT_WHITE	0x10U	/* white space: space, HT, LF, VT, FF, CR */
+#define COB_CT_ALPHA	(COB_CT_UPPER | COB_CT_LOWER)
+
+/* flags in cob_charset.flags */
+#define COB_CS_EBCDIC	0x01U	/* EBCDIC based character set */
+#define COB_CS_MIXED	0x02U	/* SO/SI delimited DBCS may be contained */
+
+typedef struct __cob_charset {
+	const char		*name;		/* for example "NATIVE", "IBM-1399" */
+	unsigned int		ccsid;		/* IBM CCSID, 0 for native */
+	unsigned int		flags;		/* COB_CS_xxx */
+
+	/* characters used by the runtime when creating data */
+	unsigned char		space;
+	unsigned char		zero;		/* digits are zero | (0 .. 9) */
+	unsigned char		plus;
+	unsigned char		minus;
+	unsigned char		period;
+	unsigned char		comma;
+	unsigned char		asterisk;
+	unsigned char		slash;
+	unsigned char		quote;
+	unsigned char		apost;
+	unsigned char		upper_c;	/* for "CR" */
+	unsigned char		upper_r;
+	unsigned char		upper_d;	/* for "DB" */
+	unsigned char		upper_b;
+	unsigned char		so;		/* shift-out, 0 if not COB_CS_MIXED */
+	unsigned char		si;		/* shift-in, 0 if not COB_CS_MIXED */
+	unsigned char		dbcs_space[2];	/* DBCS space, 0 if no DBCS */
+
+	/* tables with 256 entries each */
+	const unsigned char	*ctype;		/* COB_CT_xxx per character */
+	const unsigned char	*to_upper;
+	const unsigned char	*to_lower;
+	const unsigned char	*to_host;	/* NULL: identical to host */
+	const unsigned char	*from_host;	/* NULL: identical to host */
+} cob_charset;
+
+COB_EXPIMP const cob_charset	cob_charset_native;
+
 /* Module structure */
 enum cob_module_type {
 	COB_MODULE_TYPE_PROGRAM		= 0,
@@ -1338,6 +1395,8 @@ typedef struct __cob_module {
 	const char		*section_name;		/* name of current active section */
 	const char		*paragraph_name;		/* name of current active pagagraph */
 	enum cob_statement	statement;		/* statement currently executed */
+
+	const cob_charset	*charset;		/* data codeset, NULL = native */
 
 } cob_module;
 

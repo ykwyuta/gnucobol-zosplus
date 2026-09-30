@@ -247,11 +247,44 @@ Note: also defined together with __clang__ in both frontends:
 #define offsetof(s_name,m_name) (int)(long)&(((s_name*)0))->m_name
 #endif
 
-/* Convert between a digit and an integer (e.g., '0' <-> 0) */
-#define COB_D2I(x)		((x) & 0x0F)
-#define COB_I2D(x)		(char) ('0' + (x))
-
 #define	COB_MODULE_PTR		cobglobptr->cob_current_module
+
+/* Data character set of the current module, see cob_charset;
+   note: character constants in C code are in the host character set,
+   so any character that is stored into / compared with COBOL data must
+   be taken from the data charset, while host strings (file names,
+   messages, environment, ...) keep using C character constants;
+   for loops it is suggested to store COB_CS in a local variable */
+#define	COB_CS			cob_module_charset (COB_MODULE_PTR)
+#define	COB_CH_SPACE		(COB_CS->space)
+#define	COB_CH_ZERO		(COB_CS->zero)
+#define	COB_CH_PLUS		(COB_CS->plus)
+#define	COB_CH_MINUS		(COB_CS->minus)
+
+/* character class checks for COBOL data in charset "cs" */
+#define	COB_CS_ISDIGIT(cs,c)	((cs)->ctype[(unsigned char)(c)] & COB_CT_DIGIT)
+#define	COB_CS_ISUPPER(cs,c)	((cs)->ctype[(unsigned char)(c)] & COB_CT_UPPER)
+#define	COB_CS_ISLOWER(cs,c)	((cs)->ctype[(unsigned char)(c)] & COB_CT_LOWER)
+#define	COB_CS_ISALPHA(cs,c)	((cs)->ctype[(unsigned char)(c)] & COB_CT_ALPHA)
+#define	COB_CS_ISWHITE(cs,c)	((cs)->ctype[(unsigned char)(c)] & COB_CT_WHITE)
+#define	COB_CS_TOUPPER(cs,c)	((cs)->to_upper[(unsigned char)(c)])
+#define	COB_CS_TOLOWER(cs,c)	((cs)->to_lower[(unsigned char)(c)])
+
+/* convert a single character between host and data charset;
+   PICTURE symbols and the module's decimal_point / currency_symbol /
+   numeric_separator are in the host charset */
+#define	COB_CS_FROM_HOST(cs,c)	\
+	((cs)->from_host ? (cs)->from_host[(unsigned char)(c)] : (unsigned char)(c))
+#define	COB_CS_TO_HOST(cs,c)	\
+	((cs)->to_host ? (cs)->to_host[(unsigned char)(c)] : (unsigned char)(c))
+
+/* Convert between a digit and an integer (e.g., '0' <-> 0);
+   COB_D2I works for both ASCII (0x30-0x39) and EBCDIC (0xF0-0xF9) digits,
+   COB_I2D creates a digit in the data charset of the current module,
+   COB_CS_I2D in the given charset */
+#define COB_D2I(x)		((x) & 0x0F)
+#define COB_CS_I2D(cs,x)	(char) ((cs)->zero + (x))
+#define COB_I2D(x)		COB_CS_I2D (COB_CS, x)
 #define	COB_TERM_BUFF		cobglobptr->cob_term_buff
 #define	COB_ACCEPT_STATUS	cobglobptr->cob_accept_status
 #define	COB_MAX_Y_COORD		cobglobptr->cob_max_y
@@ -481,6 +514,8 @@ struct config_tbl {
 
 /* Local function prototypes */
 COB_HIDDEN void		cob_init_numeric	(cob_global *);
+COB_HIDDEN void		cob_init_charset	(void);
+COB_HIDDEN const cob_charset	*cob_module_charset	(const cob_module *);
 COB_HIDDEN void		cob_init_cconv		(cob_global *);
 COB_HIDDEN void		cob_init_termio		(cob_global *, cob_settings *);
 COB_HIDDEN void		cob_init_fileio		(cob_global *, cob_settings *);

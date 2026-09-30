@@ -10496,6 +10496,7 @@ cob_init (const int argc, char **argv)
 
 	/* Call inits with cobsetptr to get the addresses of all */
 	/* Screen-IO might be needed for error outputs */
+	cob_init_charset ();
 	cob_init_screenio (cobglobptr, cobsetptr);
 	cob_init_cconv (cobglobptr);
 	cob_init_numeric (cobglobptr);
