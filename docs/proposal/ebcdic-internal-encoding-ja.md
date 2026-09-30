@@ -268,7 +268,7 @@ typedef struct __cob_charset {
 | 日本語定数 `N"..."` / `G"..."` / 混在定数 | DBCS（PIC G / PIC N の DISPLAY-1）は SO/SI を付けない 2 バイト列にする。英数字項目の混在定数は SO/SI を入れた長さで数える | `cobc/scanner.l`, `cobc/typeck.c` |
 | 表意定数 | `SPACE`、`ZERO`、`QUOTE` は記述子の値にする。`LOW-VALUE` / `HIGH-VALUE` は、照合順が NATIVE なら 0x00 / 0xFF のまま | `cobc/typeck.c:3790-3910` |
 | `SYMBOLIC CHARACTERS` | 序数を内部コードの位置として解釈する（`ebcdic-symbolic-characters: yes` と同じ意味になる） | 同上 |
-| 編集記号、`CURRENCY SIGN`、`DECIMAL-POINT IS COMMA` | `cob_module` の `currency_symbol` / `decimal_point` / `numeric_separator` に内部コードの値を入れる | `cobc/codegen.c:11379` 付近 |
+| 編集記号、`CURRENCY SIGN`、`DECIMAL-POINT IS COMMA` | `cob_module` の `currency_symbol` / `decimal_point` / `numeric_separator` は、PICTURE 記号と同じく**ホストのコードのまま**にする。libcob がデータに書き込む・データと比べるときに `COB_CS_FROM_HOST` で変換する（P0 の実装で決定。当初案の「内部コードの値を入れる」から変更） | `libcob/move.c` |
 | C ソースの生成 | `output_string`（`codegen.c:651`）は、データ定数を**すべて 8 進エスケープで出力する**（EBCDIC のバイトを C のソースに文字として書くと、C コンパイラが解釈を誤るため） | `cobc/codegen.c` |
 | モジュール情報 | `module->charset = &cob_charset_ibm1399;` などを出力する | `cobc/codegen.c` |
 | `CLASS` 条件 | `ALPHABETIC` / `ALPHABETIC-LOWER` / `ALPHABETIC-UPPER` / 利用者定義の CLASS の範囲（`'A' THRU 'Z'`）は、**ソースのコードの文字集合**として展開してから、内部コードの集合に変換する（EBCDIC では英字の並びが連続していないため） | `cobc/typeck.c` |
@@ -352,7 +352,32 @@ COB_TERMINAL_CODESET=UTF-8 COB_LS_CODESET=host ./prog
 
 ---
 
-## 10. まとめ
+## 10. 進捗状況
+
+### P0（動作を変えない下準備）: 実施中
+
+ブランチ `claude/ebcdic-code-proposal-oqkyol` で実施しています。どの段階でも、既存のテストスイートの結果が変わらないこと（1367 件が期待どおり、10 件スキップ）を確認しています。
+
+| 項目 | 状態 | 内容 |
+|------|------|------|
+| 文字セット記述子 | 完了 | `cob_charset`（`libcob/common.h`）、`cob_charset_native` と `cob_module_charset`（`libcob/charset.c`）、`cob_module->charset`（`NULL` ならネイティブ） |
+| マクロ | 完了 | `COB_CS`、`COB_CH_SPACE` / `COB_CH_ZERO` など、`COB_CS_ISDIGIT` などの文字クラス判定、`COB_CS_FROM_HOST` / `COB_CS_TO_HOST`、`COB_CS_I2D`（`libcob/coblocal.h`） |
+| `COB_EBCDIC_HOST` | 完了 | `COB_EBCDIC_MACHINE` の別名として追加（互換のため旧名も残す） |
+| move.c | 完了 | MOVE、数値編集、逆編集、C API（`cob_put_s64_pic9`、`cob_get_picx` など） |
+| numeric.c | 完了 | DISPLAY と 10 進の相互変換（GMP にはホストの数字を渡す）、数値 DISPLAY の比較での符号処理 |
+| common.c | 完了 | 符号処理、`cob_correct_numeric`、NUMERIC / ALPHABETIC 判定、SPACE / ZERO との比較、CBL_TOUPPER / CBL_TOLOWER、C$JUSTIFY、C$CALLEDBY、SYSTEM、CHAINING、ACCEPT FROM 環境変数・コマンド行 |
+| cconv.c | 完了 | `cob_field_to_string` はホストのコードに変換する。変換しない `cob_field_to_string_raw` を追加し、reportio.c ではこちらを使う |
+| strings.c | 完了 | INSPECT / STRING / UNSTRING の表意定数 |
+| intrinsic.c、fileio.c、termio.c、screenio.c、call.c、mlio.c、reportio.c | 未着手 | |
+| CBL_GC_GETOPT | 未着手 | 長いオプション名をホストのコードへ変換する必要がある（FIXME を記載済み） |
+
+### P0 で分かったこと
+
+* ALPHABETIC などのクラス判定と CBL_TOUPPER / CBL_TOLOWER は、今の実装では**実行時のロケール（LC_CTYPE）に依存**しています。動作を変えないよう、ネイティブ文字セットのときは従来どおり C ライブラリの関数を使い、それ以外のときだけ記述子の表を使います。
+* `COB_EBCDIC_MACHINE` の分岐の中に、ASCII ホストでは一度もコンパイルされていなかったバグがありました（符号付き `char` と `0xC0` を比べていた）。実行時の分岐に変えたので、ここは修正しました。
+* cobc が生成するコードは `COB_SPACES_ALPHABETIC` / `COB_ZEROES_ALPHABETIC`（ネイティブの SPACE / ZERO）を直接参照しています（`cobc/typeck.c:7196` 付近）。P1 では、EBCDIC のモジュールでこの最適化を使わないか、記述子の `spaces` / `zeroes` を参照するように変える必要があります。
+
+## 11. まとめ
 
 * 今の GnuCOBOL の EBCDIC 対応は「**内部は ASCII のまま、境界で変換する**」ものです。バイト値に依存するホストのロジックは完全には再現できません。
 * `#ifdef COB_EBCDIC_MACHINE` の分岐と `-fsign=EBCDIC` などの既存の仕組みには、EBCDIC 内部化に**使える部品がそろっています**。足りないのは次の 2 つです。

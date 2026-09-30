@@ -1,3 +1,24 @@
+2026-09-30  ykwyuta <ykwyuta@gmail.com>
+
+	first step (P0) for data in a character set other than the host one,
+	see docs/proposal/ebcdic-internal-encoding-ja.md, no behavior change:
+	* charset.c (new), common.h, coblocal.h: new data charset descriptor
+	  cob_charset with cob_charset_native, cob_module->charset,
+	  COB_EBCDIC_HOST as new name for COB_EBCDIC_MACHINE,
+	  macros COB_CS, COB_CH_xxx, COB_CS_ISxxx, COB_CS_FROM_HOST,
+	  COB_CS_TO_HOST, COB_CS_I2D; COB_I2D now uses the data charset
+	* move.c, numeric.c, common.c, strings.c: take characters stored into
+	  or checked in COBOL data from the data charset, PICTURE symbols and
+	  module decimal_point / currency_symbol stay in host charset
+	* common.c: runtime check of the data charset instead of
+	  COB_EBCDIC_MACHINE for sign handling, fixing a signed char issue in
+	  cob_get_sign_ebcdic for EBCDIC data
+	* common.c (cob_move_intermediate, cob_chain_setup, cob_sys_system,
+	  cob_sys_calledby), cconv.c (cob_field_to_string): convert between
+	  host and data charset
+	* cconv.c (cob_field_to_string_raw), reportio.c: new function to get
+	  the field content without conversion, used for report lines
+
 
 2026-09-16  Simon Sobisch <simonsobisch@gnu.org>
 

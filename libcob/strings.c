@@ -141,14 +141,15 @@ alloc_figurative (const cob_field *f1, const cob_field *f2)
 	const size_t		size2 = f2->size;
 
 #if 1	/* size1 is always 1 here, so several optimizations possible */
-	if (*f1->data == ' ' && size2 <= COB_SPACES_ALPHABETIC_BYTE_LENGTH) {
+	const cob_charset	*cs = COB_CS;
+	if (*f1->data == cs->space && size2 <= COB_SPACES_ALPHABETIC_BYTE_LENGTH) {
 		alpha_fld.size = size2;
-		alpha_fld.data = (unsigned char *) COB_SPACES_ALPHABETIC;
+		alpha_fld.data = (unsigned char *) cs->spaces;
 		return;
 	}
-	if (*f1->data == '0' && size2 <= COB_ZEROES_ALPHABETIC_BYTE_LENGTH) {
+	if (*f1->data == cs->zero && size2 <= COB_ZEROES_ALPHABETIC_BYTE_LENGTH) {
 		alpha_fld.size = size2;
-		alpha_fld.data = (unsigned char *) COB_ZEROES_ALPHABETIC;
+		alpha_fld.data = (unsigned char *) cs->zeroes;
 		return;
 	}
 
@@ -1249,7 +1250,7 @@ cob_unstring_into_intern (
 		} else if (COB_FIELD_IS_NUMERIC (dlm)) {
 			cob_set_int (dlm, 0);
 		} else {
-			memset (dlm->data, ' ', dlm->size);
+			memset (dlm->data, COB_CH_SPACE, dlm->size);
 		}
 	}
 
