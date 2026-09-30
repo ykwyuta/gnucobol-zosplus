@@ -1255,6 +1255,9 @@ typedef struct __cob_screen {
 	int			attr;		/* COB_SCREEN_TYPE_ATTRIBUTE */
 } cob_screen;
 
+#define COB_SPACES_ALPHABETIC_BYTE_LENGTH 1024
+#define COB_ZEROES_ALPHABETIC_BYTE_LENGTH 256
+
 /* Character set of COBOL data ("data codeset"), may differ from
    the host character set (see COB_EBCDIC_HOST);
    a module without an explicit charset uses cob_charset_native */
@@ -1294,6 +1297,11 @@ typedef struct __cob_charset {
 	unsigned char		so;		/* shift-out, 0 if not COB_CS_MIXED */
 	unsigned char		si;		/* shift-in, 0 if not COB_CS_MIXED */
 	unsigned char		dbcs_space[2];	/* DBCS space, 0 if no DBCS */
+
+	/* buffers filled with SPACE / ZERO, with a length of
+	   COB_SPACES_ALPHABETIC_BYTE_LENGTH / COB_ZEROES_ALPHABETIC_BYTE_LENGTH */
+	const char		*spaces;
+	const char		*zeroes;
 
 	/* tables with 256 entries each */
 	const unsigned char	*ctype;		/* COB_CT_xxx per character */
@@ -2033,11 +2041,8 @@ COB_EXPIMP void cob_unstring_into	(cob_field *, cob_field *, cob_field *);
 COB_EXPIMP void cob_unstring_tallying	(cob_field *);
 COB_EXPIMP void cob_unstring_finish	(void);
 
-COB_EXPIMP const char *COB_SPACES_ALPHABETIC;	/* PIC X/A/U SPACES */
-#define COB_SPACES_ALPHABETIC_BYTE_LENGTH 1024
-
-COB_EXPIMP const char *COB_ZEROES_ALPHABETIC;	/* PIC X/A/U ZEROES */
-#define COB_ZEROES_ALPHABETIC_BYTE_LENGTH 256
+COB_EXPIMP const char *COB_SPACES_ALPHABETIC;	/* PIC X/A/U SPACES (native) */
+COB_EXPIMP const char *COB_ZEROES_ALPHABETIC;	/* PIC X/A/U ZEROES (native) */
 
 /*******************************/
 /*   Functions in move.c       */

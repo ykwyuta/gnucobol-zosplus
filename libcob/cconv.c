@@ -30,6 +30,8 @@
 #define	COB_LIB_EXPIMP
 #include "coblocal.h"
 
+static cob_global		*cobglobptr = NULL;
+
 #ifdef	HAVE_DESIGNATED_INITS
 static const unsigned char	lower_tab[256] = {
 	['a'] = 'A',
@@ -259,12 +261,17 @@ cob_tolower (const unsigned char c)
 /* stores the field's rtrimmed string content into the given buffer
    with maxlength, optionally doing upper-/lowercasing on the fly,
    returns negative values on error, otherwise size of the data
-   processed */
-int
-cob_field_to_string (const cob_field *f, void *str, const size_t maxsize,
-	const enum cob_case_modifier target_case)
+   processed;
+   if 'to_host' is set, the data is converted from the data charset
+   to the host charset (before doing the case conversion) */
+static int
+field_to_string (const cob_field *f, void *str, const size_t maxsize,
+	const enum cob_case_modifier target_case, const int to_host)
 {
 	register unsigned char	*end, *data, *s;
+	const cob_charset	*cs = cobglobptr ? COB_CS : &cob_charset_native;
+	const unsigned char	space = cs->space;
+	const unsigned char	*conv = to_host ? cs->to_host : NULL;
 
 	s = (unsigned char *)str;
 	if (unlikely (f == NULL)) {
@@ -286,12 +293,12 @@ cob_field_to_string (const cob_field *f, void *str, const size_t maxsize,
 	}
 	end = data + f->size - 1;
 	while (end > data) {
-		if (*end != ' ' && *end) {
+		if (*end != space && *end) {
 			break;
 		}
 		end--;
 	}
-	if (*end == ' ' || *end == 0) {
+	if (*end == space || *end == 0) {
 		*s = 0;
 		return 0;
 	}
@@ -305,10 +312,23 @@ cob_field_to_string (const cob_field *f, void *str, const size_t maxsize,
 		return -4;
 #endif
 	}
+	if (conv) {
+		/* convert to host charset first, then do the case conversion */
+		unsigned char	*t = s;
+		while (data <= end) {
+			*t++ = conv[*data++];
+		}
+		end = t - 1;
+		data = s;
+	}
 	switch (target_case) {
 	case CCM_NONE:
-		while (data <= end) {
-			*s++ = *data++;
+		if (!conv) {
+			while (data <= end) {
+				*s++ = *data++;
+			}
+		} else {
+			s = end + 1;
 		}
 		break;
 	case CCM_LOWER:
@@ -334,7 +354,27 @@ cob_field_to_string (const cob_field *f, void *str, const size_t maxsize,
 	}
 	*s = 0;
 	/* note: we limit individual fields to be of size < INT_MAX in the compiler */
-	return (int)(end + 1 - f->data);
+	return (int)(s - (unsigned char *)str);
+}
+
+/* stores the field's rtrimmed string content into the given buffer
+   (converted to the host charset) with maxlength, optionally doing
+   upper-/lowercasing on the fly, returns negative values on error,
+   otherwise size of the data processed */
+int
+cob_field_to_string (const cob_field *f, void *str, const size_t maxsize,
+	const enum cob_case_modifier target_case)
+{
+	return field_to_string (f, str, maxsize, target_case, 1);
+}
+
+/* as cob_field_to_string, but without conversion to the host charset;
+   to be used when the result is stored in COBOL data again */
+int
+cob_field_to_string_raw (const cob_field *f, void *str, const size_t maxsize,
+	const enum cob_case_modifier target_case)
+{
+	return field_to_string (f, str, maxsize, target_case, 0);
 }
 
 
@@ -364,7 +404,7 @@ init_upper_lower (void)
 void
 cob_init_cconv (cob_global *lptr)
 {
-	COB_UNUSED (lptr);
+	cobglobptr = lptr;
 #ifndef	HAVE_DESIGNATED_INITS
 	init_upper_lower ();
 #endif

@@ -1627,8 +1627,16 @@ cob_set_signal (void)
 #endif
 }
 
+/* Sign handling for USAGE DISPLAY data;
+   the character handled is in the data charset (see cob_charset),
+   for EBCDIC data the switch statements work on the host variant of
+   the character (COB_CS_TO_HOST) and store back the data variant
+   (COB_CS_FROM_HOST) - which is an identity on EBCDIC hosts */
+
+#define SIGN_H2D(c)	COB_CS_FROM_HOST (cs, c)
+
 /* ASCII Sign - Reading and undo the "overpunch";
- * Note: if used on an EBCDIC machine this is actually _not_ an overpunch
+ * Note: if used with EBCDIC data this is actually _not_ an overpunch
  * but a replacement!
  *   positive: 0123456789
  *   negative: pqrstuvwxy
@@ -1638,126 +1646,127 @@ cob_set_signal (void)
 static int
 cob_get_sign_ascii (unsigned char *p)
 {
-#ifdef	COB_EBCDIC_MACHINE
-	switch (*p) {
-	case 'p':
-		*p = (unsigned char)'0';
-		return -1;
-	case 'q':
-		*p = (unsigned char)'1';
-		return -1;
-	case 'r':
-		*p = (unsigned char)'2';
-		return -1;
-	case 's':
-		*p = (unsigned char)'3';
-		return -1;
-	case 't':
-		*p = (unsigned char)'4';
-		return -1;
-	case 'u':
-		*p = (unsigned char)'5';
-		return -1;
-	case 'v':
-		*p = (unsigned char)'6';
-		return -1;
-	case 'w':
-		*p = (unsigned char)'7';
-		return -1;
-	case 'x':
-		*p = (unsigned char)'8';
-		return -1;
-	case 'y':
-		*p = (unsigned char)'9';
-	case '0':
-	case '1':
-	case '2':
-	case '3':
-	case '4':
-	case '5':
-	case '6':
-	case '7':
-	case '8':
-	case '9':
-		/* already without sign */
-		return -1;
+	const cob_charset	*cs = COB_CS;
+	if (cs->flags & COB_CS_EBCDIC) {
+		switch (COB_CS_TO_HOST (cs, *p)) {
+		case 'p':
+			*p = SIGN_H2D ('0');
+			return -1;
+		case 'q':
+			*p = SIGN_H2D ('1');
+			return -1;
+		case 'r':
+			*p = SIGN_H2D ('2');
+			return -1;
+		case 's':
+			*p = SIGN_H2D ('3');
+			return -1;
+		case 't':
+			*p = SIGN_H2D ('4');
+			return -1;
+		case 'u':
+			*p = SIGN_H2D ('5');
+			return -1;
+		case 'v':
+			*p = SIGN_H2D ('6');
+			return -1;
+		case 'w':
+			*p = SIGN_H2D ('7');
+			return -1;
+		case 'x':
+			*p = SIGN_H2D ('8');
+			return -1;
+		case 'y':
+			*p = SIGN_H2D ('9');
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9':
+			/* already without sign */
+			return -1;
+		}
+		*p = cs->zero;
+		return 1;
 	}
-	*p = (unsigned char)'0';
-	return 1;
-#else
 	if (*p >= (unsigned char)'p' && *p <= (unsigned char)'y') {
 		*p &= ~0x40;	/* 0x71 'q' -> 0x31 -> '1' */
 		return -1;
 	}
-	if (IS_VALID_DIGIT_DATA (*p)) {
+	if (COB_CS_ISDIGIT (cs, *p)) {
 		/* already without sign */
 		return 1;
 	}
-	*p = (unsigned char)'0';
+	*p = cs->zero;
 	return 1;
-#endif
 }
 
 /* overpunches the pointer 'p' with the sign
- * Note: if used on an EBCDIC machine this is actually _not_ an overpunch
+ * Note: if used with EBCDIC data this is actually _not_ an overpunch
  * but a replacement! */
 static void
 cob_put_sign_ascii (unsigned char *p)
 {
-#ifdef	COB_EBCDIC_MACHINE
-	switch (*p) {
-	case '0':
-		*p = (unsigned char)'p';
+	const cob_charset	*cs = COB_CS;
+	if (cs->flags & COB_CS_EBCDIC) {
+		switch (COB_CS_TO_HOST (cs, *p)) {
+		case '0':
+			*p = SIGN_H2D ('p');
+			return;
+		case '1':
+			*p = SIGN_H2D ('q');
+			return;
+		case '2':
+			*p = SIGN_H2D ('r');
+			return;
+		case '3':
+			*p = SIGN_H2D ('s');
+			return;
+		case '4':
+			*p = SIGN_H2D ('t');
+			return;
+		case '5':
+			*p = SIGN_H2D ('u');
+			return;
+		case '6':
+			*p = SIGN_H2D ('v');
+			return;
+		case '7':
+			*p = SIGN_H2D ('w');
+			return;
+		case '8':
+			*p = SIGN_H2D ('x');
+			return;
+		case '9':
+			*p = SIGN_H2D ('y');
+			return;
+		case 'p':
+		case 'q':
+		case 'r':
+		case 's':
+		case 't':
+		case 'u':
+		case 'v':
+		case 'w':
+		case 'x':
+		case 'y':
+			/* already signed */
+			return;
+		default:
+			*p = cs->zero;
+		}
 		return;
-	case '1':
-		*p = (unsigned char)'q';
-		return;
-	case '2':
-		*p = (unsigned char)'r';
-		return;
-	case '3':
-		*p = (unsigned char)'s';
-		return;
-	case '4':
-		*p = (unsigned char)'t';
-		return;
-	case '5':
-		*p = (unsigned char)'u';
-		return;
-	case '6':
-		*p = (unsigned char)'v';
-		return;
-	case '7':
-		*p = (unsigned char)'w';
-		return;
-	case '8':
-		*p = (unsigned char)'x';
-		return;
-	case '9':
-		*p = (unsigned char)'y';
-		return;
-	case 'p':
-	case 'q':
-	case 'r':
-	case 's':
-	case 't':
-	case 'u':
-	case 'v':
-	case 'w':
-	case 'x':
-	case 'y':
-		/* already signed */
-		return;
-	default:
-		*p = (unsigned char)'0';
 	}
-#else
 	*p |= 0x40;
-#endif
 }
 
 /* EBCDIC Sign - Reading and undo the "overpunch";
- * Note: if used on an ASCII machine this is actually _not_ an overpunch
+ * Note: if used with ASCII data this is actually _not_ an overpunch
  * but a replacement!
  *   positive: {ABCDEFGHI
  *   unsigned: 0123456789
@@ -1768,111 +1777,130 @@ cob_put_sign_ascii (unsigned char *p)
 static int
 cob_get_sign_ebcdic (unsigned char *p)
 {
-#ifdef	COB_EBCDIC_MACHINE
-	char sign_nibble = *p & 0xF0;
-	/* What to do here outside of 0 - 9? */
-	if ((*p & 0x0F) > 9) {
-		*p = sign_nibble;
+	const cob_charset	*cs = COB_CS;
+	if (cs->flags & COB_CS_EBCDIC) {
+		/* EBCDIC data: the sign is the zone nibble */
+		const unsigned char sign_nibble = *p & 0xF0;
+		/* What to do here outside of 0 - 9? */
+		if ((*p & 0x0F) > 9) {
+			*p = sign_nibble;
+		}
+		switch (sign_nibble) {
+		/* positive */
+		case 0xC0:
+		/* positive, non-preferred */
+		case 0xA0:
+		case 0xE0:
+			return 1;
+		/* negative */
+		case 0xD0:
+		/* negative, non-preferred */
+		case 0xB0:
+			return -1;
+		/* unsigned  */
+		case 0xF0:
+			return 0;
+		default:
+			/* What to do here outside of sign nibbles? */
+			return 1;
+		}
 	}
-	switch (sign_nibble) {
-	/* positive */
-	case 0xC0:
-	/* positive, non-preferred */
-	case 0xA0:
-	case 0xE0:
-		return 1;
-	/* negative */
-	case 0xD0:
-	/* negative, non-preferred */
-	case 0xB0:
-		return -1;
-	/* unsigned  */
-	case 0xF0:
-		return 0;
-	default:
-		/* What to do here outside of sign nibbles? */
-		return 1;
-	}
-#else
-	switch (*p) {
+	switch (COB_CS_TO_HOST (cs, *p)) {
 	case '{':
-		*p = (unsigned char)'0';
+		*p = SIGN_H2D ('0');
 		return 1;
 	case 'A':
-		*p = (unsigned char)'1';
+		*p = SIGN_H2D ('1');
 		return 1;
 	case 'B':
-		*p = (unsigned char)'2';
+		*p = SIGN_H2D ('2');
 		return 1;
 	case 'C':
-		*p = (unsigned char)'3';
+		*p = SIGN_H2D ('3');
 		return 1;
 	case 'D':
-		*p = (unsigned char)'4';
+		*p = SIGN_H2D ('4');
 		return 1;
 	case 'E':
-		*p = (unsigned char)'5';
+		*p = SIGN_H2D ('5');
 		return 1;
 	case 'F':
-		*p = (unsigned char)'6';
+		*p = SIGN_H2D ('6');
 		return 1;
 	case 'G':
-		*p = (unsigned char)'7';
+		*p = SIGN_H2D ('7');
 		return 1;
 	case 'H':
-		*p = (unsigned char)'8';
+		*p = SIGN_H2D ('8');
 		return 1;
 	case 'I':
-		*p = (unsigned char)'9';
+		*p = SIGN_H2D ('9');
 		return 1;
 	case '}':
-		*p = (unsigned char)'0';
+		*p = SIGN_H2D ('0');
 		return -1;
 	case 'J':
-		*p = (unsigned char)'1';
+		*p = SIGN_H2D ('1');
 		return -1;
 	case 'K':
-		*p = (unsigned char)'2';
+		*p = SIGN_H2D ('2');
 		return -1;
 	case 'L':
-		*p = (unsigned char)'3';
+		*p = SIGN_H2D ('3');
 		return -1;
 	case 'M':
-		*p = (unsigned char)'4';
+		*p = SIGN_H2D ('4');
 		return -1;
 	case 'N':
-		*p = (unsigned char)'5';
+		*p = SIGN_H2D ('5');
 		return -1;
 	case 'O':
-		*p = (unsigned char)'6';
+		*p = SIGN_H2D ('6');
 		return -1;
 	case 'P':
-		*p = (unsigned char)'7';
+		*p = SIGN_H2D ('7');
 		return -1;
 	case 'Q':
-		*p = (unsigned char)'8';
+		*p = SIGN_H2D ('8');
 		return -1;
 	case 'R':
-		*p = (unsigned char)'9';
+		*p = SIGN_H2D ('9');
 		return -1;
 	default:
-		if (*p >= '0' && *p <= '9') {
+		if (COB_CS_ISDIGIT (cs, *p)) {
 			return 0;
 		}
 		/* What to do here outside of 0 - 9? */
 		if ((*p & 0x0F) > 9) {
-			*p = (unsigned char)'0';
+			*p = cs->zero;
 		} else {
-			*p = (unsigned char)COB_I2D (COB_D2I (*p));
+			*p = (unsigned char)COB_CS_I2D (cs, COB_D2I (*p));
 		}
 		return 1;
 	}
-#endif
 }
 
 static void
 cob_put_sign_ebcdic (unsigned char *p, const int sign)
 {
+	const cob_charset	*cs = COB_CS;
+	if (cs->flags & COB_CS_EBCDIC) {
+		/* EBCDIC data: the sign is the zone nibble, identical to
+		   the character based variant below:
+		   unsigned digits (0xF0-0xF9) get the sign zone,
+		   characters with the sign zone and a digit are kept,
+		   everything else is replaced by a signed zero */
+		const unsigned char	zone = (sign == -1) ? 0xD0 : 0xC0;
+		const unsigned char	digit = *p & 0x0F;
+		if (digit > 9) {
+			*p = zone;
+		} else if ((*p & 0xF0) == 0xF0) {
+			*p = zone | digit;
+		} else if ((*p & 0xF0) != zone) {
+			*p = zone;
+		}
+		return;
+	}
 	if (sign == -1) {
 		switch (*p) {
 		case '0':
@@ -1974,6 +2002,8 @@ cob_put_sign_ebcdic (unsigned char *p, const int sign)
 	}
 }
 
+#undef SIGN_H2D
+
 /* compare up to 'size' characters from buffer 'p'
    to a single character 'c',
    using collation 'col' */
@@ -2052,11 +2082,12 @@ compare_character (const unsigned char *data, size_t size,
 static int
 compare_spaces (const unsigned char *data, size_t size)
 {
+	const char	*spaces = COB_CS->spaces;
 	if (size <= COB_SPACES_ALPHABETIC_BYTE_LENGTH) {
-		return memcmp (data, COB_SPACES_ALPHABETIC, size);
+		return memcmp (data, spaces, size);
 	}
 	return compare_character (data, size,
-		(const unsigned char *)COB_SPACES_ALPHABETIC,
+		(const unsigned char *)spaces,
 		COB_SPACES_ALPHABETIC_BYTE_LENGTH);
 }
 
@@ -2064,11 +2095,12 @@ compare_spaces (const unsigned char *data, size_t size)
 static int
 compare_zeroes (const unsigned char *data, size_t size)
 {
+	const char	*zeroes = COB_CS->zeroes;
 	if (size <= COB_ZEROES_ALPHABETIC_BYTE_LENGTH) {
-		return memcmp (data, COB_ZEROES_ALPHABETIC, size);
+		return memcmp (data, zeroes, size);
 	}
 	return compare_character (data, size,
-		(const unsigned char *)COB_ZEROES_ALPHABETIC,
+		(const unsigned char *)zeroes,
 		COB_ZEROES_ALPHABETIC_BYTE_LENGTH);
 }
 
@@ -2089,11 +2121,11 @@ cob_cmp_all (cob_field *f1, cob_field *f2)
 	/* check without collation */
 	if (col == NULL) {
 		if (size2 == 1) {
-			if (*data2 == ' ') {
+			if (*data2 == COB_CH_SPACE) {
 				/* check for IF VAR = [ALL] SPACE[S] */
 				ret = compare_spaces (data1, size1);
 			} else
-			if (*data2 == '0') {
+			if (*data2 == COB_CH_ZERO) {
 				/* check for IF VAR = [ALL] ZERO[ES] */
 				ret = compare_zeroes (data1, size1);
 			} else {
@@ -2170,10 +2202,10 @@ cob_cmp_strings (
 		/* Compare the rest (if any) with spaces */
 		if (size1 > size2) {
 			const size_t spaces_to_test = size1 - min;
-			return common_cmpc (data1 + min, ' ', spaces_to_test, col);
+			return common_cmpc (data1 + min, COB_CH_SPACE, spaces_to_test, col);
 		} else if (size1 < size2) {
 			const size_t spaces_to_test = size2 - min;
-			return -common_cmpc (data2 + min, ' ', spaces_to_test, col);
+			return -common_cmpc (data2 + min, COB_CH_SPACE, spaces_to_test, col);
 		}
 
 	}
@@ -2254,16 +2286,31 @@ sort_compare_collate (const void *data1, const void *data2)
 }
 
 /* intermediate move using USAGE DISPLAY field to 'dst' using
-   buffer 'src' with given 'size' as source */
+   buffer 'src' with given 'size' as source;
+   'src' is in host charset (environment, command line, ...)
+   and converted to the data charset if necessary */
 static void
 cob_move_intermediate (cob_field *dst, const void *src, const size_t size)
 {
 	cob_field	intermediate;
+	const cob_charset	*cs = COB_CS;
 	intermediate.size = size;
-	intermediate.data = (cob_u8_ptr)src;
+	intermediate.attr = &const_alpha_attr;
 	/* note: if the target is numeric then cob_move will convert
 	         on the fly to numeric as necessary */
-	intermediate.attr = &const_alpha_attr;
+	if (cs->from_host && size > 0) {
+		const unsigned char	*s = src;
+		unsigned char	*converted = cob_fast_malloc (size);
+		size_t		i;
+		for (i = 0; i < size; i++) {
+			converted[i] = cs->from_host[s[i]];
+		}
+		intermediate.data = converted;
+		cob_move (&intermediate, dst);
+		cob_free (converted);
+		return;
+	}
+	intermediate.data = (cob_u8_ptr)src;
 	cob_move (&intermediate, dst);
 }
 
@@ -3674,10 +3721,16 @@ cob_correct_numeric (cob_field *f)
 	register unsigned char *p = f->data;
 	unsigned char	*end = p + f->size;
 	unsigned char	*c;
+	const cob_charset	*cs;
 
 	if (!COB_FIELD_IS_NUMDISP (f)) {
 		return;
 	}
+	cs = COB_CS;
+
+	/* note: the switch statements below work on the host variant of the
+	   data (identical for native data), the results are converted back */
+#define CN_H2D(x)	COB_CS_FROM_HOST (cs, x)
 
 	if (COB_FIELD_HAVE_SIGN (f)) {
 		/* Adjust for sign byte */
@@ -3687,11 +3740,12 @@ cob_correct_numeric (cob_field *f)
 			c = --end;
 		}
 		if (unlikely (COB_FIELD_SIGN_SEPARATE (f))) {
-			if (*c != '+' && *c != '-') {
-				*c = '+';
+			if (*c != cs->plus && *c != cs->minus) {
+				*c = cs->plus;
 			}
 		} else if (unlikely (COB_MODULE_PTR->ebcdic_sign)) {
-			switch (*c) {
+			const unsigned char	h = COB_CS_TO_HOST (cs, *c);
+			switch (h) {
 			case '{':
 			case 'A':
 			case 'B':
@@ -3714,7 +3768,7 @@ cob_correct_numeric (cob_field *f)
 			case 'R':
 				break;
 			case '0':
-				*c = '{';
+				*c = CN_H2D ('{');
 				break;
 			case '1':
 			case '2':
@@ -3725,29 +3779,30 @@ cob_correct_numeric (cob_field *f)
 			case '7':
 			case '8':
 			case '9':
-				*c = 'A' + (*c - '1');
+				*c = CN_H2D ('A' + (h - '1'));
 				break;
 			case 0:
 			case ' ':
-				*c = '{';
+				*c = CN_H2D ('{');
 				break;
 			default:
 				break;
 			}
 		} else {
-			if (!*c || *c == ' ') {
-				*c = '0';
+			if (!*c || *c == cs->space) {
+				*c = cs->zero;
 			}
 		}
 	} else {
 		c = end - 1;
 		if (unlikely (COB_MODULE_PTR->ebcdic_sign)) {
-			switch (*c) {
+			const unsigned char	h = COB_CS_TO_HOST (cs, *c);
+			switch (h) {
 			case 0:
 			case ' ':
 			case '{':
 			case '}':
-				*c = '0';
+				*c = cs->zero;
 				break;
 			case 'A':
 			case 'B':
@@ -3758,7 +3813,7 @@ cob_correct_numeric (cob_field *f)
 			case 'G':
 			case 'H':
 			case 'I':
-				*c = '1' + (*c - 'A');
+				*c = CN_H2D ('1' + (h - 'A'));
 				break;
 			case 'J':
 			case 'K':
@@ -3769,17 +3824,18 @@ cob_correct_numeric (cob_field *f)
 			case 'P':
 			case 'Q':
 			case 'R':
-				*c = '1' + (*c - 'J');
+				*c = CN_H2D ('1' + (h - 'J'));
 				break;
 			default:
 				break;
 			}
 		} else {
-			switch (*c) {
+			const unsigned char	h = COB_CS_TO_HOST (cs, *c);
+			switch (h) {
 			case 0:
 			case ' ':
 			case 'p':
-				*c = '0';
+				*c = cs->zero;
 				break;
 			case 'q':
 			case 'r':
@@ -3790,7 +3846,7 @@ cob_correct_numeric (cob_field *f)
 			case 'w':
 			case 'x':
 			case 'y':
-				*c = *c - 'p';
+				*c = CN_H2D (h - 'p');
 				break;
 			default:
 				break;
@@ -3798,30 +3854,16 @@ cob_correct_numeric (cob_field *f)
 		}
 	}
 	while (p < end) {
-		switch (*p) {
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9':
-			break;
-		case 0:
-		case ' ':
-			*p = '0';
-			break;
-		default:
-			if ((*p & 0x0F) <= 9) {
-				*p = COB_I2D (*p & 0x0F);
-			}
-			break;
+		if (COB_CS_ISDIGIT (cs, *p)) {
+			/* fine */
+		} else if (*p == 0 || *p == cs->space) {
+			*p = cs->zero;
+		} else if ((*p & 0x0F) <= 9) {
+			*p = COB_CS_I2D (cs, *p & 0x0F);
 		}
 		p++;
 	}
+#undef CN_H2D
 }
 
 static int
@@ -3829,6 +3871,7 @@ cob_check_numdisp (const cob_field *f)
 {
 	register const unsigned char	*p = f->data;
 	const unsigned char		*end = p + f->size;
+	const cob_charset	*cs = COB_CS;
 
 	if (COB_FIELD_HAVE_SIGN (f)) {
 		/* Adjust for sign byte */
@@ -3839,12 +3882,12 @@ cob_check_numdisp (const cob_field *f)
 			c = *(--end);
 		}
 		if (unlikely (COB_FIELD_SIGN_SEPARATE (f))) {
-			if (c != '+' && c != '-') {
+			if (c != cs->plus && c != cs->minus) {
 				return 0;
 			}
-		} else if (IS_INVALID_DIGIT_DATA (c)) {
+		} else if (!COB_CS_ISDIGIT (cs, c)) {
 			if (COB_MODULE_PTR->ebcdic_sign) {
-				switch (c) {
+				switch (COB_CS_TO_HOST (cs, c)) {
 				case '{':
 				case 'A':
 				case 'B':
@@ -3870,7 +3913,7 @@ cob_check_numdisp (const cob_field *f)
 					return 0;
 				}
 			} else {
-				switch (c) {
+				switch (COB_CS_TO_HOST (cs, c)) {
 				case 'p':
 				case 'q':
 				case 'r':
@@ -3890,7 +3933,7 @@ cob_check_numdisp (const cob_field *f)
 	}
 
 	while (p < end) {
-		if (IS_INVALID_DIGIT_DATA (*p)) {
+		if (!COB_CS_ISDIGIT (cs, *p)) {
 			return 0;
 		}
 		p++;
@@ -3923,36 +3966,39 @@ int
 cob_real_get_sign (cob_field *f, const int adjust_ebcdic)
 {
 	unsigned char	*p;
+	const cob_charset	*cs;
 
 	switch (COB_FIELD_TYPE (f)) {
 	case COB_TYPE_NUMERIC_DISPLAY:
 		p = locate_sign (f);
+		cs = COB_CS;
 
 		/* Get sign */
 		if (unlikely (COB_FIELD_SIGN_SEPARATE (f))) {
-			return (*p == '-') ? -1 : 1;
+			return (*p == cs->minus) ? -1 : 1;
 		}
-		if (IS_VALID_DIGIT_DATA (*p)) {
+		if (COB_CS_ISDIGIT (cs, *p)) {
 			return 1;
 		}
-		if (*p == ' ') {
+		if (*p == cs->space) {
 #if	0	/* RXWRXW - Space sign */
-			*p = '0';
+			*p = cs->zero;
 #endif
 			return 1;
 		}
 		if (adjust_ebcdic) {
-#ifdef	COB_EBCDIC_MACHINE
-			if (COB_MODULE_PTR->ebcdic_sign) {
-				return cob_get_sign_ebcdic (p);
+			if (cs->flags & COB_CS_EBCDIC) {
+				/* note: this is the "old" behavior on EBCDIC machines,
+				   CHECKME: cob_get_sign_ebcdic may return 0 here */
+				if (COB_MODULE_PTR->ebcdic_sign) {
+					return cob_get_sign_ebcdic (p);
+				}
+				return cob_get_sign_ascii (p) < 0 ? -2 : 2;
 			}
-			return cob_get_sign_ascii (p) < 0 ? -2 : 2;
-#else
 			if (COB_MODULE_PTR->ebcdic_sign) {
 				return cob_get_sign_ebcdic (p) < 0 ? -2 : 2;
 			}
 			return ((*p & 0xF0) == 0x70) ? -1 : 1;
-#endif
 		} else {
 			if (COB_MODULE_PTR->ebcdic_sign) {
 				return cob_get_sign_ebcdic (p);
@@ -3980,7 +4026,7 @@ cob_real_put_sign (cob_field *f, const int sign)
 		/* Note: we only locate the sign if needed,
 		   as the common case will be "nothing to do" */
 		if (unlikely (COB_FIELD_SIGN_SEPARATE (f))) {
-			const unsigned char	c = (sign == -1) ? '-' : '+';
+			const unsigned char	c = (sign == -1) ? COB_CH_MINUS : COB_CH_PLUS;
 			p = locate_sign (f);
 			if (*p != c) {
 				*p = c;
@@ -4058,14 +4104,14 @@ cob_cmp (cob_field *f1, cob_field *f2)
 
 	/* one is an internal ALL field (ZERO,LOW-VALUE, ...) */
 	if (f2_type == COB_TYPE_ALPHANUMERIC_ALL) {
-		if (f2->size == 1 && f2->data[0] == '0'
+		if (f2->size == 1 && f2->data[0] == COB_CH_ZERO
 		 && f1_is_numeric) {
 			return cob_cmp_int (f1, 0);
 		}
 		return cob_cmp_all (f1, f2);
 	}
 	if (f1_type == COB_TYPE_ALPHANUMERIC_ALL) {
-		if (f1->size == 1 && f1->data[0] == '0'
+		if (f1->size == 1 && f1->data[0] == COB_CH_ZERO
 		 && f2_is_numeric) {
 			return -cob_cmp_int (f2, 0);
 		}
@@ -4249,9 +4295,10 @@ cob_is_numeric (const cob_field *f)
 		{
 			register const unsigned char *p = f->data;
 			const unsigned char *end = p + f->size;
+			const cob_charset	*cs = COB_CS;
 
 			while (p < end) {
-				if (IS_INVALID_DIGIT_DATA (*p)) {
+				if (!COB_CS_ISDIGIT (cs, *p)) {
 					return 0;
 				}
 				p++;
@@ -4266,10 +4313,23 @@ cob_is_alpha (const cob_field *f)
 {
 	register const unsigned char *p = f->data;
 	const unsigned char *end = p + f->size;
+	const cob_charset	*cs = COB_CS;
 
+	if (cs == &cob_charset_native) {
+		/* native data: class depends on LC_CTYPE */
+		while (p < end) {
+			if (*p == (unsigned char)' '
+			 || isalpha (*p)) {
+				p++;
+			} else {
+				return 0;
+			}
+		}
+		return 1;
+	}
 	while (p < end) {
-		if (*p == (unsigned char)' '
-		 || isalpha (*p)) {
+		if (*p == cs->space
+		 || COB_CS_ISALPHA (cs, *p)) {
 			p++;
 		} else {
 			return 0;
@@ -4283,10 +4343,23 @@ cob_is_upper (const cob_field *f)
 {
 	register const unsigned char *p = f->data;
 	const unsigned char *end = p + f->size;
+	const cob_charset	*cs = COB_CS;
 
+	if (cs == &cob_charset_native) {
+		/* native data: class depends on LC_CTYPE */
+		while (p < end) {
+			if (*p == (unsigned char)' '
+			 || isupper (*p)) {
+				p++;
+			} else {
+				return 0;
+			}
+		}
+		return 1;
+	}
 	while (p < end) {
-		if (*p == (unsigned char)' '
-		 || isupper (*p)) {
+		if (*p == cs->space
+		 || COB_CS_ISUPPER (cs, *p)) {
 			p++;
 		} else {
 			return 0;
@@ -4300,10 +4373,23 @@ cob_is_lower (const cob_field *f)
 {
 	register const unsigned char *p = f->data;
 	const unsigned char *end = p + f->size;
+	const cob_charset	*cs = COB_CS;
 
+	if (cs == &cob_charset_native) {
+		/* native data: class depends on LC_CTYPE */
+		while (p < end) {
+			if (*p == (unsigned char)' '
+			 || islower (*p)) {
+				p++;
+			} else {
+				return 0;
+			}
+		}
+		return 1;
+	}
 	while (p < end) {
-		if (*p == (unsigned char)' '
-		 || islower (*p)) {
+		if (*p == cs->space
+		 || COB_CS_ISLOWER (cs, *p)) {
 			p++;
 		} else {
 			return 0;
@@ -5935,11 +6021,20 @@ cob_chain_setup (void *data, const size_t parm, const size_t size)
 	   program internal initialization */
 	if (parm <= (size_t)cob_argc - 1) {
 		const size_t	len = strlen (cob_argv[parm]);
-		memset (data, ' ', size);
+		const cob_charset	*cs = COB_CS;
+		memset (data, cs->space, size);
 		if (len <= size) {
 			memcpy (data, cob_argv[parm], len);
 		} else {
 			memcpy (data, cob_argv[parm], size);
+		}
+		/* command line is in host charset */
+		if (cs->from_host) {
+			unsigned char	*p = data;
+			size_t		i;
+			for (i = 0; i < len && i < size; i++) {
+				p[i] = cs->from_host[p[i]];
+			}
 		}
 	}
 }
@@ -6529,6 +6624,18 @@ cob_sys_system (const void *cmdline)
 	if (COB_MODULE_PTR->cob_procedure_params[0]) {
 		const char *cmd = cmdline;
 		size_t		i = COB_MODULE_PTR->cob_procedure_params[0]->size;
+		const cob_charset	*cs = COB_CS;
+		char		*host_cmd = NULL;
+		int		status = 1;
+		/* the command is COBOL data, convert it to host charset */
+		if (cs->to_host) {
+			size_t	k;
+			host_cmd = cob_fast_malloc (i);
+			for (k = 0; k < i; k++) {
+				host_cmd[k] = (char)cs->to_host[((const unsigned char *)cmdline)[k]];
+			}
+			cmd = host_cmd;
+		}
 		/* FIXME: if caller wasn't COBOL then size must be evaluated by strlen */
 		i--;
 		do {
@@ -6542,6 +6649,9 @@ cob_sys_system (const void *cmdline)
 			if (unlikely (i > COB_MEDIUM_MAX)) {
 				cob_runtime_warning (_("parameter to SYSTEM call is larger than %d characters"),
 					COB_MEDIUM_MAX);
+				if (host_cmd) {
+					cob_free (host_cmd);
+				}
 				return 1;
 			}
 			/* LCOV_EXCL_STOP */
@@ -6569,7 +6679,6 @@ cob_sys_system (const void *cmdline)
 			}
 #endif
 			{
-				int status;
 				if (cobglobptr->cob_screen_initialized) {
 					cob_screen_set_mode (0);
 				}
@@ -6597,9 +6706,12 @@ cob_sys_system (const void *cmdline)
 				}
 #endif
 #endif
-				return status;
 			}
 		}
+		if (host_cmd) {
+			cob_free (host_cmd);
+		}
+		return status;
 	}
 	return 1;
 }
@@ -7035,8 +7147,16 @@ cob_sys_toupper (void *p1, const int length)
 	COB_CHK_PARMS (CBL_TOUPPER, 2);
 
 	if (length > 0) {
-		for (n = 0; n < (size_t)length; ++n) {
-			data[n] = (cob_u8_t)toupper (data[n]);
+		const cob_charset	*cs = COB_CS;
+		if (cs == &cob_charset_native) {
+			/* native data: depends on LC_CTYPE */
+			for (n = 0; n < (size_t)length; ++n) {
+				data[n] = (cob_u8_t)toupper (data[n]);
+			}
+		} else {
+			for (n = 0; n < (size_t)length; ++n) {
+				data[n] = COB_CS_TOUPPER (cs, data[n]);
+			}
 		}
 	}
 	return 0;
@@ -7051,8 +7171,16 @@ cob_sys_tolower (void *p1, const int length)
 	COB_CHK_PARMS (CBL_TOLOWER, 2);
 
 	if (length > 0) {
-		for (n = 0; n < (size_t)length; ++n) {
-			data[n] = (cob_u8_t)tolower (data[n]);
+		const cob_charset	*cs = COB_CS;
+		if (cs == &cob_charset_native) {
+			/* native data: depends on LC_CTYPE */
+			for (n = 0; n < (size_t)length; ++n) {
+				data[n] = (cob_u8_t)tolower (data[n]);
+			}
+		} else {
+			for (n = 0; n < (size_t)length; ++n) {
+				data[n] = COB_CS_TOLOWER (cs, data[n]);
+			}
 		}
 	}
 	return 0;
@@ -7329,7 +7457,7 @@ cob_sys_calledby (void *data)
 		return -1;
 	}
 	size = COB_MODULE_PTR->cob_procedure_params[0]->size;
-	memset (data, ' ', size);
+	memset (data, COB_CH_SPACE, size);
 	if (!COB_MODULE_PTR->next) {
 		return 0;
 	}
@@ -7338,6 +7466,17 @@ cob_sys_calledby (void *data)
 		msize = size;
 	}
 	memcpy (data, COB_MODULE_PTR->next->module_name, msize);
+	/* module name is in host charset */
+	{
+		const cob_charset	*cs = COB_CS;
+		if (cs->from_host) {
+			unsigned char	*p = data;
+			size_t		i;
+			for (i = 0; i < msize; i++) {
+				p[i] = cs->from_host[p[i]];
+			}
+		}
+	}
 	return 1;
 }
 
@@ -7434,6 +7573,8 @@ cob_sys_getopt_long_long (void *so, void *lo, void *idx, const int long_only, vo
 	}
 
 	longoptions = longoptions_root;
+	/* FIXME: the long option names are passed to getopt in the data charset,
+	   needs conversion to the host charset for non-native data */
 	for (i = 0; i < lo_amount; i++) {
 		j = sizeof (l->name) - 1;
 		while (j >= 0 && l->name[j] == ' ') {
@@ -7579,6 +7720,7 @@ cob_sys_justify (void *p1, ...)
 	size_t		centrelen;
 	size_t		n;
 	size_t		shifting;
+	unsigned char	space;
 
 	COB_CHK_PARMS (C$JUSTIFY, 1);
 
@@ -7586,15 +7728,16 @@ cob_sys_justify (void *p1, ...)
 		return 0;
 	}
 	data = p1;
+	space = COB_CH_SPACE;
 	datalen = COB_MODULE_PTR->cob_procedure_params[0]->size;
 	if (datalen < 2) {
 		return 0;
 	}
-	if (data[0] != ' ' && data[datalen - 1] != ' ') {
+	if (data[0] != space && data[datalen - 1] != space) {
 		return 0;
 	}
 	for (left = 0; left < datalen; ++left) {
-		if (data[left] != ' ') {
+		if (data[left] != space) {
 			break;
 		}
 	}
@@ -7603,7 +7746,7 @@ cob_sys_justify (void *p1, ...)
 	}
 	right = 0;
 	for (n = datalen - 1; ; --n, ++right) {
-		if (data[n] != ' ') {
+		if (data[n] != space) {
 			break;
 		}
 		if (n == 0) {
@@ -7618,30 +7761,30 @@ cob_sys_justify (void *p1, ...)
 		va_start (args, p1);
 		direction = va_arg (args, unsigned char *);
 		va_end (args);
-		if (*direction == 'L') {
+		if (*direction == COB_CS_FROM_HOST (COB_CS, 'L')) {
 			shifting = 1;
-		} else if (*direction == 'C') {
+		} else if (*direction == COB_CS_FROM_HOST (COB_CS, 'C')) {
 			shifting = 2;
 		}
 	}
 	switch (shifting) {
 	case 1:
 		memmove (data, &data[left], movelen);
-		memset (&data[movelen], ' ', datalen - movelen);
+		memset (&data[movelen], space, datalen - movelen);
 		break;
 	case 2:
 		centrelen = (left + right) / 2;
 		memmove (&data[centrelen], &data[left], movelen);
-		memset (data, ' ', centrelen);
+		memset (data, space, centrelen);
 		if ((left + right) % 2) {
-			memset (&data[centrelen + movelen], ' ', centrelen + 1);
+			memset (&data[centrelen + movelen], space, centrelen + 1);
 		} else {
-			memset (&data[centrelen + movelen], ' ', centrelen);
+			memset (&data[centrelen + movelen], space, centrelen);
 		}
 		break;
 	default:
 		memmove (&data[left + right], &data[left], movelen);
-		memset (data, ' ', datalen - movelen);
+		memset (data, space, datalen - movelen);
 		break;
 	}
 	return 0;

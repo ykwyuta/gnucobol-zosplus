@@ -316,7 +316,7 @@ cob_add_fields(cob_field *op1, cob_field *op2, cob_field *rslt)
 
 #ifdef COB_DEBUG_LOG
 	if (DEBUG_ISON("rw")) {
-		(void)cob_field_to_string (op1, wrk, sizeof(wrk)-1, CCM_NONE);
+		(void)cob_field_to_string_raw (op1, wrk, sizeof(wrk)-1, CCM_NONE);
 		DEBUG_LOG("rw",("    Add '%s' ",wrk));
 	}
 #endif
@@ -331,7 +331,7 @@ cob_add_fields(cob_field *op1, cob_field *op2, cob_field *rslt)
 
 #ifdef COB_DEBUG_LOG
 	if (DEBUG_ISON ("rw")) {
-		(void)cob_field_to_string (op2, wrk, sizeof (wrk) - 1, CCM_NONE);
+		(void)cob_field_to_string_raw (op2, wrk, sizeof (wrk) - 1, CCM_NONE);
 		DEBUG_LOG("rw",("TO '%s' ",wrk));
 	}
 #endif
@@ -342,7 +342,7 @@ cob_add_fields(cob_field *op1, cob_field *op2, cob_field *rslt)
 
 #ifdef COB_DEBUG_LOG
 	if (DEBUG_ISON("rw")) {
-		(void)cob_field_to_string (&fld1, wrk, sizeof(wrk)-1, CCM_NONE);
+		(void)cob_field_to_string_raw (&fld1, wrk, sizeof(wrk)-1, CCM_NONE);
 		DEBUG_LOG("rw",("GIVING '%s' ",wrk));
 		DEBUG_LOG("rw",("  PIC 9(%d)",rslt->attr->digits));
 		if (rslt->attr->scale > 0)
@@ -451,7 +451,7 @@ reportDumpOneLine(const cob_report *r, cob_report_line *fl, int indent, int dump
 		if(fl->report_flags & COB_REPORT_NEXT_GROUP_PAGE)	DEBUG_LOG("rw",("NEXT GROUP PAGE "));
 	}
 	if(fl->control) {
-		(void)cob_field_to_string (fl->control, wrk, sizeof(wrk) - 1, CCM_NONE);
+		(void)cob_field_to_string_raw (fl->control, wrk, sizeof(wrk) - 1, CCM_NONE);
 		if (wrk[0] >= ' ')
 			DEBUG_LOG("rw",("Line Control %d is '%s' ",sequence,wrk));
 	}
@@ -469,7 +469,7 @@ reportDumpOneLine(const cob_report *r, cob_report_line *fl, int indent, int dump
 					if (rf->litval) {
 						DEBUG_LOG("rw",("   \"%s\" ",rf->litval));
 					} else {
-						(void)cob_field_to_string (rf->f, wrk, sizeof (wrk) - 1, CCM_NONE);
+						(void)cob_field_to_string_raw (rf->f, wrk, sizeof (wrk) - 1, CCM_NONE);
 						DEBUG_LOG("rw",("   '%s' ",wrk));
 					}
 				}
@@ -598,12 +598,12 @@ reportDump(const cob_report *r, const char *msg)
 		for(c=r->controls; c; c = c->next) {
 			DEBUG_LOG("rw",(" Control %s ",c->name));
 			if(c->f) {
-				(void)cob_field_to_string (c->f, wrk, sizeof (wrk) - 1, CCM_NONE);
+				(void)cob_field_to_string_raw (c->f, wrk, sizeof (wrk) - 1, CCM_NONE);
 				if (wrk[0] >= ' ')
 					DEBUG_LOG("rw",("has '%s' ",wrk));
 			}
 			if(c->val) {
-				(void)cob_field_to_string (c->val, wrk, sizeof (wrk) - 1, CCM_NONE);
+				(void)cob_field_to_string_raw (c->val, wrk, sizeof (wrk) - 1, CCM_NONE);
 				if (wrk[0] >= ' ')
 					DEBUG_LOG("rw",("Value '%s' ",wrk));
 			}
@@ -896,7 +896,7 @@ print_field (cob_report_field *rf, char *rec)
 	size_t	dest_pos = (size_t)rf->column - 1;
 	int ret;
 
-	ret = cob_field_to_string (rf->f, wrk, COB_SMALL_MAX, CCM_NONE);
+	ret = cob_field_to_string_raw (rf->f, wrk, COB_SMALL_MAX, CCM_NONE);
 	if (ret > 0) {
 		ln = ret;
 	}
@@ -1069,7 +1069,7 @@ report_line(cob_report *r, cob_report_line *l)
 			 || rf->group_indicate) {
 #if 0	/* unused */
 				if (rf->source) {		/* Copy source field in */
-					(void)cob_field_to_string (rf->source, wrk,
+					(void)cob_field_to_string_raw (rf->source, wrk,
 						COB_SMALL_MAX, CCM_NONE);
 				}
 #endif
@@ -1693,9 +1693,9 @@ PrintFirstHeading:
 #if defined(COB_DEBUG_LOG) 
 				DEBUG_LOG("rw",(" Control Break %s order %d changed from ",
 							rc->name,rc->sequence));
-				(void)cob_field_to_string (rc->val, wrk, sizeof(wrk)-1, CCM_NONE);
+				(void)cob_field_to_string_raw (rc->val, wrk, sizeof(wrk)-1, CCM_NONE);
 				DEBUG_LOG("rw",("'%s' to ",wrk));
-				(void)cob_field_to_string (rc->f, wrk, sizeof(wrk)-1, CCM_NONE);
+				(void)cob_field_to_string_raw (rc->f, wrk, sizeof(wrk)-1, CCM_NONE);
 				DEBUG_LOG("rw",("'%s'\n",wrk));
 #endif
 				cob_move(rc->f, rc->sf);	/* Save new CONTROL value */

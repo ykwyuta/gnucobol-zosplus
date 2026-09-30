@@ -931,6 +931,16 @@ cob_decimal_set_double (cob_decimal *d, const double v)
 			d->scale = 0;
 			return;
 		}
+		/* spaces in data charset, if it differs from host */
+		if (COB_CH_SPACE != ' ') {
+			cob_u64_t	data_spaced_out;
+			memset (&data_spaced_out, COB_CH_SPACE, sizeof (data_spaced_out));
+			if (ud.l1 == data_spaced_out) {
+				mpz_set_ui (d->value, 0);
+				d->scale = 0;
+				return;
+			}
+		}
 	}
 
 	/* we now convert from float to cob_decimal, to do so without
@@ -1439,6 +1449,37 @@ cob_set_packed_int (cob_field *f, const int val)
 
 /* DISPLAY */
 
+/* copy digits from COBOL data (data charset) to a host string as used
+   by GMP, the digits are expected to be valid (sign "unpunched") */
+static COB_INLINE COB_A_INLINE void
+copy_data_digits_to_host (char *dst, const unsigned char *src, const size_t size)
+{
+	if (COB_CH_ZERO == '0') {
+		memcpy (dst, src, size);
+	} else {
+		const unsigned char	*end = src + size;
+		while (src < end) {
+			*dst++ = (char)('0' + COB_D2I (*src++));
+		}
+	}
+}
+
+/* copy digits from a host string (for example from GMP)
+   to COBOL data (data charset) */
+static COB_INLINE COB_A_INLINE void
+copy_host_digits_to_data (unsigned char *dst, const char *src, const size_t size)
+{
+	const unsigned char	zero = COB_CH_ZERO;
+	if (zero == '0') {
+		memcpy (dst, src, size);
+	} else {
+		const char	*end = src + size;
+		while (src < end) {
+			*dst++ = (unsigned char)(zero + COB_D2I (*src++));
+		}
+	}
+}
+
 static void
 cob_decimal_set_display (cob_decimal *d, cob_field *f)
 {
@@ -1496,20 +1537,21 @@ cob_decimal_set_display (cob_decimal *d, cob_field *f)
 		if (COB_FIELD_SIZE (f) <= COB_MAX_DIGITS) {
 			/* original field size hints at likely user-defined
 			   field, which may include invalid data */
+			/* note: the buffer is for GMP, so uses host digits */
 			register char *pp = buff, *end = buff + size;
 			while (pp < end) {
-				*pp++ = COB_I2D (COB_D2I (*data++));
+				*pp++ = (char)('0' + COB_D2I (*data++));
 			}
 			*pp = 0;
 		} else {
 			/* bigger fields _must_ be _internal_ so there's no need to handle
-			   invalid data via COB_D2I + COB_I2D and we can copy as-is */
-			memcpy (buff, data, size);
+			   invalid data via COB_D2I and we can copy as-is */
+			copy_data_digits_to_host (buff, data, size);
 			/* still we may need to unpunch the sign, which in this internal
 			   case will always be at the last digit */
 			if (sign == -1) {
 			 	char *p = buff + size - 1;
-			 	*p = COB_I2D (COB_D2I (*p));
+			 	*p = (char)('0' + COB_D2I (*p));
 			}
 			buff[size] = 0;
 		}
@@ -1523,12 +1565,12 @@ cob_decimal_set_display (cob_decimal *d, cob_field *f)
 		   invalid data via COB_D2I + COB_I2D and we can copy as-is;
 		   this code has shown to be faster than mpz ui multiplication */
 		char	*buff = cob_fast_malloc ((size_t)size + 1U);
-		memcpy (buff, data, size);
+		copy_data_digits_to_host (buff, data, size);
 		/* still we may need to unpunch the sign, which in this internal
 		   case will always be at the last digit */
 		if (sign == -1) {
 		 	char *p = buff + size - 1;
-		 	*p = COB_I2D (COB_D2I (*p));
+		 	*p = (char)('0' + COB_D2I (*p));
 		}
 		buff[size] = 0;
 		mpz_set_str (d->value, buff, 10);
@@ -1555,7 +1597,7 @@ cob_decimal_get_display (cob_decimal *d, cob_field *f, const int opt)
 
 	/* check for value zero (allows early exit) and handle sign */
 	if (sign == 0) {
-		memset (data, '0', fsize);
+		memset (data, COB_CH_ZERO, fsize);
 		COB_PUT_SIGN (f, 0);
 		return 0;
 	}
@@ -1586,11 +1628,11 @@ cob_decimal_get_display (cob_decimal *d, cob_field *f, const int opt)
 			}
 
 			/* Other size, truncate digits */
-			memcpy (data, p - diff, fsize);
+			copy_host_digits_to_data (data, p - diff, fsize);
 		} else {
 			/* No overflow */
-			memset (data, '0', diff);
-			memcpy (data + diff, p, size);
+			memset (data, COB_CH_ZERO, diff);
+			copy_host_digits_to_data (data + diff, p, size);
 		}
 
 		cob_gmp_free (p);
@@ -1626,8 +1668,8 @@ cob_decimal_get_display (cob_decimal *d, cob_field *f, const int opt)
 		size_t		size, diff;
 		size = strlen (buff);
 		diff = fsize - size;
-		memset (data, '0', diff);
-		memcpy (data + diff, buff, size);
+		memset (data, COB_CH_ZERO, diff);
+		copy_host_digits_to_data (data + diff, buff, size);
 	}
 	COB_PUT_SIGN (f, sign);
 	return 0;
@@ -4437,11 +4479,14 @@ cob_cmp_packed (cob_field *f, const cob_s64_t val)
 
 /* Numeric Display compares */
 
-#ifdef	COB_EBCDIC_MACHINE
+/* note: the sign helpers below get the character in host charset,
+   converted via COB_CS_TO_HOST */
+
+/* "ASCII" overpunch in EBCDIC data */
 static unsigned int
-cob_get_long_ascii_sign (const unsigned char *p, int *val)
+cob_get_long_ascii_sign (const unsigned char c, int *val)
 {
-	switch (*p) {
+	switch (c) {
 	case 'p':
 		return 1;
 	case 'q':
@@ -4474,12 +4519,11 @@ cob_get_long_ascii_sign (const unsigned char *p, int *val)
 	}
 	return 0;
 }
-#endif
 
 static unsigned int
-cob_get_long_ebcdic_sign (const unsigned char *p, int *val)
+cob_get_long_ebcdic_sign (const unsigned char c, int *val)
 {
-	switch (*p) {
+	switch (c) {
 	case '{':
 		return 0;
 	case 'A':
@@ -4566,30 +4610,31 @@ cob_cmp_numdisp (const unsigned char *data, const size_t size,
 		val = val * 10 + COB_D2I (*p++);
 	}
 	val *= 10;
-	if (*p >= (unsigned char)'0' && *p <= (unsigned char)'9') {
-		val += COB_D2I (*p);
-	} else {
-		if (unlikely (COB_MODULE_PTR->ebcdic_sign)) {
+	{
+		const cob_charset	*cs = COB_CS;
+		if (COB_CS_ISDIGIT (cs, *p)) {
+			val += COB_D2I (*p);
+		} else if (unlikely (COB_MODULE_PTR->ebcdic_sign)) {
 			int sign_val = 0;
-			int sign = cob_get_long_ebcdic_sign (p, &sign_val);
+			int sign = cob_get_long_ebcdic_sign
+				(COB_CS_TO_HOST (cs, *p), &sign_val);
+			val += sign_val;
+			if (sign) {
+				val = -val;
+			}
+		} else if (cs->flags & COB_CS_EBCDIC) {
+			int sign_val = 0;
+			int sign = cob_get_long_ascii_sign
+				(COB_CS_TO_HOST (cs, *p), &sign_val);
 			val += sign_val;
 			if (sign) {
 				val = -val;
 			}
 		} else {
-#ifdef	COB_EBCDIC_MACHINE
-			int sign_val = 0;
-			int sign = cob_get_long_ascii_sign (p, &sign_val);
-			val += sign_val;
-			if (sign) {
-				val = -val;
-			}
-#else
 			if (*p >= (unsigned char)'p' && *p <= (unsigned char)'y') {
 				val += (*p - (unsigned char)'p');
 				val = -val;
 			}
-#endif
 		}
 	}
 	return (val < n) ? -1 : (val > n);

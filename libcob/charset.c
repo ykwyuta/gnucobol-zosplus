@@ -35,6 +35,8 @@
 static unsigned char	native_ctype[256];
 static unsigned char	native_upper[256];
 static unsigned char	native_lower[256];
+static char		native_spaces[COB_SPACES_ALPHABETIC_BYTE_LENGTH];
+static char		native_zeroes[COB_ZEROES_ALPHABETIC_BYTE_LENGTH];
 
 const cob_charset	cob_charset_native = {
 	"NATIVE",
@@ -48,6 +50,8 @@ const cob_charset	cob_charset_native = {
 	'C', 'R', 'D', 'B',
 	0, 0,
 	{ 0, 0 },
+	native_spaces,
+	native_zeroes,
 	native_ctype,
 	native_upper,
 	native_lower,
@@ -63,6 +67,8 @@ init_native_tables (void)
 	static const unsigned char	lower[] = "abcdefghijklmnopqrstuvwxyz";
 	size_t	i;
 
+	memset (native_spaces, ' ', sizeof (native_spaces));
+	memset (native_zeroes, '0', sizeof (native_zeroes));
 	memset (native_ctype, 0, sizeof (native_ctype));
 	for (i = 0; i < 256; i++) {
 		native_upper[i] = (unsigned char)i;

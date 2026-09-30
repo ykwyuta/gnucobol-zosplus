@@ -255,7 +255,9 @@ Note: also defined together with __clang__ in both frontends:
    be taken from the data charset, while host strings (file names,
    messages, environment, ...) keep using C character constants;
    for loops it is suggested to store COB_CS in a local variable */
-#define	COB_CS			cob_module_charset (COB_MODULE_PTR)
+#define	COB_CS			\
+	((COB_MODULE_PTR && COB_MODULE_PTR->charset) \
+		? COB_MODULE_PTR->charset : &cob_charset_native)
 #define	COB_CH_SPACE		(COB_CS->space)
 #define	COB_CH_ZERO		(COB_CS->zero)
 #define	COB_CH_PLUS		(COB_CS->plus)
@@ -590,6 +592,8 @@ enum cob_case_modifier {
 COB_HIDDEN unsigned char	cob_toupper (const unsigned char);
 COB_HIDDEN unsigned char	cob_tolower (const unsigned char);
 COB_HIDDEN int		cob_field_to_string	(const cob_field *, void *,
+						 const size_t, const enum cob_case_modifier target_case);
+COB_HIDDEN int		cob_field_to_string_raw	(const cob_field *, void *,
 						 const size_t, const enum cob_case_modifier target_case);
 
 COB_HIDDEN cob_settings *cob_get_settings_ptr	(void);
