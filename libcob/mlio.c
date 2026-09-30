@@ -219,6 +219,7 @@ struct xml_state {
 	struct xml_event *event;	/* pointer to last processed event */
 	const char	*input_data_ptr;
 	size_t	input_data_len;
+	unsigned char	*input_host;	/* input data converted to host charset */
 	xmlChar	*buff; 	/* buffer for event data */
 	size_t	buff_len;		/* size of current buffer for "text"
 	                 		  (increasing until end of XML processing) */
@@ -277,7 +278,9 @@ set_xml_event (enum cob_xml_event event)
 	unsigned char *data2 = COB_MODULE_PTR->xml_event->data;
 
 	memcpy (data2, data1, size1);
-	memset (data2 + size1, ' ', size2 - size1);
+	/* the event name is in host charset */
+	cob_charset_from_host (COB_CS, data2, size1);
+	memset (data2 + size1, COB_CH_SPACE, size2 - size1);
 }
 
 static COB_INLINE COB_A_INLINE void
@@ -394,10 +397,28 @@ set_xml_event_information (struct xml_state *state, enum xml_information xml_inf
 }
 
 /* set text of current event by placing it into the event data buffer */
+/* event data from the parser is in host charset (UTF-8),
+   the registers are in the data charset */
+static size_t
+buffer_xml_event_data_conv (struct xml_state *state, const void *data, size_t *size)
+{
+	const cob_charset	*cs = COB_CS;
+	size_t		off;
+	if (cs->from_host && *size > 0) {
+		size_t		conv_size;
+		unsigned char	*conv = cob_charset_text_from_host (cs, data, *size, &conv_size);
+		off = buffer_xml_event_data (state, conv, conv_size);
+		cob_free (conv);
+		*size = conv_size;
+		return off;
+	}
+	return buffer_xml_event_data (state, data, *size);
+}
+
 static void
 set_xml_event_text (struct xml_state *state, const void *data, size_t size)
 {
-	state->event->text_off = buffer_xml_event_data (state, data, size);
+	state->event->text_off = buffer_xml_event_data_conv (state, data, &size);
 	state->event->text_len = size;
 }
 
@@ -414,7 +435,7 @@ extend_xml_event_text (struct xml_state *state, const void *data, size_t size)
 		cob_hard_failure ();
 	}
 #endif
-	buffer_xml_event_data (state, data, size);
+	buffer_xml_event_data_conv (state, data, &size);
 	state->event->text_len += size;
 }
 
@@ -422,7 +443,7 @@ extend_xml_event_text (struct xml_state *state, const void *data, size_t size)
 static void
 set_xml_event_namespace (struct xml_state *state, const void *data, size_t size)
 {
-	state->event->namespace_off = buffer_xml_event_data (state, data, size);
+	state->event->namespace_off = buffer_xml_event_data_conv (state, data, &size);
 	state->event->namespace_len = size;
 }
 
@@ -430,7 +451,7 @@ set_xml_event_namespace (struct xml_state *state, const void *data, size_t size)
 static void
 set_xml_event_prefix (struct xml_state *state, const void *data, size_t size)
 {
-	state->event->prefix_off = buffer_xml_event_data (state, data, size);
+	state->event->prefix_off = buffer_xml_event_data_conv (state, data, &size);
 	state->event->prefix_len = size;
 }
 
@@ -540,8 +561,9 @@ is_empty (const cob_field * const f)
 {
 	size_t	i;
 
+	const unsigned char	space = COB_CH_SPACE;
 	for (i = 0; i < f->size; ++i) {
-		if (f->data[i] != ' ') {
+		if (f->data[i] != space) {
 			return 0;
 		}
 	}
@@ -577,17 +599,18 @@ get_trimmed_data_int (const cob_field * const f,
 {
 	char	*str = (char *)f->data;
 	int 	len = f->size;
+	const char	space = (char)COB_CH_SPACE;
 
 	if (len == 0) {
 		*out_len = 1;
-		*data = " ";
+		*data = COB_CS->spaces;
 		return;
 	}
 
 	if (COB_FIELD_JUSTIFIED (f)) {
-		for (; *str == ' ' && len > 1; ++str, --len);
+		for (; *str == space && len > 1; ++str, --len);
 	} else {
-		for (; (str[len - 1] == ' ' || str[len - 1] == 0) && len > 1; --len);
+		for (; (str[len - 1] == space || str[len - 1] == 0) && len > 1; --len);
 	}
 
 	*out_len = len;
@@ -603,9 +626,19 @@ get_trimmed_data (const cob_field * const f,
 {
 	int 	len;
 	const char	*str;
+	const cob_charset	*cs = COB_CS;
 
 	get_trimmed_data_int (f, &str, &len);
 
+	/* the result is in host charset */
+	if (cs->to_host) {
+		size_t		host_len;
+		unsigned char	*host = cob_charset_text_to_host (cs,
+				(const unsigned char *)str, (size_t)len, &host_len);
+		void	*ret = (*strndup_func)((const char *)host, host_len);
+		cob_free (host);
+		return ret;
+	}
 	return (*strndup_func)(str, len);
 }
 
@@ -617,11 +650,13 @@ has_invalid_xml_char (const cob_field * const f)
 
 	/*  Char       ::=      #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF] */
 	/* TO-DO: This assumes the data is already in UTF-8! */
+	const cob_charset	*cs = COB_CS;
 	for (i = 0; i < f->size; ++i) {
-		if (iscntrl (f->data[i])
-		 && f->data[i] != 0x09
-		 && f->data[i] != 0x0a
-		 && f->data[i] != 0x0d) {
+		const unsigned char	c = COB_CS_TO_HOST (cs, f->data[i]);
+		if (iscntrl (c)
+		 && c != 0x09
+		 && c != 0x0a
+		 && c != 0x0d) {
 			return 1;
 		}
 	}
@@ -638,7 +673,7 @@ is_valid_xml_name (const cob_field * const f)
 	char	*str, *c;
 	int	ret;
 
-	if (!cob_is_xml_namestartchar (f->data[0])) {
+	if (!cob_is_xml_namestartchar (COB_CS_TO_HOST (COB_CS, f->data[0]))) {
 		return 0;
 	}
 
@@ -729,6 +764,9 @@ get_num_int (cob_field * const f, const char decimal_point,
 	if (mod_orig_decimal_point) {
 		COB_MODULE_PTR->decimal_point = mod_orig_decimal_point;
 	}
+
+	/* the edited field is in data charset, convert to host */
+	cob_charset_to_host (COB_CS, p, (size_t)len);
 
 	/* Trim output (we know the edited field will have at least one digit)
 	   and provide a duplicate as we need it later */
@@ -961,6 +999,11 @@ generate_content (xmlTextWriterPtr writer, cob_ml_tree *tree,
 		int 	len = 0;
 		xmlChar		*x_content = get_num_int (tree->content, decimal_point, edited_data, &len);
 		ret = xmlTextWriterWriteRawLen (writer, x_content, len);
+	} else if (COB_CS->to_host) {
+		/* data charset differs: use a converted copy */
+		xmlChar	*x_content = get_trimmed_data (tree->content, &copy_data_as_string);
+		ret = xmlTextWriterWriteString (writer, x_content);
+		cob_free (x_content);
 	} else {
 		int 	len;
 		const char	*p;
@@ -1169,6 +1212,8 @@ generate_json_from_tree (cob_ml_tree *tree, const char decimal_point, json_objec
 {
 	cob_ml_tree	*child;
 	const char 	*name = NULL;
+	char	*name_host = NULL;	/* converted copy of the name */
+	unsigned int	key_opts = JSON_C_OBJECT_ADD_CONSTANT_KEY;
 	int 	status = 0;
 	json_object	*children_json = NULL;
 
@@ -1185,6 +1230,15 @@ generate_json_from_tree (cob_ml_tree *tree, const char decimal_point, json_objec
 		   so no trimming here; also: in any case this is data that includes a trailing
 		   nul, so we can directly use it as a constant(!) C literal */
 		name = (const char 	*)tree->name->data;
+		if (COB_CS->to_host) {
+			/* data charset differs: use a converted copy, which is
+			   copied by json-c (no constant key) */
+			size_t	len;
+			name_host = (char *)cob_charset_text_to_host (COB_CS,
+					tree->name->data, strlen (name), &len);
+			name = name_host;
+			key_opts = 0;
+		}
 	}
 	if (tree->children) {
 		if (name != NULL) {
@@ -1200,8 +1254,7 @@ generate_json_from_tree (cob_ml_tree *tree, const char decimal_point, json_objec
 			}
 		}
 		if (name != NULL) {
-			json_object_object_add_ex (out, name, children_json,
-					JSON_C_OBJECT_ADD_CONSTANT_KEY);
+			json_object_object_add_ex (out, name, children_json, key_opts);
 		}
 	} else if (tree->content) {
 		if (name == NULL) {
@@ -1224,19 +1277,26 @@ generate_json_from_tree (cob_ml_tree *tree, const char decimal_point, json_objec
 			  C-JSON the number is 0.0f.
 			*/
 			json_object_object_add_ex (out, name,
-					json_object_new_double_s (0.0, str),
-					JSON_C_OBJECT_ADD_CONSTANT_KEY);
+					json_object_new_double_s (0.0, str), key_opts);
+		} else if (COB_CS->to_host) {
+			/* data charset differs: use a converted copy */
+			char	*str = get_trimmed_data (tree->content, &copy_data_as_string);
+			json_object_object_add_ex (out, name,
+					json_object_new_string (str), key_opts);
+			cob_free (str);
 		} else {
 			int 	len;
 			const char	*str;
 			get_trimmed_data_int (tree->content, &str, &len);
 			json_object_object_add_ex (out, name,
-					json_object_new_string_len (str, len),
-					JSON_C_OBJECT_ADD_CONSTANT_KEY);
+					json_object_new_string_len (str, len), key_opts);
 		}
 	}
 
  end:
+	if (name_host) {
+		cob_free (name_host);
+	}
 	return status;
 }
 #endif
@@ -1385,6 +1445,26 @@ static void xml_parse (cob_field *encoding, cob_field *validation,
 static void xml_endDocument (void *);
 static void xml_free_parse_memory (struct xml_state *state);
 
+/* set the input data for the parser, converted to the host charset */
+static void
+xml_set_input (struct xml_state *state, cob_field *in)
+{
+	const cob_charset	*cs = COB_CS;
+	if (state->input_host) {
+		cob_free (state->input_host);
+		state->input_host = NULL;
+	}
+	if (cs->to_host && in->size > 0) {
+		size_t	host_len;
+		state->input_host = cob_charset_text_to_host (cs, in->data, in->size, &host_len);
+		state->input_data_ptr = (const char *)state->input_host;
+		state->input_data_len = host_len;
+	} else {
+		state->input_data_ptr = (const char*)in->data;
+		state->input_data_len = in->size;
+	}
+}
+
 static void xml_process_next_event (struct xml_state *state);
 
 /* entry function for XML PARSE */
@@ -1424,8 +1504,7 @@ int cob_xml_parse (cob_field *in, cob_field *encoding, cob_field *validation,
 		state = cob_malloc (sizeof (struct xml_state));
 		/* state is zero-initialized */
 		state->flags = flags;
-		state->input_data_ptr = (const char*)in->data;
-		state->input_data_len = in->size;
+		xml_set_input (state, in);
 		*saved_state = state;
 	} else {
 		state = *saved_state;
@@ -1488,8 +1567,7 @@ int cob_xml_parse (cob_field *in, cob_field *encoding, cob_field *validation,
 			   note that since we are processing a new chunk
 			   of the xml data, we need to set both data pointers */
 			xml_code = XML_OK;
-			state->input_data_ptr = (const char*)in->data;
-			state->input_data_len = in->size;
+			xml_set_input (state, in);
 			state->state = XML_PARSER_READ_CHUNK;
 			break;
 		default:
@@ -1596,16 +1674,24 @@ xml_generate (cob_field *out, cob_ml_tree *tree, cob_field *count,
 		chars_written += status;
 	}
 
-	/* Copy generated tree to output field */
-	buff_len = xmlBufferLength (buff);
-	copy_len = cob_min_int (buff_len, (int) out->size);
-	memcpy (out->data, xmlBufferContent (buff), copy_len);
-	memset (out->data + copy_len, ' ', out->size - copy_len);
-	/* Remove trailing newlines */
-	for (; copy_len > 0 && out->data[copy_len - 1] == '\n'; --copy_len) {
-		out->data[copy_len - 1] = ' ';
-		--chars_written;
-		++num_newlines;
+	/* Copy generated tree to output field, converted to data charset */
+	{
+		size_t	conv_len;
+		unsigned char	*conv = cob_charset_text_from_host (COB_CS,
+				xmlBufferContent (buff), (size_t)xmlBufferLength (buff), &conv_len);
+		const unsigned char	space = COB_CH_SPACE;
+		const unsigned char	newline = COB_CS_FROM_HOST (COB_CS, '\n');
+		buff_len = (int)conv_len;
+		copy_len = cob_min_int (buff_len, (int) out->size);
+		memcpy (out->data, conv, copy_len);
+		cob_free (conv);
+		memset (out->data + copy_len, space, out->size - copy_len);
+		/* Remove trailing newlines */
+		for (; copy_len > 0 && out->data[copy_len - 1] == newline; --copy_len) {
+			out->data[copy_len - 1] = space;
+			--chars_written;
+			++num_newlines;
+		}
 	}
 	/* Raise exception if output field is too small */
 
@@ -2225,6 +2311,9 @@ void xml_free_parse_memory (struct xml_state* state)
 	if (state->buff) {
 		cob_free (state->buff);
 	}
+	if (state->input_host) {
+		cob_free (state->input_host);
+	}
 	{
 		struct xml_event *event = state->first_event;
 		while (event) {
@@ -2371,14 +2460,24 @@ cob_json_generate_new (cob_field *out, cob_ml_tree *tree, cob_field *count,
 #endif
 
 	/* TO-DO: Duplication! */
-	copy_len = cob_min_int ((int) print_len, (int) out->size);
-	memcpy (out->data, printed_json, copy_len);
-	memset (out->data + copy_len, ' ', out->size - copy_len);
-	/* Remove trailing newlines */
-	for (; copy_len > 0 && out->data[copy_len - 1] == '\n'; --copy_len) {
-		out->data[copy_len - 1] = ' ';
-		--print_len;
-		++num_newlines;
+	/* copy to output field, converted to data charset */
+	{
+		size_t	conv_len;
+		unsigned char	*conv = cob_charset_text_from_host (COB_CS,
+				(const unsigned char *)printed_json, (size_t)print_len, &conv_len);
+		const unsigned char	space = COB_CH_SPACE;
+		const unsigned char	newline = COB_CS_FROM_HOST (COB_CS, '\n');
+		print_len = conv_len;
+		copy_len = cob_min_int ((int) print_len, (int) out->size);
+		memcpy (out->data, conv, copy_len);
+		cob_free (conv);
+		memset (out->data + copy_len, space, out->size - copy_len);
+		/* Remove trailing newlines */
+		for (; copy_len > 0 && out->data[copy_len - 1] == newline; --copy_len) {
+			out->data[copy_len - 1] = space;
+			--print_len;
+			++num_newlines;
+		}
 	}
 	/* Raise exception if output field is too small */
 	if (print_len - num_newlines > copy_len) {

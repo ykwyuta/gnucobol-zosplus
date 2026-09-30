@@ -1,5 +1,7 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* mlio.c: XML PARSE / GENERATE and JSON PARSE / GENERATE convert
+	  between the data charset and the host charset used by libxml2 / json-c
 	* reportio.c: report lines, SPACE / ZERO and sums use the data charset
 	* charset.c: user-defined DBCS characters ("Gaiji") can be mapped
 	  with a table given by COB_DBCS_USER_TABLE (for UTF-8 hosts)

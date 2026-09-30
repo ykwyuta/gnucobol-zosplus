@@ -409,8 +409,8 @@ DISPLAY / ACCEPT と LINE SEQUENTIAL はホストのテキストとして読み�
 
 | 分類 | 件数 | 理由 |
 |------|------|------|
-| レポートライター | 23 | P4 で対応（reportio.c は未変換） |
-| XML / JSON | 27 | P4 で対応（mlio.c は未変換） |
+| レポートライター | 23 | P4 で対応済み（残り 1 件はテストの前提） |
+| XML / JSON | 27 | P4 で対応済み（残り 1 件はテストの前提） |
 | EXTFH / FCD | 11 | FCD のファイル名などのホスト変換が未対応（FIXME） |
 | C との連携 | 12 | C 側が ASCII の文字列やバイト値を直接読み書きしている。IBM と同じく CALL の引数は変換しないので、想定どおりの差分 |
 | ASCII のバイト値・符号を前提にしたテスト | 19 | `X"313233"` を "123" として表示する、16 進ダンプで 0x20 を期待する、ASCII の符号オーバーパンチを期待する、など |
@@ -484,10 +484,21 @@ glibc の iconv は、IBM の利用者定義領域 `0x6941`〜`0x7FFE` を Unico
 
 未対応: コンパイル時（ソースの定数）への対応表の適用、Shift_JIS の端末での外字領域（F040〜）への対応付け
 
+### P4（周辺機能）: REPORT WRITER と XML / JSON を実装
+
+| 項目 | 内容 |
+|------|------|
+| REPORT WRITER（reportio.c） | 報告書の行の空白埋め、SPACE / ZERO の定数、合計（SUM）の編集をデータ文字コードで行う |
+| XML PARSE（mlio.c） | 入力文書をホストの文字コードに変換してから libxml2 に渡し、XML-EVENT、XML-TEXT、XML-NAMESPACE などはデータ文字コードに戻して渡す |
+| XML GENERATE（mlio.c） | 要素名・属性・内容をホストの文字コードで組み立て、結果の文書をデータ文字コードに変換して格納する（空白埋め・改行の除去もデータの文字で行う） |
+| JSON GENERATE / PARSE（mlio.c） | 名前と値をホストの文字コードに変換して json-c に渡し、結果をデータ文字コードに戻す |
+
+EBCDIC モード（IBM-037）での失敗件数は、REPORT WRITER が 23 件から 1 件、XML / JSON が 27 件から 1 件になりました。残りはどちらもテストの前提によるものです（ASCII の符号 `H` を期待する、`X'0A'` の改行と比較している。EBCDIC のデータでは改行は `X'25'` になる）。
+
 ### 次の作業
 
 * P3 の残り: USAGE NATIONAL（UTF-16）との区別と NATIONAL-OF / DISPLAY-OF、DBCS の途中で切れた場合の扱い、英数字と DBCS 項目の間の MOVE の検査
-* P4: SCREEN SECTION、XML / JSON、REPORT WRITER、EXTFH
+* P4 の残り: SCREEN SECTION（screenio.c）、EXTFH / FCD
 
 ## 11. まとめ
 
