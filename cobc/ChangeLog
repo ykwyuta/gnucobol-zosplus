@@ -1,5 +1,6 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* codegen.c (output_report_one_field): report literals in data charset
 	* tree.c (cb_build_picture), parser.y, field.c: for a data charset
 	  with DBCS, PIC G is accepted (as PIC N), PIC N and USAGE DISPLAY-1
 	  are DBCS items (2 bytes per character, without SO/SI) and their

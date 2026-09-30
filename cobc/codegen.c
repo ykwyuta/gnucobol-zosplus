@@ -10361,6 +10361,22 @@ output_report_def_fields (int bgn, int id, struct cb_field *f, struct cb_report 
 		} else {
 			ref_size = lit->size;
 		}
+		if (cb_data_charset) {
+			/* literal in the data charset, output as octal escapes */
+			unsigned char	*data = cobc_malloc (ref_size + 1);
+			for (j = 0; j < (unsigned int)ref_size; j++) {
+				data[j] = lit->all ? lit->data[j % lit->size] : lit->data[j];
+			}
+			if (!lit->raw) {
+				cb_data_convert (data, ref_size);
+			}
+			val = (char *)cobc_malloc (ref_size * 4 + 2);
+			for (i = j = 0; j < (unsigned int)ref_size; j++) {
+				sprintf (val + i, "\\%03o", data[j]);
+				i += 4;
+			}
+			cobc_free (data);
+		} else
 		if (lit->all) {
 			val = (char *)cobc_malloc (ref_size * 2 + 2);
 			if (lit->data[0] == '"'

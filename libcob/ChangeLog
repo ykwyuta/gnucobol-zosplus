@@ -1,5 +1,6 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* reportio.c: report lines, SPACE / ZERO and sums use the data charset
 	* charset.c: user-defined DBCS characters ("Gaiji") can be mapped
 	  with a table given by COB_DBCS_USER_TABLE (for UTF-8 hosts)
 	* charset.c (cob_charset_mixed_to_dbcs), termio.c: DISPLAY / ACCEPT of

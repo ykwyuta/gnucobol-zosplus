@@ -96,10 +96,10 @@ cob_field_init (cob_field *f)
 		return NULL;
 	temp.size = 1;
 	if(COB_FIELD_IS_NUMERIC(f)) {
-		temp.data = (unsigned char*)"0";	/* MOVE ZERO to field */
+		temp.data = (unsigned char*)COB_CS->zeroes;	/* MOVE ZERO to field */
 		temp.attr = &const_num_attr;
 	} else {
-		temp.data = (unsigned char*)" ";	/* MOVE SPACES to field */
+		temp.data = (unsigned char*)COB_CS->spaces;	/* MOVE SPACES to field */
 		temp.attr = &const_alpha_attr;
 	}
 	cob_move (&temp, f);
@@ -123,10 +123,10 @@ cob_field_dup (cob_field *f, int incr)
 
 	temp.size = 1;
 	if (COB_FIELD_IS_NUMERIC (f)) {
-		temp.data = (unsigned char*)"0";	/* MOVE ZERO to new field */
+		temp.data = (unsigned char*)COB_CS->zeroes;	/* MOVE ZERO to new field */
 		temp.attr = &const_num_attr;
 	} else {
-		temp.data = (unsigned char*)" ";	/* MOVE SPACES to new field */
+		temp.data = (unsigned char*)COB_CS->spaces;	/* MOVE SPACES to new field */
 		temp.attr = &const_alpha_attr;
 	}
 	cob_move (&temp, fld);
@@ -311,7 +311,7 @@ cob_add_fields(cob_field *op1, cob_field *op2, cob_field *rslt)
 	fld1.attr	= &attr1;
 	attr1.type	= COB_TYPE_NUMERIC_DISPLAY;
 	fld1.data	= (unsigned char*)data1;
-	memset(data1,'0',fld1.size);
+	memset(data1,COB_CH_ZERO,fld1.size);
 	cob_move(op1, &fld1);
 
 #ifdef COB_DEBUG_LOG
@@ -326,7 +326,7 @@ cob_add_fields(cob_field *op1, cob_field *op2, cob_field *rslt)
 	fld2.attr	= &attr2;
 	attr2.type	= COB_TYPE_NUMERIC_DISPLAY;
 	fld2.data	= (unsigned char*)data2;
-	memset(data2,'0',fld2.size);
+	memset(data2,COB_CH_ZERO,fld2.size);
 	cob_move(op2, &fld2);
 
 #ifdef COB_DEBUG_LOG
@@ -794,7 +794,7 @@ write_rec (cob_report *r, int opt)
 			opt = (opt & ~COB_WRITE_MASK) | 1;
 			while (num > 0) {
 		 		cob_write (f, f->record, opt, NULL, 0);
-				memset (data + r->code_len, ' ', record_size_left);
+				memset (data + r->code_len, COB_CH_SPACE, record_size_left);
 				num--;
 			}
 		} else {
@@ -821,7 +821,7 @@ do_page_footing(cob_report *r)
 	rec = (char *)f->record->data;
 	r->in_page_footing = TRUE;
 	report_line_type(r,r->first_line,COB_REPORT_PAGE_FOOTING);
-	memset(rec,' ',f->record_max);
+	memset(rec,COB_CH_SPACE,f->record_max);
 	if(r->curr_line < r->def_lines) {
 		write_rec(r, COB_WRITE_BEFORE|COB_WRITE_LINES|(r->def_lines-r->curr_line));
 		r->curr_line = r->def_lines;
@@ -848,7 +848,7 @@ do_page_heading(cob_report *r)
 		return;
 	opt = COB_WRITE_BEFORE | COB_WRITE_LINES | 1;
 	rec = (char *)f->record->data;
-	memset(rec,' ',f->record_max);
+	memset(rec,COB_CH_SPACE,f->record_max);
 	if(!r->in_page_heading
 	&& !r->first_generate
 	&& r->def_lines > 0 
@@ -874,7 +874,7 @@ do_page_heading(cob_report *r)
 		saveLineCounter(r);
 	}
 	report_line_type(r,r->first_line,COB_REPORT_PAGE_HEADING);
-	memset(rec,' ',f->record_max);
+	memset(rec,COB_CH_SPACE,f->record_max);
 	while(r->curr_line < r->def_first_detail) {
 		write_rec(r, opt);
 		r->curr_line++;
@@ -909,7 +909,7 @@ print_field (cob_report_field *rf, char *rec)
 		dest_pos += rf->f->size - ln;
 	} else 
 	if ((rf->flags & COB_REPORT_COLUMN_CENTER)) {
-		for(k=0; k < rf->f->size && wrk[0] == ' ' && ln > 0; k++) {	/* remove leading spaces */
+		for(k=0; k < rf->f->size && wrk[0] == (char)COB_CH_SPACE && ln > 0; k++) {	/* remove leading spaces */
 			memmove(wrk,&wrk[1],ln);
 			ln--;
 		}
@@ -919,7 +919,7 @@ print_field (cob_report_field *rf, char *rec)
 		}
 	} else 
 	if((rf->flags & COB_REPORT_COLUMN_LEFT)) {
-		for(k=0; k < rf->f->size && wrk[0] == ' ' && ln > 0; k++) {	/* remove leading spaces */
+		for(k=0; k < rf->f->size && wrk[0] == (char)COB_CH_SPACE && ln > 0; k++) {	/* remove leading spaces */
 			memmove(wrk,&wrk[1],ln);
 			ln--;
 		}
@@ -945,7 +945,7 @@ report_line(cob_report *r, cob_report_line *l)
 	opt = COB_WRITE_BEFORE | COB_WRITE_LINES | 1;
 	rec = (char *)f->record->data;
 	if (rec) {
-		memset (rec, ' ', f->record_max);
+		memset (rec, COB_CH_SPACE, f->record_max);
 #if 0	/* unused */
 		memset (wrk, 0, COB_SMALL_BUFF);
 #endif
