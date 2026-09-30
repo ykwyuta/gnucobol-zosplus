@@ -1,5 +1,13 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* move.c (cob_move_to_fp_edited, cob_move_from_fp_edited, cob_move,
+	  cob_move_all): floating-point edited items (external floating-point,
+	  PIC +9.99E+99) were not implemented: MOVE to / from them normalizes
+	  the mantissa and sets the exponent; MOVE ZERO to them crashed
+	* move.c (store_national), strings.c, intrinsic.c (REVERSE): don't split
+	  UTF-16 surrogate pairs
+	* charset.c (cob_charset_field_to_host): national (UTF-16) arguments,
+	  for example for NUMVAL, NUMVAL-C, NUMVAL-F and TEST-NUMVAL
 	* screenio.c (screen_dbcs_term_begin, screen_dbcs_term_end,
 	  screen_dbcs_encode): DBCS input for ACCEPT field [AT], DBCS
 	  characters are only accepted if the data with SO/SI still fits into

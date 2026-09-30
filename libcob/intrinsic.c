@@ -4018,10 +4018,18 @@ cob_intr_reverse (const int offset, const int length, cob_field *srcfield)
 
 	size = srcfield->size;
 	if (is_utf16_result (srcfield)) {
-		/* national: reverse the characters */
+		/* national: reverse the characters, keeping surrogate pairs */
 		for (i = 0; i + 1 < size; i += 2) {
-			curr_field->data[i] = srcfield->data[size - i - 2];
-			curr_field->data[i + 1] = srcfield->data[size - i - 1];
+			const unsigned char	*s = srcfield->data + size - i - 2;
+			if ((s[0] & 0xFC) == 0xDC && i + 3 < size
+			 && (s[-2] & 0xFC) == 0xD8) {
+				/* low part: copy the pair in order */
+				memcpy (curr_field->data + i, s - 2, 4);
+				i += 2;
+			} else {
+				curr_field->data[i] = s[0];
+				curr_field->data[i + 1] = s[1];
+			}
 		}
 	} else {
 		for (i = 0; i < size; ++i) {

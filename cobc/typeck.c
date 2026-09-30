@@ -11393,6 +11393,10 @@ validate_move (cb_tree src, cb_tree dst, const unsigned int is_value, int *move_
 					*move_zero = 1;
 					break;
 				}
+				if (CB_TREE_CATEGORY (dst) == CB_CATEGORY_FLOATING_EDITED) {
+					/* the value is scaled by the exponent */
+					break;
+				}
 				if (pic->scale < 0) {
 					/* Check for PIC 9(n)P(m) */
 					if (least_significant <= -pic->scale) {
@@ -11576,6 +11580,11 @@ validate_move (cb_tree src, cb_tree dst, const unsigned int is_value, int *move_
 					break;
 				}
 				return 0;
+			}
+			/* floating-point edited: the value is scaled by the exponent,
+			   the picture's scale is no decimal scale */
+			if (CB_TREE_CATEGORY (dst) == CB_CATEGORY_FLOATING_EDITED) {
+				break;
 			}
 			if (least_significant < -fdst->pic->scale) {
 				size = -1;

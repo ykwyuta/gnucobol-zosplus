@@ -1,5 +1,7 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* testsuite.src/run_ebcdic.at: tests for national details (NUMVAL,
+	  floating-point edited, surrogate pairs) and floating-point edited items
 	* testsuite.src/run_manual_screen.at: test for DBCS input with ACCEPT
 	  field AT
 	* testsuite.src/run_manual_screen.at: test for DBCS input in SCREEN

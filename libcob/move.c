@@ -1565,6 +1565,15 @@ cob_move_all (cob_field *src, cob_field *dst)
 		}
 		return;
 	}
+	if (COB_FIELD_TYPE (dst) == COB_TYPE_NUMERIC_EDITED
+	 && COB_FIELD_IS_FP (dst)
+	 && src->size == 1 && COB_CS_ISDIGIT (COB_CS, src->data[0])) {
+		/* floating-point edited: ZERO (or ALL digit) is moved as number,
+		   as the attribute's scale is no decimal scale there */
+		memset (all_numeric_data, src->data[0], COB_MAX_DIGITS);
+		cob_move ((cob_field *)&all_numeric_field, dst);
+		return;
+	}
 	if (!COB_FIELD_IS_NUMERIC (dst)) {
 		/* note: this also applies to numeric-edited where a MOVE ALL
 		         has to be an alphanumeric MOVE */
@@ -1617,6 +1626,19 @@ store_national (cob_field *dst, const unsigned char *data, size_t size,
 		size_t	cut = dsize - dsize % unit;
 		if (COB_FIELD_JUSTIFIED (dst)) {
 			data += size - cut;
+			/* don't start with the low part of a surrogate pair */
+			if (unit == 2 && cut >= 2 && pad[0] == 0x00
+			 && (data[0] & 0xFC) == 0xDC) {
+				memcpy (d, pad, 2);
+				d += 2;
+				data += 2;
+				cut -= 2;
+				dsize -= 2;
+			}
+		} else if (unit == 2 && cut >= 2 && pad[0] == 0x00
+		 && (data[cut - 2] & 0xFC) == 0xD8) {
+			/* don't split a surrogate pair (UTF-16) */
+			cut -= 2;
 		}
 		size = cut;
 	} else if (COB_FIELD_JUSTIFIED (dst) && size < dsize) {
@@ -1933,6 +1955,221 @@ cob_init_table (void *tbl, const size_t len, const size_t occ)
 	}
 }
 
+/* external floating-point items (floating-point edited, PIC +9.99E+99):
+   mantissa with sign, digits and decimal point, 'E', exponent sign and
+   digits; the attribute's scale is no decimal scale there */
+
+struct fp_edit_pic {
+	unsigned char	sign_sym;	/* '+' or '-' or 0 */
+	int		int_digits;	/* mantissa digits before the decimal point */
+	int		frac_digits;	/* mantissa digits after the decimal point */
+	int		has_point;	/* decimal point shown (not 'V') */
+	int		exp_digits;	/* exponent digits */
+};
+
+static int
+get_fp_edit_pic (cob_field *f, struct fp_edit_pic *fp)
+{
+	const cob_pic_symbol	*p;
+	int	after_point = 0, after_e = 0;
+	const unsigned char	dec_pt = COB_MODULE_PTR->decimal_point;
+
+	memset (fp, 0, sizeof (*fp));
+	if (!COB_FIELD_PIC (f)) {
+		return 0;
+	}
+	for (p = COB_FIELD_PIC (f); p->symbol; ++p) {
+		const unsigned char	c = (unsigned char)p->symbol;
+		if (c == 'E') {
+			after_e = 1;
+		} else if (c == '9') {
+			if (after_e) {
+				fp->exp_digits += p->times_repeated;
+			} else if (after_point) {
+				fp->frac_digits += p->times_repeated;
+			} else {
+				fp->int_digits += p->times_repeated;
+			}
+		} else if (c == '+' || c == '-') {
+			if (!after_e) {
+				fp->sign_sym = c;
+			}
+		} else if (c == 'V' || c == 'v') {
+			after_point = 1;
+		} else if (c == dec_pt || c == '.' || c == ',') {
+			after_point = 1;
+			fp->has_point = 1;
+		}
+	}
+	return after_e && fp->exp_digits > 0;
+}
+
+/* check for a floating-point edited item */
+static int
+is_fp_edited (cob_field *f)
+{
+	struct fp_edit_pic	fp;
+	return COB_FIELD_TYPE (f) == COB_TYPE_NUMERIC_EDITED
+	    && COB_FIELD_IS_FP (f)
+	    && get_fp_edit_pic (f, &fp);
+}
+
+/* MOVE numeric data to a floating-point edited item */
+static void
+cob_move_to_fp_edited (cob_field *src, cob_field *dst)
+{
+	const cob_charset	*cs = COB_CS;
+	struct fp_edit_pic	fp;
+	cob_field_attr	attr;
+	cob_field	temp;
+	unsigned char	buff[COB_MAX_DIGITS * 2 + 2];
+	unsigned char	*digits, *d;
+	int		len, exponent, m, i, sign;
+	unsigned char	*out = dst->data;
+	const unsigned char	*end = dst->data + dst->size;
+
+	(void)get_fp_edit_pic (dst, &fp);
+	m = fp.int_digits + fp.frac_digits;
+
+	/* get the value as display number with COB_MAX_DIGITS decimals */
+	COB_ATTR_INIT (COB_TYPE_NUMERIC_DISPLAY, COB_MAX_DIGITS * 2, COB_MAX_DIGITS,
+		COB_FLAG_HAVE_SIGN, NULL);
+	temp.size = COB_MAX_DIGITS * 2;
+	temp.data = buff;
+	temp.attr = &attr;
+	cob_move (src, &temp);
+	sign = cob_real_get_sign (&temp, 0);
+
+	/* significant digits */
+	digits = buff;
+	len = COB_MAX_DIGITS * 2;
+	while (len > 0 && COB_D2I (*digits) == 0) {
+		digits++;
+		len--;
+	}
+	if (len == 0) {
+		exponent = 0;
+	} else {
+		/* value = digits * 10 ^ -COB_MAX_DIGITS */
+		exponent = len - COB_MAX_DIGITS - fp.int_digits;
+		/* round to the mantissa digits */
+		if (len > m && COB_D2I (digits[m]) >= 5) {
+			for (i = m - 1; i >= 0; i--) {
+				if (COB_D2I (digits[i]) < 9) {
+					digits[i] = COB_I2D (COB_D2I (digits[i]) + 1);
+					break;
+				}
+				digits[i] = COB_I2D (0);
+			}
+			if (i < 0) {
+				/* 99.9 -> 100: one more digit */
+				digits--;
+				digits[0] = COB_I2D (1);
+				exponent++;
+			}
+		}
+	}
+
+	/* mantissa sign */
+	if (fp.sign_sym && out < end) {
+		if (sign < 0) {
+			*out++ = cs->minus;
+		} else {
+			*out++ = fp.sign_sym == '+' ? cs->plus : cs->space;
+		}
+	}
+	/* mantissa */
+	for (i = 0; i < m && out < end; i++) {
+		if (i == fp.int_digits && fp.has_point) {
+			*out++ = COB_MODULE_PTR->decimal_point == ','
+				? cs->comma : cs->period;
+			if (out >= end) {
+				break;
+			}
+		}
+		*out++ = (len > 0 && i < len) ? COB_CS_FROM_HOST (cs, '0' + COB_D2I (digits[i]))
+			: cs->zero;
+	}
+	if (m == fp.int_digits && fp.has_point && out < end) {
+		*out++ = COB_MODULE_PTR->decimal_point == ',' ? cs->comma : cs->period;
+	}
+	/* exponent */
+	if (out < end) {
+		*out++ = COB_CS_FROM_HOST (cs, 'E');
+	}
+	if (out < end) {
+		*out++ = exponent < 0 ? cs->minus : cs->plus;
+	}
+	if (exponent < 0) {
+		exponent = -exponent;
+	}
+	d = out + fp.exp_digits;
+	if (d > end) {
+		d = (unsigned char *)end;
+	}
+	for (i = fp.exp_digits - 1; i >= 0; i--) {
+		if (out + i < end) {
+			out[i] = COB_CS_FROM_HOST (cs, '0' + exponent % 10);
+		}
+		exponent /= 10;
+	}
+	if (exponent != 0) {
+		cob_set_exception (COB_EC_SIZE_OVERFLOW);
+	}
+	for (; d < end; d++) {
+		*d = cs->space;
+	}
+}
+
+/* MOVE a floating-point edited item to another item */
+static void
+cob_move_from_fp_edited (cob_field *src, cob_field *dst)
+{
+	const cob_charset	*cs = COB_CS;
+	cob_field_attr	attr;
+	cob_field	temp;
+	unsigned char	buff[COB_MAX_DIGITS + 1];
+	const unsigned char	*p = src->data;
+	const unsigned char	*end = src->data + src->size;
+	int		n = 0, frac = 0, after_point = 0, sign = 1;
+	int		exponent = 0, exp_sign = 1;
+
+	for (; p < end; p++) {
+		const unsigned char	c = *p;
+		if (c == COB_CS_FROM_HOST (cs, 'E')) {
+			p++;
+			break;
+		}
+		if (c == cs->minus) {
+			sign = -1;
+		} else if (c == cs->period || c == cs->comma) {
+			after_point = 1;
+		} else if (COB_CS_ISDIGIT (cs, c) && n < COB_MAX_DIGITS) {
+			buff[n++] = c;
+			if (after_point) {
+				frac++;
+			}
+		}
+	}
+	for (; p < end; p++) {
+		if (*p == cs->minus) {
+			exp_sign = -1;
+		} else if (COB_CS_ISDIGIT (cs, *p)) {
+			exponent = exponent * 10 + COB_D2I (*p);
+		}
+	}
+	if (n == 0) {
+		buff[n++] = cs->zero;
+	}
+	COB_ATTR_INIT (COB_TYPE_NUMERIC_DISPLAY, n, frac - exp_sign * exponent,
+		COB_FLAG_HAVE_SIGN, NULL);
+	temp.size = n;
+	temp.data = buff;
+	temp.attr = &attr;
+	cob_real_put_sign (&temp, sign);
+	cob_move (&temp, dst);
+}
+
 void
 cob_move (cob_field *src, cob_field *dst)
 {
@@ -1955,6 +2192,19 @@ cob_move (cob_field *src, cob_field *dst)
 		data[1] = 0;
 		src = &temp;
 	}
+	/* floating-point edited items (external floating-point) */
+	if (COB_FIELD_TYPE (dst) == COB_TYPE_NUMERIC_EDITED
+	 && COB_FIELD_IS_FP (dst) && is_fp_edited (dst)
+	 && COB_FIELD_TYPE (src) != COB_TYPE_ALPHANUMERIC_ALL) {
+		cob_move_to_fp_edited (src, dst);
+		return;
+	}
+	if (COB_FIELD_TYPE (src) == COB_TYPE_NUMERIC_EDITED
+	 && COB_FIELD_IS_FP (src) && is_fp_edited (src)) {
+		cob_move_from_fp_edited (src, dst);
+		return;
+	}
+
 	/* national decimal items: convert from / to numeric display */
 	if (COB_FIELD_TYPE (src) == COB_TYPE_NUMERIC_NATIONAL
 	 || COB_FIELD_TYPE (src) == COB_TYPE_NATIONAL_NUMERIC_EDITED) {

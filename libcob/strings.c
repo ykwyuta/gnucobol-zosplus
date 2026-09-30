@@ -1238,6 +1238,11 @@ cob_string_append_intern (struct cob_string_state *st, cob_field *src)
 	} else {
 		size = (int)(st->dst->size - st->offset);
 		size -= size % (int)st->unit;
+		/* don't split a surrogate pair (UTF-16) */
+		if (st->unit == 2 && size >= 2
+		 && (src->data[size - 2] & 0xFC) == 0xD8) {
+			size -= 2;
+		}
 		memcpy (st->dst->data + st->offset, src->data, (size_t)size);
 		st->offset += size;
 		cob_set_exception (COB_EC_OVERFLOW_STRING);

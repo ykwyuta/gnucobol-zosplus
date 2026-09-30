@@ -263,6 +263,19 @@ cob_charset_to_host (const cob_charset *cs, unsigned char *data, size_t size)
 cob_field *
 cob_charset_field_to_host (const cob_charset *cs, const cob_field *f, cob_field *tmp)
 {
+	static const cob_field_attr	host_alnum_attr =
+		{COB_TYPE_ALPHANUMERIC, 0, 0, 0, NULL};
+	if (f && f->data && f->size != 0 && f->attr
+	 && cs != &cob_charset_native
+	 && COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f)) {
+		/* national (UTF-16) data: as host text */
+		size_t	size;
+		*tmp = *f;
+		tmp->data = cob_charset_utf16_to_host (cs, f->data, f->size, &size);
+		tmp->size = size;
+		tmp->attr = &host_alnum_attr;
+		return tmp;
+	}
 	if (!f || !cs->to_host || !f->data || f->size == 0) {
 		return (cob_field *)f;
 	}

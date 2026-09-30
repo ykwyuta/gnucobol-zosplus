@@ -1195,3 +1195,109 @@ AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog2], [0],
 ], [])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: national details])
+AT_KEYWORDS([ebcdic data-codeset national functions])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. prog.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WU   PIC N(10) USAGE NATIONAL VALUE NC' -123.45 '.
+       01 WC   PIC N(10) USAGE NATIONAL VALUE NC'$1,234.50'.
+       01 WF   PIC N(10) USAGE NATIONAL VALUE NC'1.5E+02'.
+       01 R    PIC S9(5)V99.
+       01 FE   PIC +9.99E+99 USAGE NATIONAL.
+       01 FE2  PIC +9.99E+99.
+       01 S1   PIC N(4) USAGE NATIONAL VALUE NC'a𠮷b'.
+       01 S2   PIC N(2) USAGE NATIONAL.
+       01 S3   PIC N(4) USAGE NATIONAL.
+       PROCEDURE DIVISION.
+           COMPUTE R = FUNCTION NUMVAL (WU)
+           DISPLAY R
+           COMPUTE R = FUNCTION NUMVAL-C (WC)
+           DISPLAY R
+           COMPUTE R = FUNCTION NUMVAL-F (WF)
+           DISPLAY R
+           DISPLAY FUNCTION TEST-NUMVAL (WU) ' '
+                   FUNCTION TEST-NUMVAL (WC)
+           MOVE 1234.5 TO FE FE2
+           DISPLAY '<' FE '> <' FE2 '> ' FUNCTION HEX-OF (FE)
+           DISPLAY '<' S1 '> ' FUNCTION HEX-OF (S1) ' '
+                   FUNCTION LENGTH (S1)
+           MOVE S1 TO S2
+           DISPLAY '<' S2 '> ' FUNCTION HEX-OF (S2)
+           MOVE FUNCTION REVERSE (S1) TO S3
+           DISPLAY '<' S3 '> ' FUNCTION HEX-OF (S3)
+           GOBACK.
+])
+
+# note: free format, as the fixed-format margins count bytes
+AT_CHECK([$COMPILE -free -Wno-dialect -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog], [0],
+[-00123.45
++01234.50
++00150.00
+000000000 000000001
+<+1.23E+03> <+1.23E+03> 002B0031002E003200330045002B00300033
+<a𠮷b> 0061D842DFB70062 4
+<a > 00610020
+<b𠮷a> 0062D842DFB70061
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([floating-point edited items])
+AT_KEYWORDS([edited fp])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. prog.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 FE   PIC +9.99E+99.
+       01 FE2  PIC -99.999E+99.
+       01 R    PIC S9(7)V9(4).
+       PROCEDURE DIVISION.
+           MOVE ZERO TO FE
+           DISPLAY '<' FE '>'
+           MOVE 1234.5 TO FE
+           DISPLAY '<' FE '>'
+           MOVE -0.000123456 TO FE
+           DISPLAY '<' FE '>'
+           MOVE 9.999 TO FE
+           DISPLAY '<' FE '>'
+           MOVE -1234567 TO FE2
+           DISPLAY '<' FE2 '>'
+           MOVE FE TO R
+           DISPLAY R
+           MOVE FE2 TO R
+           DISPLAY R
+           GOBACK.
+])
+
+AT_CHECK([$COMPILE prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[<+0.00E+00>
+<+1.23E+03>
+<-1.23E-04>
+<+1.00E+01>
+<-12.346E+05>
++0000010.0000
+-1234600.0000
+], [])
+AT_CHECK([$COMPILE -fdata-codeset=IBM-037 -o prog2 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog2], [0],
+[<+0.00E+00>
+<+1.23E+03>
+<-1.23E-04>
+<+1.00E+01>
+<-12.346E+05>
++0000010.0000
+-1234600.0000
+], [])
+
+AT_CLEANUP

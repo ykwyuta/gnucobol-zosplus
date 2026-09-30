@@ -4028,6 +4028,10 @@ repeat:
 		if (c == 'U') {
 			size += n * (4 - 1);
 		}
+		if (c == 'E' && (category & PIC_NUMERIC_FLOATING)) {
+			/* the exponent sign after E (skipped above) */
+			size += n;
+		}
 
 		/* Store in the buffer */
 		pic_buff[idx].symbol = c;

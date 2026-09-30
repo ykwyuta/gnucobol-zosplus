@@ -1,5 +1,9 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* tree.c (cb_build_picture): count the exponent sign of floating-point
+	  edited items in the size
+	* typeck.c (validate_move): no size / scale checks of numeric literals
+	  for floating-point edited items
 	* tree.c (cb_tree_type), field.c: numeric / numeric-edited items with
 	  USAGE NATIONAL for data charsets (2 bytes per position, a sign is
 	  always separate)
