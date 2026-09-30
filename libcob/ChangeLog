@@ -1,5 +1,9 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* screenio.c (screen_dbcs_key, screen_dbcs_append,
+	  screen_dbcs_write_back): input of DBCS (and other non-ASCII)
+	  characters in SCREEN SECTION ACCEPT for data charsets with DBCS,
+	  changed fields are built again with SO/SI around DBCS characters
 	* screenio.c (screen_dbcs_copy, screen_dbcs_write_back,
 	  screen_dbcs_text, cob_addnstr, cob_screen_puts, cob_screen_init):
 	  DBCS data (with SO/SI or DBCS items) is shown on the screen for data

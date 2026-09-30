@@ -1138,6 +1138,12 @@ cob_screen_attr (cob_field *fgc, cob_field *bgc, cob_flags_t attr,
 static int	screen_dbcs_active = 0;
 static int	screen_ctype_switched = 0;	/* LC_CTYPE of the user is active */
 static const char	*screen_dbcs_text (const unsigned char *);
+static int	screen_dbcs_key (int, unsigned char *, const int);
+/* placeholder in the host copy for both bytes of a DBCS character */
+#define SCREEN_DBCS_PLACEHOLDER	0x1F
+/* placeholder for a single byte character not in ASCII (like half-width
+   katakana), shown with its host text */
+#define SCREEN_SBCS_PLACEHOLDER	0x1E
 
 static int
 cob_screen_init (void)
@@ -1594,7 +1600,9 @@ cob_addnstr (const char *data, const int size)
 		int	i;
 		for (i = 0; i < size; i++) {
 			const char	*text = screen_dbcs_text ((const unsigned char *)data + i);
-			if (text && i + 1 < size) {
+			if (text && (unsigned char)data[i] == SCREEN_SBCS_PLACEHOLDER) {
+				waddstr (mywin, text);
+			} else if (text && i + 1 < size) {
 				waddstr (mywin, text);
 				i++;
 			} else {
@@ -1986,6 +1994,9 @@ cob_screen_puts (cob_screen *s, cob_field *f, const cob_u32_t is_input,
 			const char	*text = screen_dbcs_active
 				? screen_dbcs_text (p) : NULL;
 			if (text && !(s->attr & COB_SCREEN_SECURE)
+			 && *p == SCREEN_SBCS_PLACEHOLDER) {
+				waddstr (mywin, text);
+			} else if (text && !(s->attr & COB_SCREEN_SECURE)
 			 && size + 1 < f->size) {
 				/* DBCS character: 2 columns */
 				waddstr (mywin, text);
@@ -2960,6 +2971,25 @@ cob_screen_get_all (const int initial_curs, const int accept_timeout)
 #else
 		if (keyp > 037 && keyp <= UCHAR_MAX) {
 #endif
+			/* DBCS input (data charsets with DBCS) */
+			if (screen_dbcs_active && keyp >= 0x80
+			 && !cob_field_is_numeric_or_numeric_edited (s->field)
+			 && !(s->attr & (COB_SCREEN_SECURE | COB_SCREEN_NO_ECHO))) {
+				const int	cols = screen_dbcs_key (keyp, p,
+						right_pos - ccolumn + 1);
+				if (cols < 0) {
+					cob_beep ();
+					continue;
+				}
+				if (cols > 0) {
+					if (ccolumn + cols - 1 >= right_pos) {
+						cob_move_cursor (cline, right_pos);
+					} else {
+						p += cols;
+					}
+					continue;
+				}
+			}
 			/* Numeric field check. */
 			if (cob_field_is_numeric_or_numeric_edited (s->field)
 			    && ((keyp != '+' && keyp != '-' && (keyp < '0' || keyp > '9'))
@@ -4344,10 +4374,10 @@ struct screen_swap {
 	char		**dbcs_text;	/* DBCS: text (host charset) at the position
 					   of the first placeholder, otherwise NULL */
 	unsigned char	*initial;	/* DBCS: initial content of the copy */
+	int		text_changed;	/* DBCS: a character was entered */
 };
 
-/* placeholder in the host copy for both bytes of a DBCS character */
-#define SCREEN_DBCS_PLACEHOLDER	0x1F
+
 
 static struct screen_swap	*screen_swaps = NULL;
 static size_t			screen_swap_count = 0;
@@ -4384,12 +4414,12 @@ screen_dbcs_copy (struct screen_swap *sw)
 	const size_t		size = sw->orig->size;
 	const int		pure = COB_FIELD_IS_DBCS (sw->orig) ? 1 : 0;
 	int			in_dbcs = pure;
-	int			any = 0;
 	char			**texts = cob_malloc ((size + 1) * sizeof (char *));
 	size_t			i;
 
 	for (i = 0; i < size; i++) {
 		const unsigned char	b = src[i];
+		size_t		n;
 		if (!pure && b == cs->so) {
 			dst[i] = ' ';
 			in_dbcs = 1;
@@ -4402,30 +4432,71 @@ screen_dbcs_copy (struct screen_swap *sw)
 		}
 		if (in_dbcs && i + 1 < size) {
 			unsigned char	mixed[4];
-			size_t		n;
 			mixed[0] = cs->so;
 			mixed[1] = b;
 			mixed[2] = src[i + 1];
 			mixed[3] = cs->si;
 			texts[i] = (char *)cob_charset_text_to_host (cs, mixed, 4, &n);
 			dst[i] = dst[i + 1] = SCREEN_DBCS_PLACEHOLDER;
-			any = 1;
 			i++;
 			continue;
 		}
 		dst[i] = COB_CS_TO_HOST (cs, b);
-	}
-	if (!any) {
-		cob_free (texts);
-		return;
+		if (dst[i] >= 0x80) {
+			/* single byte, but not ASCII: show with its host text */
+			texts[i] = (char *)cob_charset_text_to_host (cs, &b, 1, &n);
+			dst[i] = SCREEN_SBCS_PLACEHOLDER;
+		}
 	}
 	sw->dbcs_text = texts;
 	sw->initial = cob_malloc (size + 1);
 	memcpy (sw->initial, dst, size);
 }
 
-/* convert back a changed host copy with DBCS data: unchanged DBCS
-   characters and SO/SI keep their original bytes */
+/* append data charset bytes for host text 'text' to 'out', handling
+   SO/SI for DBCS in mixed data */
+static void
+screen_dbcs_append (const cob_charset *cs, const int pure, const char *text,
+	unsigned char *out, size_t *out_size, int *in_dbcs)
+{
+	size_t		n, k;
+	unsigned char	*data = cob_charset_text_from_host (cs,
+				(const unsigned char *)text, strlen (text), &n);
+	for (k = 0; k < n; k++) {
+		const unsigned char	b = data[k];
+		if (b == cs->so) {
+			if (!pure && !*in_dbcs) {
+				out[(*out_size)++] = cs->so;
+			}
+			*in_dbcs = 1;
+		} else if (b == cs->si) {
+			/* SI is added when the next single byte follows */
+		} else if (*in_dbcs && k + 1 < n && data[k + 1] != cs->si) {
+			out[(*out_size)++] = b;
+			out[(*out_size)++] = data[++k];
+		} else if (*in_dbcs && k + 1 < n) {
+			/* should not happen, play safe */
+			out[(*out_size)++] = b;
+		} else {
+			if (*in_dbcs && !pure) {
+				out[(*out_size)++] = cs->si;
+			}
+			*in_dbcs = pure;
+			if (pure) {
+				/* single byte in a DBCS item: DBCS space */
+				out[(*out_size)++] = cs->dbcs_space[0];
+				out[(*out_size)++] = cs->dbcs_space[1];
+			} else {
+				out[(*out_size)++] = b;
+			}
+		}
+	}
+	cob_free (data);
+}
+
+/* convert back a changed host copy with DBCS data: the data is built
+   again from the characters shown, adding SO/SI around DBCS characters
+   (the spaces shown for the original SO/SI are dropped) */
 static void
 screen_dbcs_write_back (struct screen_swap *sw)
 {
@@ -4434,24 +4505,160 @@ screen_dbcs_write_back (struct screen_swap *sw)
 	const unsigned char	*copy = sw->copy->data;
 	const unsigned char	*initial = sw->initial;
 	const size_t		size = sw->orig->size;
+	const int		pure = COB_FIELD_IS_DBCS (sw->orig) ? 1 : 0;
+	unsigned char		*out;
+	size_t			out_size = 0;
+	int			in_dbcs = pure;
 	size_t			i;
 
-	if (memcmp (copy, initial, size) == 0) {
+	if (!sw->text_changed && memcmp (copy, initial, size) == 0) {
 		return;	/* unchanged: keep the original data */
 	}
+	out = cob_malloc (size * 4 + 8);
 	for (i = 0; i < size; i++) {
-		if (sw->dbcs_text[i] && i + 1 < size
-		 && copy[i] == SCREEN_DBCS_PLACEHOLDER
-		 && copy[i + 1] == SCREEN_DBCS_PLACEHOLDER) {
-			i++;	/* unchanged DBCS character */
+		const unsigned char	c = copy[i];
+		if (!pure && initial[i] == ' ' && c == ' '
+		 && (orig[i] == cs->so || orig[i] == cs->si)) {
+			continue;	/* shown for SO / SI */
+		}
+		if (c == SCREEN_DBCS_PLACEHOLDER && sw->dbcs_text[i]
+		 && i + 1 < size && copy[i + 1] == SCREEN_DBCS_PLACEHOLDER) {
+			screen_dbcs_append (cs, pure, sw->dbcs_text[i],
+				out, &out_size, &in_dbcs);
+			i++;
 			continue;
 		}
-		if (initial[i] == ' ' && copy[i] == ' '
-		 && (orig[i] == cs->so || orig[i] == cs->si)) {
-			continue;	/* unchanged SO / SI */
+		if (c == SCREEN_SBCS_PLACEHOLDER && sw->dbcs_text[i]) {
+			screen_dbcs_append (cs, pure, sw->dbcs_text[i],
+				out, &out_size, &in_dbcs);
+			continue;
 		}
-		orig[i] = COB_CS_FROM_HOST (cs, copy[i]);
+		/* single byte (orphaned placeholders are spaces) */
+		if (in_dbcs && !pure) {
+			out[out_size++] = cs->si;
+			in_dbcs = 0;
+		}
+		if (c == SCREEN_DBCS_PLACEHOLDER || c == SCREEN_SBCS_PLACEHOLDER) {
+			if (pure) {
+				out[out_size++] = cs->dbcs_space[0];
+				out[out_size++] = cs->dbcs_space[1];
+				i++;
+			} else {
+				out[out_size++] = cs->space;
+			}
+		} else if (pure) {
+			out[out_size++] = cs->dbcs_space[0];
+			out[out_size++] = cs->dbcs_space[1];
+			i++;
+		} else {
+			out[out_size++] = COB_CS_FROM_HOST (cs, c);
+		}
 	}
+	if (in_dbcs && !pure) {
+		out[out_size++] = cs->si;
+	}
+	/* store: truncate without splitting DBCS characters, pad with spaces */
+	if (out_size > size) {
+		size_t	fit = 0, k = 0;
+		int	dbcs = pure;
+		while (k < out_size) {
+			size_t	len;
+			if (!pure && out[k] == cs->so) {
+				len = 1;
+			} else if (!pure && out[k] == cs->si) {
+				len = 1;
+			} else {
+				len = dbcs ? 2 : 1;
+			}
+			/* keep room for SI in mixed data */
+			if (k + len + ((!pure && out[k] != cs->si
+			           && (dbcs || out[k] == cs->so)) ? 1 : 0) > size) {
+				break;
+			}
+			if (!pure && out[k] == cs->so) {
+				dbcs = 1;
+			} else if (!pure && out[k] == cs->si) {
+				dbcs = 0;
+			}
+			k += len;
+			fit = k;
+		}
+		if (dbcs && !pure) {
+			if (fit > 0 && out[fit - 1] == cs->so) {
+				fit--;
+			} else {
+				out[fit++] = cs->si;
+			}
+		}
+		out_size = fit;
+	}
+	memcpy (orig, out, out_size);
+	for (i = out_size; i < size; i++) {
+		orig[i] = pure ? cs->dbcs_space[(i - out_size) % 2] : cs->space;
+	}
+	cob_free (out);
+}
+
+/* DBCS input on the screen: 'keyp' is the first byte of a multibyte
+   character in the host charset, read the rest, store placeholders and
+   the text at 'p' (in a host copy) and show it; returns the columns used,
+   0 if not handled, -1 if the field has no room */
+static int
+screen_dbcs_key (int keyp, unsigned char *p, const int room)
+{
+	const cob_charset	*cs = screen_saved_cs;
+	char		text[8];
+	int		len = 1, need, k;
+	size_t		n;
+	unsigned char	*data;
+	size_t		i;
+	struct screen_swap	*sw = NULL;
+
+	for (i = 0; i < screen_swap_count; i++) {
+		if (screen_swaps[i].dbcs_text
+		 && p >= screen_swaps[i].copy->data
+		 && p < screen_swaps[i].copy->data + screen_swaps[i].copy->size) {
+			sw = &screen_swaps[i];
+			break;
+		}
+	}
+	if (!sw) {
+		return 0;
+	}
+	text[0] = (char)keyp;
+	need = keyp >= 0xF0 ? 3 : keyp >= 0xE0 ? 2 : keyp >= 0xC0 ? 1 : 0;
+	for (k = 0; k < need; k++) {
+		const int	c = getch ();
+		if (c == ERR || c < 0x80 || c > 0xBF) {
+			return -1;
+		}
+		text[len++] = (char)c;
+	}
+	text[len] = 0;
+	/* check the width in the data charset */
+	data = cob_charset_text_from_host (cs, (unsigned char *)text, (size_t)len, &n);
+	k = (n == 1 && data[0] != cs->so) ? 1 : 2;
+	cob_free (data);
+	if (k > room) {
+		return -1;
+	}
+	i = (size_t)(p - sw->copy->data);
+	if (sw->dbcs_text[i]) {
+		cob_free (sw->dbcs_text[i]);
+	}
+	sw->dbcs_text[i] = cob_strdup (text);
+	sw->text_changed = 1;
+	if (k == 2) {
+		p[0] = p[1] = SCREEN_DBCS_PLACEHOLDER;
+		if (sw->dbcs_text[i + 1]) {
+			cob_free (sw->dbcs_text[i + 1]);
+			sw->dbcs_text[i + 1] = NULL;
+		}
+	} else {
+		p[0] = SCREEN_SBCS_PLACEHOLDER;
+	}
+	waddstr (mywin, text);
+	return k;
 }
 
 /* text of the DBCS character starting at 'p' (in a host copy), or NULL */
@@ -4502,6 +4709,7 @@ screen_swap_field (cob_field **slot, const int write_back)
 	sw->write_back = write_back;
 	sw->dbcs_text = NULL;
 	sw->initial = NULL;
+	sw->text_changed = 0;
 	if (screen_dbcs_active
 	 && (is_display_data (orig) || COB_FIELD_IS_DBCS (orig))) {
 		screen_dbcs_copy (sw);

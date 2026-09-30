@@ -4241,3 +4241,41 @@ AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
 MANUAL_CHECK([$COBCRUN_DIRECT ./prog], [0], [], [])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: SCREEN SECTION DBCS input])
+AT_KEYWORDS([screen ebcdic data-codeset dbcs])
+
+AT_SKIP_IF([test "$COB_HAS_CURSES" != "yes"])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  dbcs-field   PIC G(2).
+       01  mix-field    PIC X(8).
+
+       SCREEN           SECTION.
+       01  scr.
+           03  LINE 1 VALUE 'Enter "漢字" in both fields'.
+           03  LINE 3 COL 1 PIC G(2) USING dbcs-field.
+           03  LINE 4 COL 1 PIC X(8) USING mix-field.
+
+       PROCEDURE        DIVISION.
+           DISPLAY scr
+           ACCEPT scr
+           IF dbcs-field = G'漢字'
+              AND mix-field = '漢字'
+              AND COB-CRT-STATUS = 0
+               GOBACK RETURNING 0
+           ELSE
+               GOBACK RETURNING 1
+           END-IF
+           .
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+MANUAL_CHECK([$COBCRUN_DIRECT ./prog], [0], [], [])
+
+AT_CLEANUP
