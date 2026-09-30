@@ -1421,7 +1421,22 @@ substitute (const int offset, const int length, const int params,
 static int
 int_strncasecmp (const void *s1, const void *s2, size_t n)
 {
-	return (int) strncasecmp (s1, s2, n);
+	const cob_charset	*cs = COB_CS;
+	if (cs == &cob_charset_native) {
+		return (int) strncasecmp (s1, s2, n);
+	} else {
+		/* compare case-insensitive in the data charset */
+		const unsigned char	*p1 = s1;
+		const unsigned char	*p2 = s2;
+		for (; n > 0; n--, p1++, p2++) {
+			const int	c1 = COB_CS_TOLOWER (cs, *p1);
+			const int	c2 = COB_CS_TOLOWER (cs, *p2);
+			if (c1 != c2) {
+				return c1 - c2;
+			}
+		}
+		return 0;
+	}
 }
 
 /* NUMVAL + NUMVAL-C implementation */
@@ -6012,8 +6027,8 @@ cob_intr_locale_date (const int offset, const int length,
 		indate = 0;
 		for (len = 0; len < 8; ++len, ++p) {
 			/* note: as isdigit is locale-aware (slower and not what we want),
-			   we use a range check instead */
-			if (*p >= '0' && *p <= '9') {
+			   we use the charset table instead */
+			if (COB_CS_ISDIGIT (COB_CS, *p)) {
 				indate = indate * 10 + COB_D2I (*p);
 			} else {
 				goto derror;
@@ -6127,8 +6142,8 @@ cob_intr_locale_time (const int offset, const int length,
 		indate = 0;
 		for (len = 0; len < 6; ++len, ++p) {
 			/* note: as isdigit is locale-aware (slower and not what we want),
-			   we use a range check instead */
-			if (*p >= '0' && *p <= '9') {
+			   we use the charset table instead */
+			if (COB_CS_ISDIGIT (COB_CS, *p)) {
 				indate = indate * 10 + COB_D2I (*p);
 			} else {
 				goto derror;

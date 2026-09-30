@@ -117,6 +117,7 @@ enum compile_level {
 #define CB_FLAG_GETOPT_DEPEND_KEEP_MISSING  25
 #define CB_FLAG_GETOPT_DEPEND_ON_THE_SIDE   26
 #define CB_FLAG_GETOPT_GENTABLE             27
+#define CB_FLAG_GETOPT_DATA_CODESET         28
 
 /* Info display limits */
 #define	CB_IMSG_SIZE		24
@@ -263,6 +264,7 @@ FILE			*cb_storage_file = NULL;
 FILE			*cb_listing_file = NULL;
 FILE			*cb_depend_file = NULL;
 const char		*cb_ebcdic_table = NULL;
+const cob_charset	*cb_data_charset = NULL;	/* NULL = native */
 int			cb_depend_output = 0;
 int			cb_depend_output_only = 0;
 int			cb_depend_add_phony = 0;
@@ -3978,6 +3980,17 @@ process_command_line (const int argc, char **argv)
 			cb_ebcdic_table = cobc_main_strdup (cob_optarg);
 			break;
 
+		case CB_FLAG_GETOPT_DATA_CODESET:
+			/* -fdata-codeset=<NATIVE/IBM-037/IBM-930/...> */
+			cb_data_charset = cob_get_charset (cob_optarg);
+			if (cb_data_charset == NULL) {
+				cobc_err_exit (COBC_INV_PAR, "-fdata-codeset");
+			}
+			if (cb_data_charset == &cob_charset_native) {
+				cb_data_charset = NULL;
+			}
+			break;
+
 		case CB_FLAG_GETOPT_DEFAULT_COLSEQ:
 			/* -fdefault-colseq=<ASCII/EBCDIC/NATIVE> */
 			if (cb_deciph_default_colseq_name (cob_optarg)) {
@@ -4290,6 +4303,12 @@ process_command_line (const int argc, char **argv)
 
 	if (cob_load_collation (cb_ebcdic_table, ebcdic_to_ascii, ascii_to_ebcdic) < 0) {
 		cobc_err_exit (_("invalid parameter: %s"), "-febcdic-table");
+	}
+
+	/* EBCDIC data always uses the EBCDIC sign (zone nibble) */
+	if (cb_data_charset
+	 && (cb_data_charset->flags & COB_CS_EBCDIC)) {
+		cb_ebcdic_sign = 1;
 	}
 
 	/* Exit on missing options */

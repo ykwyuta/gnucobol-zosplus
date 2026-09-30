@@ -5896,11 +5896,11 @@ _suppress_clause:
   }
 | SUPPRESS WHEN ALL basic_value
   {
-	$$ = cb_int (cb_literal_value ($4));
+	$$ = cb_int (cb_literal_data_value ($4));
   }
 | SUPPRESS WHEN space_or_zero
   {
-	$$ = cb_int (cb_literal_value ($3));
+	$$ = cb_int (cb_literal_data_value ($3));
   }
 ;
 

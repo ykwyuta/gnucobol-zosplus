@@ -765,6 +765,8 @@ struct cb_literal {
 	cob_u32_t		llit;	/* 'L' literal */
 	short			sign;	/* unsigned: 0 negative: -1 positive: 1 */
 	short			all;	/* ALL */
+	short			raw;	/* data is not converted to the data charset
+					   (hexadecimal literal) */
 };
 
 #define CB_LITERAL(x)	(CB_TREE_CAST (CB_TAG_LITERAL, struct cb_literal, x))
@@ -2273,6 +2275,7 @@ extern cb_tree		cb_build_ml_tree (struct cb_field *, const int,
 extern cb_tree		cb_build_ml_suppress_checks (struct cb_ml_generate_tree *);
 
 extern int			cb_literal_value (cb_tree);
+extern int			cb_literal_data_value (cb_tree);
 
 /* parser.y */
 extern int		non_const_word;

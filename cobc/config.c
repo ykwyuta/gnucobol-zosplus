@@ -131,6 +131,7 @@ enum cb_include_type {
 };
 
 const char	*words_file = NULL;
+int		cb_default_byte_is_char = 0;	/* defaultbyte given as character */
 
 /* Local declarations */
 
@@ -847,6 +848,7 @@ cb_config_entry (char *buff, const char *fname, const int line)
 			break;
 
 		} else if (strcmp (name, "defaultbyte") == 0) {
+			cb_default_byte_is_char = 0;
 			if (strcmp (val, "init") == 0) {
 				/* generate default initialization per INITIALIZE rules */
 				cb_default_byte = CB_DEFAULT_BYTE_INIT;
@@ -868,12 +870,14 @@ cb_config_entry (char *buff, const char *fname, const int line)
 			/* convert quoted character to number */
 			if (val[0] == '"' && val[1] != 0 && val[2] == '"' && val[3] == 0) {
 				cb_default_byte = val[1];
+				cb_default_byte_is_char = 1;
 				break;
 			}
 			/* convert character to number (convenience,
 			   as quotes will commonly be removed when given on shell) */
 			if (val[1] == 0 && (val[0] < '0' || val[0] > '9')) {
 				cb_default_byte = val[0];
+				cb_default_byte_is_char = 1;
 				break;
 			}
 			/* just use decimal as character number */

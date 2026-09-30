@@ -506,6 +506,8 @@ extern struct cb_tree_common	*defined_prog_list;
 extern int			current_call_convention;
 
 extern const char		*cb_ebcdic_table;
+extern const cob_charset	*cb_data_charset;	/* -fdata-codeset, NULL = native */
+extern int			cb_default_byte_is_char;
 
 /* Functions */
 
@@ -637,6 +639,11 @@ extern size_t		suppress_warn;	/* no warnings for internal generated stuff */
 
 extern cob_u8_t ebcdic_to_ascii[256];
 extern cob_u8_t ascii_to_ebcdic[256];
+
+/* conversion of data (literals, figurative constants, ...) from the
+   host charset to the data charset (-fdata-codeset) */
+extern unsigned char	cb_data_char (const unsigned char);
+extern void		cb_data_convert (unsigned char *, const size_t);
 
 /* error.c */
 #define CB_MSG_STYLE_GCC	0

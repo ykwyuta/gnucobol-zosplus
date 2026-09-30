@@ -678,6 +678,71 @@ output_string (const unsigned char *s, const int size, const cob_u32_t llit)
 	output ("\"");
 }
 
+/* output data string, converted to the data charset (-fdata-codeset)
+   unless 'raw' is set (hexadecimal literals) */
+static void
+output_data_string (const unsigned char *s, const int size,
+	const cob_u32_t llit, const int raw)
+{
+	unsigned char	*buff;
+	if (!cb_data_charset || raw || !s || size <= 0) {
+		output_string (s, size, llit);
+		return;
+	}
+	buff = cobc_malloc ((size_t)size);
+	memcpy (buff, s, (size_t)size);
+	cb_data_convert (buff, (size_t)size);
+	output_string (buff, size, llit);
+	cobc_free (buff);
+}
+
+/* character 'idx' of literal 'l' in the data charset */
+static unsigned char
+literal_data_char (const struct cb_literal *l, const size_t idx)
+{
+	if (l->raw) {
+		return l->data[idx];
+	}
+	return cb_data_char (l->data[idx]);
+}
+
+/* output a string used as data for a DEBUG-ITEM */
+static void
+output_debug_string (const char *str)
+{
+	if (cb_data_charset) {
+		output_data_string ((const unsigned char *)str, (int)strlen (str), 0, 0);
+	} else {
+		output ("%s%d", CB_PREFIX_STRING, lookup_string (str));
+	}
+}
+
+/* output the data of a numeric literal including its sign
+   (leading or trailing) */
+static void
+output_numeric_literal_data (const struct cb_literal *l, const int sign_leading)
+{
+	const char	*sign = (l->sign < 0) ? "-" : (l->sign > 0) ? "+" : "";
+	if (!cb_data_charset) {
+		if (sign_leading) {
+			output ("(cob_u8_ptr)\"%s%s\"", sign, (char *)l->data);
+		} else {
+			output ("(cob_u8_ptr)\"%s%s\"", (char *)l->data, sign);
+		}
+	} else {
+		const size_t	size = strlen ((char *)l->data) + strlen (sign);
+		char	*buff = cobc_malloc (size + 1);
+		if (sign_leading) {
+			sprintf (buff, "%s%s", sign, (char *)l->data);
+		} else {
+			sprintf (buff, "%s%s", (char *)l->data, sign);
+		}
+		output ("(cob_u8_ptr)");
+		output_data_string ((unsigned char *)buff, (int)size, 0, 0);
+		cobc_free (buff);
+	}
+}
+
 /* output data to current storage include file */
 static void
 output_storage (const char *fmt, ...)
@@ -1155,12 +1220,10 @@ output_data (cb_tree x)
 	case CB_TAG_LITERAL: {
 		struct cb_literal	*l = CB_LITERAL (x);
 		if (CB_TREE_CLASS (x) == CB_CLASS_NUMERIC) {
-			output ("(cob_u8_ptr)\"%s%s\"",
-					(l->sign < 0) ? "-" : (l->sign > 0) ? "+" : "",
-					(char *)l->data);
+			output_numeric_literal_data (l, 1);
 		} else {
 			output ("(cob_u8_ptr)");
-			output_string (l->data, (int) l->size, l->llit);
+			output_data_string (l->data, (int) l->size, l->llit, l->raw);
 		}
 		break;
 	}
@@ -2256,11 +2319,10 @@ output_data_sub (cb_tree x, int subscript)
 	case CB_TAG_LITERAL: {
 		struct cb_literal	*l = CB_LITERAL (x);
 		if (CB_TREE_CLASS (x) == CB_CLASS_NUMERIC) {
-			output ("(cob_u8_ptr)\"%s%s\"", (char *)l->data,
-				(l->sign < 0) ? "-" : (l->sign > 0) ? "+" : "");
+			output_numeric_literal_data (l, 0);
 		} else {
 			output ("(cob_u8_ptr)");
-			output_string (l->data, (int) l->size, l->llit);
+			output_data_string (l->data, (int) l->size, l->llit, l->raw);
 		}
 		break;
 	}
@@ -2550,7 +2612,10 @@ output_quote (void)
 	if (gen_figurative & CB_NEED_QUOTE) {
 		output ("static cob_field cob_all_quote\t= ");
 		output ("{1, ");
-		if (cb_flag_apostrophe) {
+		if (cb_data_charset) {
+			output ("(cob_u8_ptr)\"\\%03o\", ",
+				cb_data_char (cb_flag_apostrophe ? '\'' : '"'));
+		} else if (cb_flag_apostrophe) {
 			output ("(cob_u8_ptr)\"'\", ");
 		} else {
 			output ("(cob_u8_ptr)\"\\\"\", ");
@@ -2566,7 +2631,11 @@ output_space (void)
 	if (gen_figurative & CB_NEED_SPACE) {
 		output ("static cob_field cob_all_space\t= ");
 		output ("{1, ");
-		output ("(cob_u8_ptr)\" \", ");
+		if (cb_data_charset) {
+			output ("(cob_u8_ptr)\"\\%03o\", ", cb_data_char (' '));
+		} else {
+			output ("(cob_u8_ptr)\" \", ");
+		}
 		output ("&cob_all_attr};");
 		output_newline ();
 	}
@@ -2578,7 +2647,11 @@ output_zero (void)
 	if (gen_figurative & CB_NEED_ZERO) {
 		output ("static cob_field cob_all_zero\t= ");
 		output ("{1, ");
-		output ("(cob_u8_ptr)\"0\", ");
+		if (cb_data_charset) {
+			output ("(cob_u8_ptr)\"\\%03o\", ", cb_data_char ('0'));
+		} else {
+			output ("(cob_u8_ptr)\"0\", ");
+		}
 		output ("&cob_all_attr};");
 		output_newline ();
 	}
@@ -4272,15 +4345,23 @@ output_funcall_typed (struct cb_funcall *p, const char type)
 		output ("(int)(*(");
 		output_data (p->argv[0]);
 		if (p->argv[1] == cb_space) {
-			output (") - ' ')");
+			if (cb_data_charset) {
+				output (") - %d)", cb_data_char (' '));
+			} else {
+				output (") - ' ')");
+			}
 		} else if (p->argv[1] == cb_zero) {
-			output (") - '0')");
+			if (cb_data_charset) {
+				output (") - %d)", cb_data_char ('0'));
+			} else {
+				output (") - '0')");
+			}
 		} else if (p->argv[1] == cb_low) {
 			output (") - 0x%02x)", current_prog->low_value);
 		} else if (p->argv[1] == cb_high) {
 			output (") - 0x%02x)", current_prog->high_value);
 		} else if (CB_LITERAL_P (p->argv[1])) {
-			output_char (") - ", CB_LITERAL (p->argv[1])->data[0], ")");
+			output_char (") - ", literal_data_char (CB_LITERAL (p->argv[1]), 0), ")");
 		} else {
 			output (") - *(");
 			output_data (p->argv[1]);
@@ -4755,6 +4836,11 @@ initialize_uniform_char (const struct cb_field *f,
 			 const struct cb_initialize *p)
 {
 	if (p->statement == STMT_INIT_STORAGE && cb_default_byte >= 0) {
+		/* a character is converted to the data charset,
+		   a number is used as byte value */
+		if (cb_default_byte_is_char) {
+			return cb_data_char ((unsigned char)cb_default_byte);
+		}
 		return cb_default_byte;
 	}
 
@@ -4773,9 +4859,9 @@ initialize_uniform_char (const struct cb_field *f,
 		case COB_TYPE_NUMERIC_BINARY:
 			return 0;
 		case COB_TYPE_NUMERIC_DISPLAY:
-			return '0';
+			return cb_data_char ('0');
 		case COB_TYPE_ALPHANUMERIC:
-			return ' ';
+			return cb_data_char (' ');
 		default:
 			return -1;
 		}
@@ -4788,7 +4874,7 @@ output_figurative (cb_tree x, const struct cb_field *f, const int value,
 {
 	/* REPORT lines are cleared to SPACES */
 	if (f->storage == CB_STORAGE_REPORT
-	 && value == ' ')
+	 && value == cb_data_char (' '))
 		return;
 	output_prefix ();
 	/* Check for non-standard 01 OCCURS */
@@ -4837,17 +4923,17 @@ output_initialize_literal (cb_tree x, struct cb_field *f,
 	if (lsize == 1) {
 		/* REPORT lines are cleared to SPACES */
 		if (f->storage == CB_STORAGE_REPORT
-		 && l->data[0] == ' ')
+		 && literal_data_char (l, 0) == cb_data_char (' '))
 			return;
 		output_prefix ();
 		output ("memset (");
 		output_data (x);
 		if (CB_REFERENCE_P(x) && CB_REFERENCE(x)->length) {
-			output (", %d, ", l->data[0]);
+			output (", %d, ", literal_data_char (l, 0));
 			output_size (x);
 			output (");");
 		} else {
-			output (", %d, %d);", l->data[0], size);
+			output (", %d, %d);", literal_data_char (l, 0), size);
 		}
 		output_newline ();
 		return;
@@ -4857,7 +4943,7 @@ output_initialize_literal (cb_tree x, struct cb_field *f,
 		output ("memcpy (");
 		output_data (x);
 		output (", ");
-		output_string (l->data, size, l->llit);
+		output_data_string (l->data, size, l->llit, l->raw);
 		output (", %d);", size);
 		output_newline ();
 		return;
@@ -4878,7 +4964,7 @@ output_initialize_literal (cb_tree x, struct cb_field *f,
 		output ("memcpy (");
 		output_data (x);
 		output (", ");
-		output_string (l->data, lsize, l->llit);
+		output_data_string (l->data, lsize, l->llit, l->raw);
 		output (", %d);", lsize);
 		output_newline ();
 		for (off = lsize; off+lsize < size; ) {
@@ -4921,7 +5007,7 @@ output_initialize_literal (cb_tree x, struct cb_field *f,
 		output ("memcpy (");
 		output_data (x);
 		output (" + (i0 * %d), ", lsize);
-		output_string (l->data, lsize, l->llit);
+		output_data_string (l->data, lsize, l->llit, l->raw);
 		output (", %d);", lsize);
 		output_newline ();
 		output_block_close ();
@@ -4931,7 +5017,7 @@ output_initialize_literal (cb_tree x, struct cb_field *f,
 			output ("memcpy (");
 			output_data (x);
 			output (" + (i0 * %d), ", lsize);
-			output_string (l->data, n, l->llit);
+			output_data_string (l->data, n, l->llit, l->raw);
 			output (", %d);", n);
 			output_newline ();
 		}
@@ -4969,7 +5055,7 @@ output_initialize_uniform (cb_tree x, struct cb_field *f,
 {
 	/* REPORT lines are cleared to SPACES */
 	if (f->storage == CB_STORAGE_REPORT
-	 && cc == ' ') {
+	 && cc == cb_data_char (' ')) {
 		return;
 	}
 
@@ -5060,7 +5146,7 @@ output_initialize_to_value (struct cb_field *f, cb_tree x,
 	/* figurative constants */
 	if (CB_CONST_P (value)) {
 		if (value == cb_space) {
-			output_figurative (x, f, ' ', init_occurs);
+			output_figurative (x, f, cb_data_char (' '), init_occurs);
 			return;
 		} else if (value == cb_low) {
 			output_figurative (x, f, current_prog->low_value, init_occurs);
@@ -5070,14 +5156,14 @@ output_initialize_to_value (struct cb_field *f, cb_tree x,
 			return;
 		} else if (value == cb_quote) {
 			if (cb_flag_apostrophe) {
-				output_figurative (x, f, '\'', init_occurs);
+				output_figurative (x, f, cb_data_char ('\''), init_occurs);
 			} else {
-				output_figurative (x, f, '"', init_occurs);
+				output_figurative (x, f, cb_data_char ('"'), init_occurs);
 			}
 			return;
 		} else if (value == cb_zero && f->usage == CB_USAGE_DISPLAY) {
 			if (!f->flag_sign_separate && !f->flag_blank_zero) {
-				output_figurative (x, f, '0', init_occurs);
+				output_figurative (x, f, cb_data_char ('0'), init_occurs);
 			} else {
 				output_move (cb_zero, x);	/* CHECKME: what about init_occurs ?*/
 			}
@@ -5144,7 +5230,7 @@ output_initialize_to_value (struct cb_field *f, cb_tree x,
 
 	/* only single-byte to set, generate assignment and return */
 	if (size == 1) {
-		const unsigned char c = l->data[0];
+		const unsigned char c = literal_data_char (l, 0);
 		output_prefix ();
 		output ("*(cob_u8_ptr)(");
 		output_data (x);
@@ -5177,7 +5263,7 @@ output_initialize_to_value (struct cb_field *f, cb_tree x,
 			output_prefix ();
 			output ("memset (");
 			output_data (x);
-			output_char (", ", buffchar, ", ");
+			output_char (", ", l->raw ? buffchar : cb_data_char (buffchar), ", ");
 			output ("%u);", size);
 			output_newline ();
 		} else {
@@ -5186,7 +5272,7 @@ output_initialize_to_value (struct cb_field *f, cb_tree x,
 			output ("memcpy (");
 			output_data (x);
 			output (", ");
-			output_string (l->data + first_pos, size, l->llit);
+			output_data_string (l->data + first_pos, size, l->llit, l->raw);
 			output (", %d);", size);
 			output_newline ();
 		}
@@ -5206,12 +5292,17 @@ output_initialize_to_value (struct cb_field *f, cb_tree x,
 			   from a string - we use a local buffer to set that up */
 			unsigned char litbuff[128];
 			memcpy (litbuff + litstart, l->data, l->size);
-			memset (litbuff + padstart, ' ', padlen);
+			if (l->raw) {
+				/* only the padding needs conversion */
+				memset (litbuff + padstart, cb_data_char (' '), padlen);
+			} else {
+				memset (litbuff + padstart, ' ', padlen);
+			}
 			output_prefix ();
 			output ("memcpy (");
 			output_data (x);
 			output (", ");
-			output_string (litbuff, size, l->llit);
+			output_data_string (litbuff, size, l->llit, l->raw);
 			output (", %d);", size);
 			output_newline ();
 		} else {
@@ -5223,7 +5314,7 @@ output_initialize_to_value (struct cb_field *f, cb_tree x,
 				output (" + %u", litstart);
 			}
 			output (", ");
-			output_string (l->data, l->size, l->llit);
+			output_data_string (l->data, l->size, l->llit, l->raw);
 			output (", %d);", l->size);
 			output_newline ();
 			output_prefix ();
@@ -5232,7 +5323,11 @@ output_initialize_to_value (struct cb_field *f, cb_tree x,
 			if (padstart) {
 				output (" + %u", padstart);
 			}
-			output (", ' ', %u);", padlen);
+			if (cb_data_charset) {
+				output (", %d, %u);", cb_data_char (' '), padlen);
+			} else {
+				output (", ' ', %u);", padlen);
+			}
 			output_newline ();
 		}	
 #else /* GEN_SINGLE_MEMCPY follows */
@@ -5666,7 +5761,7 @@ output_initialize_compound (struct cb_initialize *p, cb_tree x)
 						case CB_USAGE_DISPLAY:
 							if (!cb_ebcdic_sign
 							 && !f->pic->have_sign) {
-								init = '0';
+								init = cb_data_char ('0');
 							}
 							break;
 						case CB_USAGE_COMP_6:
@@ -5680,7 +5775,7 @@ output_initialize_compound (struct cb_initialize *p, cb_tree x)
 							break;
 						};
 					} else {
-						init = ' ';
+						init = cb_data_char (' ');
 					}
 					if (init != -1) {
 						cb_tree stmt = CB_BUILD_FUNCALL_3 ("memset",
@@ -7839,7 +7934,7 @@ output_debug_item (const struct cb_debug *dbg)
 			output_prefix ();
 			output ("memset (");
 			output_data (dbg->target);
-			output (", ' ', %u);", (unsigned int)size);
+			output (", %d, %u);", cb_data_char (' '), (unsigned int)size);
 			output_newline ();
 			output_prefix ();
 			output ("if (");
@@ -7849,7 +7944,8 @@ output_debug_item (const struct cb_debug *dbg)
 			output_prefix ();
 			output ("\t""memcpy (");
 			output_data (dbg->target);
-			output (", %s%d", CB_PREFIX_STRING, lookup_string (null_rep));
+			output (", ");
+			output_debug_string (null_rep);
 			output (", %u);", (unsigned int)strlen (null_rep));
 			output_newline ();
 			output_line ("else");
@@ -7874,8 +7970,8 @@ output_debug_item (const struct cb_debug *dbg)
 				output_prefix ();
 				output ("memset (");
 				output_data (dbg->target);
-				output (" + %u, ' ', %u);",
-					(unsigned int)dbg->size, (unsigned int)(size - dbg->size));
+				output (" + %u, %d, %u);", (unsigned int)dbg->size,
+					cb_data_char (' '), (unsigned int)(size - dbg->size));
 				output_newline ();
 			}
 		}
@@ -7887,7 +7983,7 @@ output_debug_item (const struct cb_debug *dbg)
 	output ("memcpy (");
 	output_data (dbg->target);
 	output (", ");
-	output ("%s%d", CB_PREFIX_STRING, lookup_string (dbg->value));
+	output_debug_string (dbg->value);
 	output (", %u);", (unsigned int)copy_size);
 	output_newline ();
 	/* ... filled up with space */
@@ -7895,8 +7991,8 @@ output_debug_item (const struct cb_debug *dbg)
 		output_prefix ();
 		output ("memset (");
 		output_data (dbg->target);
-		output (" + %u, ' ', %u);",
-			(unsigned int)dbg->size, (unsigned int)(size - dbg->size));
+		output (" + %u, %d, %u);", (unsigned int)dbg->size,
+			cb_data_char (' '), (unsigned int)(size - dbg->size));
 		output_newline ();
 	}
 }
@@ -9110,7 +9206,15 @@ output_stmt (cb_tree x)
 				output_prefix ();
 				output ("memcpy (");
 				output_data (cb_debug_line);
-				output (", \"%6d\", 6);", x->source_line);
+				if (cb_data_charset) {
+					char	line_buff[16];
+					snprintf (line_buff, sizeof (line_buff), "%6d", x->source_line);
+					output (", ");
+					output_data_string ((unsigned char *)line_buff, 6, 0, 0);
+					output (", 6);");
+				} else {
+					output (", \"%6d\", 6);", x->source_line);
+				}
 				output_newline ();
 			}
 			last_line = x->source_line;
@@ -10792,7 +10896,6 @@ output_class_name_definition (struct cb_class_name *p)
 {
 	cb_tree		l;
 	cb_tree		x;
-	unsigned char	*data;
 	size_t		i;
 	size_t		size;
 	int		n;
@@ -10812,23 +10915,28 @@ output_class_name_definition (struct cb_class_name *p)
 	for (l = p->list; l; l = CB_CHAIN (l)) {
 		x = CB_VALUE (l);
 		if (CB_PAIR_P (x)) {
+			/* note: ranges of characters are taken in the host
+			   charset, then converted (as EBCDIC is not contiguous),
+			   ordinal numbers are in the data charset already */
+			const int	conv = !CB_NUMERIC_LITERAL_P (CB_PAIR_X (x))
+				&& !(CB_LITERAL_P (CB_PAIR_X (x)) && CB_LITERAL (CB_PAIR_X (x))->raw);
 			lower = cb_literal_value (CB_PAIR_X (x));
 			upper = cb_literal_value (CB_PAIR_Y (x));
 			for (n = lower; n <= upper; ++n) {
-				vals[n] = 1;
+				vals[conv ? cb_data_char ((unsigned char)n) : n] = 1;
 			}
 		} else {
 			if (CB_NUMERIC_LITERAL_P (x)) {
 				vals[cb_literal_value (x)] = 1;
 			} else if (x == cb_space) {
-				vals[' '] = 1;
+				vals[cb_data_char (' ')] = 1;
 			} else if (x == cb_zero) {
-				vals['0'] = 1;
+				vals[cb_data_char ('0')] = 1;
 			} else if (x == cb_quote) {
 				if (cb_flag_apostrophe) {
-					vals['\''] = 1;
+					vals[cb_data_char ('\'')] = 1;
 				} else {
-					vals['"'] = 1;
+					vals[cb_data_char ('"')] = 1;
 				}
 			} else if (x == cb_null) {
 				vals[0] = 1;
@@ -10838,9 +10946,8 @@ output_class_name_definition (struct cb_class_name *p)
 				vals[current_prog->high_value] = 1;
 			} else {
 				size = CB_LITERAL (x)->size;
-				data = CB_LITERAL (x)->data;
 				for (i = 0; i < size; i++) {
-					vals[data[i]] = 1;
+					vals[literal_data_char (CB_LITERAL (x), i)] = 1;
 				}
 			}
 		}
@@ -11377,6 +11484,10 @@ output_module_init_function (struct cb_program *prog)
 	output_line ("module__->module_returning = %u;", prog->flag_void ? 0 : 1);
 #endif
 	output_line ("module__->ebcdic_sign = %d;", cb_ebcdic_sign);
+	if (cb_data_charset) {
+		output_line ("module__->charset = &cob_charset_ibm%03u;",
+			cb_data_charset->ccsid);
+	}
 	output_line ("module__->decimal_point = '%c';", prog->decimal_point);
 	output_line ("module__->currency_symbol = '%c';", prog->currency_symbol);
 	output_line ("module__->numeric_separator = '%c';", prog->numeric_separator);

@@ -1312,6 +1312,12 @@ typedef struct __cob_charset {
 } cob_charset;
 
 COB_EXPIMP const cob_charset	cob_charset_native;
+COB_EXPIMP const cob_charset	cob_charset_ibm037;
+COB_EXPIMP const cob_charset	cob_charset_ibm930;
+COB_EXPIMP const cob_charset	cob_charset_ibm939;
+COB_EXPIMP const cob_charset	cob_charset_ibm1390;
+COB_EXPIMP const cob_charset	cob_charset_ibm1399;
+COB_EXPIMP const cob_charset	*cob_get_charset	(const char *);
 
 /* Module structure */
 enum cob_module_type {

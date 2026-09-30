@@ -2963,12 +2963,15 @@ cob_get_s64_pic9 (void *mem, int len)
 		}
 	} else if (COB_MODULE_PTR->ebcdic_sign) {
 		/* EBCDIC data: sign in zone nibble */
-		if ((*p & 0xF0) == 0xC0) {
-			sign = 1;
-		} else if ((*p & 0xF0) == 0xD0) {
-			sign = -1;
+		if ((*p & 0x0F) <= 9) {
+			if ((*p & 0xF0) == 0xC0) {
+				sign = 1;
+				val = val * 10 + COB_D2I (*p);
+			} else if ((*p & 0xF0) == 0xD0) {
+				sign = -1;
+				val = val * 10 + COB_D2I (*p);
+			}
 		}
-		val = val * 10 + COB_D2I (*p);
 	} else {
 		cob_u8_t	dig_part = *p & 0x3F;
 		if (COB_CS_ISDIGIT (cs, dig_part)) {

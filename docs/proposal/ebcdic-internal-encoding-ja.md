@@ -354,7 +354,7 @@ COB_TERMINAL_CODESET=UTF-8 COB_LS_CODESET=host ./prog
 
 ## 10. 進捗状況
 
-### P0（動作を変えない下準備）: 実施中
+### P0（動作を変えない下準備）: 完了（screenio.c / mlio.c / reportio.c は P4 に延期）
 
 ブランチ `claude/ebcdic-code-proposal-oqkyol` で実施しています。どの段階でも、既存のテストスイートの結果が変わらないこと（1367 件が期待どおり、10 件スキップ）を確認しています。
 
@@ -381,6 +381,54 @@ COB_TERMINAL_CODESET=UTF-8 COB_LS_CODESET=host ./prog
 * ALPHABETIC などのクラス判定と CBL_TOUPPER / CBL_TOLOWER は、今の実装では**実行時のロケール（LC_CTYPE）に依存**しています。動作を変えないよう、ネイティブ文字セットのときは従来どおり C ライブラリの関数を使い、それ以外のときだけ記述子の表を使います。
 * `COB_EBCDIC_MACHINE` の分岐の中に、ASCII ホストでは一度もコンパイルされていなかったバグがありました（符号付き `char` と `0xC0` を比べていた）。実行時の分岐に変えたので、ここは修正しました。
 * cobc が生成するコードは `COB_SPACES_ALPHABETIC` / `COB_ZEROES_ALPHABETIC`（ネイティブの SPACE / ZERO）を直接参照しています（`cobc/typeck.c:7196` 付近）。P1 では、EBCDIC のモジュールでこの最適化を使わないか、記述子の `spaces` / `zeroes` を参照するように変える必要があります。
+
+### P1（SBCS の EBCDIC 内部化）: 実験的に動作
+
+`cobc -fdata-codeset=IBM-1399 prog.cob` のように指定すると、データを EBCDIC で持つプログラムが作れます。指定できるのは `NATIVE`、`IBM-037`、`IBM-930`、`IBM-939`、`IBM-1390`、`IBM-1399` です（DBCS は P3 のため、現時点では 1 バイト部分のみ）。
+
+| 項目 | 内容 |
+|------|------|
+| 変換表 | `build_aux/gen-charset-tables.py` が iconv から `libcob/charset_tables.h` を生成する。ホスト側は 037 が ISO-8859-1、日本語 CCSID が Shift_JIS の 1 バイト部分（ASCII と半角カナ）。対応する文字がない位置は空いているバイトに割り当て、往復で失われないようにした |
+| 記述子 | `cob_charset_ibm037` など 5 つと、名前から探す `cob_get_charset`（`libcob/charset.c`） |
+| cobc | 英数字定数、数値定数、表意定数、VALUE / INITIALIZE、MOVE の最適化、CLASS 条件、DEBUG-ITEM、`-fdefaultbyte` の文字指定、SUPPRESS WHEN を、コード生成の直前にデータ文字コードへ変換する。16 進定数（`X"..."`）は変換しない（`cb_literal.raw`）。リテラル同士の比較はコンパイル時に畳み込まない |
+| 符号 | EBCDIC データでは常にゾーン部の符号（C / D / F）を使う（`cb_ebcdic_sign` を強制） |
+| 試験 | `tests/testsuite.src/run_ebcdic.at` に 7 件を追加（16 進定数、ゾーン 10 進 / パック 10 進のバイト値、照合順、930 / 939 の英小文字と CLASS、ACCEPT / DISPLAY、SEQUENTIAL / LINE SEQUENTIAL ファイル） |
+
+確認できた動作（CCSID 1399 / 930）:
+
+```
+'AB12' → C1 C2 F1 F2      X'C1' = 'A'      S9(3) -123 → F1 F2 D3      COMP-3 -123 → 12 3D
+英小文字 'abz' → 81 82 A9（1399 / 939）、62 63 B9（930）
+'a' < 'A'、'9' > 'Z'（EBCDIC の照合順）
+DISPLAY / ACCEPT と LINE SEQUENTIAL はホストのテキストとして読み書き
+```
+
+#### 既存テストスイートを EBCDIC モードで流した結果
+
+`COBOL_FLAGS=-fdata-codeset=IBM-037 make check` で既存テストをすべて EBCDIC モードで実行しました（ネイティブでは全件成功のまま）。想定外の失敗は、最初の 153 件から修正を重ねて 112 件になり、残りはすべて次のどれかに当たります。
+
+| 分類 | 件数 | 理由 |
+|------|------|------|
+| レポートライター | 19 | P4 で対応（reportio.c は未変換） |
+| XML / JSON | 27 | P4 で対応（mlio.c は未変換） |
+| EXTFH / FCD | 11 | FCD のファイル名などのホスト変換が未対応（FIXME） |
+| C との連携 | 12 | C 側が ASCII の文字列やバイト値を直接読み書きしている。IBM と同じく CALL の引数は変換しないので、想定どおりの差分 |
+| ASCII のバイト値・符号を前提にしたテスト | 19 | `X"313233"` を "123" として表示する、16 進ダンプで 0x20 を期待する、ASCII の符号オーバーパンチを期待する、など |
+| 照合順・序数 | 14 | EBCDIC 順になるため（ALPHABET / COLLATING SEQUENCE、CHAR / ORD、CLASS の序数指定など） |
+| その他 | 10 | コンパイル時の定数比較の警告（畳み込みをやめたため）、`-fdump` の 16 進値、CBL_GC_GETOPT（FIXME）、ACU 方言の既定バイト（空白）で初期化した索引の値 |
+
+この過程で、次の変換漏れや旧コードの不具合を見つけて直しました。
+
+* エラーメッセージの行番号が、データ用の数字変換を使っていたため文字化けしていた
+* EBCDIC の符号処理で、符号付きのゾーン 10 進から符号を外す（unpunch）処理が抜けていた（旧 `COB_EBCDIC_MACHINE` の分岐と同じ不具合）。符号付き数値を英数字項目に MOVE すると、符号のゾーンが残っていた
+* `cob_get_s64_pic9` が EBCDIC で末尾の空白を数字として数えていた
+* DEBUG-ITEM、`-fdefaultbyte=<文字>`、SUPPRESS WHEN の文字、C$PRINTABLE、CBL_GC_HOSTED、CBL_ERROR_PROC のメッセージ、VFILE の状態コード、LOCALE-DATE / LOCALE-TIME、SUBSTITUTE-CASE、`-fdump` の表示
+
+### 次の作業
+
+* P1 の残り: `ALPHABET ... IS EBCDIC / STANDARD-1` と `CODE-SET` を EBCDIC 内部に合わせて逆向きにする、`data-codeset` を設定ファイル（`ibm-jp.conf` など）でも指定できるようにする
+* P3: DBCS（PIC G / N、SO / SI を含む混在定数、端末への表示）
+* P4: SCREEN SECTION、XML / JSON、REPORT WRITER、EXTFH
 
 ## 11. まとめ
 

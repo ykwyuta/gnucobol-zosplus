@@ -1289,7 +1289,7 @@ cb_check_field_debug (cb_tree fld)
 				cb_list_add (current_statement->debug_check,
 					     CB_BUILD_FUNCALL_3 ("memset",
 						CB_BUILD_CAST_ADDRESS (cb_debug_sub_1),
-						cb_int (' '),
+						cb_int (cb_data_char (' ')),
 						CB_BUILD_CAST_LENGTH (cb_debug_sub_1)));
 			break;
 		case 1:
@@ -1297,7 +1297,7 @@ cb_check_field_debug (cb_tree fld)
 				cb_list_add (current_statement->debug_check,
 					     CB_BUILD_FUNCALL_3 ("memset",
 						CB_BUILD_CAST_ADDRESS (cb_debug_sub_2),
-						cb_int (' '),
+						cb_int (cb_data_char (' ')),
 						CB_BUILD_CAST_LENGTH (cb_debug_sub_2)));
 			break;
 		case 2:
@@ -1305,7 +1305,7 @@ cb_check_field_debug (cb_tree fld)
 				cb_list_add (current_statement->debug_check,
 					     CB_BUILD_FUNCALL_3 ("memset",
 						CB_BUILD_CAST_ADDRESS (cb_debug_sub_3),
-						cb_int (' '),
+						cb_int (cb_data_char (' ')),
 						CB_BUILD_CAST_LENGTH (cb_debug_sub_3)));
 			break;
 		default:
@@ -7191,7 +7191,9 @@ cb_build_cond_fields (struct cb_binary_op *p,
 	if (right == cb_zero && l_class == CB_CLASS_NUMERIC) {
 		return cb_build_optim_cond (p);
 	}
+	/* note: COB_SPACES_ALPHABETIC / COB_ZEROES_ALPHABETIC are native only */
 	if (right == cb_space
+	 && !cb_data_charset
 	 && (l_class == CB_CLASS_ALPHANUMERIC || l_class == CB_CLASS_ALPHABETIC)
 	 && (size1 > 0 && size1 <= COB_SPACES_ALPHABETIC_BYTE_LENGTH)) {
 		return CB_BUILD_FUNCALL_3 ("memcmp",
@@ -7200,6 +7202,7 @@ cb_build_cond_fields (struct cb_binary_op *p,
 			cb_int (size1));
 	}
 	if (right == cb_zero
+	 && !cb_data_charset
 	 && (l_class == CB_CLASS_ALPHANUMERIC || l_class == CB_CLASS_ALPHABETIC)
 	 && (size1 > 0 && size1 <= COB_ZEROES_ALPHABETIC_BYTE_LENGTH)) {
 		return CB_BUILD_FUNCALL_3 ("memcmp",
@@ -12129,10 +12132,10 @@ cb_build_move_num_zero (cb_tree x)
 		return cb_build_memset (x, 0);
 	case CB_USAGE_DISPLAY:
 		if (!cb_ebcdic_sign) {
-			return cb_build_memset (x, '0');
+			return cb_build_memset (x, cb_data_char ('0'));
 		}
 		if (f->pic && !f->pic->have_sign) {
-			return cb_build_memset (x, '0');
+			return cb_build_memset (x, cb_data_char ('0'));
 		}
 		break;
 	case CB_USAGE_PACKED:
@@ -12153,7 +12156,7 @@ cb_build_move_space (cb_tree x)
 	case CB_CATEGORY_ALPHABETIC:
 	case CB_CATEGORY_ALPHANUMERIC:
 		if (!CB_FIELD_PTR (x)->flag_any_length) {
-			return cb_build_memset (x, ' ');
+			return cb_build_memset (x, cb_data_char (' '));
 		}
 		/* Fall through */
 	default:
@@ -12176,7 +12179,7 @@ cb_build_move_zero (cb_tree x)
 	case CB_CATEGORY_ALPHABETIC:
 	case CB_CATEGORY_ALPHANUMERIC:
 		if (!CB_FIELD_PTR (x)->flag_any_length) {
-			return cb_build_memset (x, '0');
+			return cb_build_memset (x, cb_data_char ('0'));
 		}
 		/* Fall through */
 	default:
@@ -12230,7 +12233,7 @@ cb_build_move_quote (cb_tree x)
 	case CB_CATEGORY_ALPHABETIC:
 	case CB_CATEGORY_ALPHANUMERIC:
 		if (!CB_FIELD_PTR (x)->flag_any_length) {
-			return cb_build_memset (x, cb_flag_apostrophe ? '\'' : '"');
+			return cb_build_memset (x, cb_data_char (cb_flag_apostrophe ? '\'' : '"'));
 		}
 		/* Fall through */
 	default:
@@ -12383,7 +12386,7 @@ cb_build_move_literal (cb_tree src, cb_tree dst)
 		if (l->size == 1) {
 			return CB_BUILD_FUNCALL_3 ("memset",
 					   CB_BUILD_CAST_ADDRESS (dst),
-					   cb_int (l->data[0]),
+					   cb_int (l->raw ? l->data[0] : cb_data_char (l->data[0])),
 					   CB_BUILD_CAST_LENGTH (dst));
 		}
 		bbyte = l->data[0];
@@ -12396,7 +12399,7 @@ cb_build_move_literal (cb_tree src, cb_tree dst)
 		if (i == (int)l->size) {
 			return CB_BUILD_FUNCALL_3 ("memset",
 					   CB_BUILD_CAST_ADDRESS (dst),
-					   cb_int (l->data[0]),
+					   cb_int (l->raw ? l->data[0] : cb_data_char (l->data[0])),
 					   CB_BUILD_CAST_LENGTH (dst));
 		}
 		if (f->size > 128) {
@@ -12405,6 +12408,9 @@ cb_build_move_literal (cb_tree src, cb_tree dst)
 		buff = cobc_parse_malloc ((size_t)f->size);
 		for (i = 0; i < f->size; i++) {
 			buff[i] = l->data[i % l->size];
+		}
+		if (!l->raw) {
+			cb_data_convert (buff, (size_t)f->size);
 		}
 		return CB_BUILD_FUNCALL_3 ("memcpy",
 					   CB_BUILD_CAST_ADDRESS (dst),
@@ -12473,15 +12479,17 @@ cb_build_move_literal (cb_tree src, cb_tree dst)
 				cobc_parse_free (buff);
 				return CB_BUILD_FUNCALL_3 ("memset",
 						   CB_BUILD_CAST_ADDRESS (dst),
-						   cb_int (' '),
+						   cb_int (cb_data_char (' ')),
 						   CB_BUILD_CAST_LENGTH (dst));
 			}
 		} else {
+			/* for hexadecimal literals only the padding is converted */
+			const unsigned char	pad = l->raw ? cb_data_char (' ') : ' ';
 			if (f->flag_justified) {
 				if (diff <= 0) {
 					memcpy (buff, l->data - diff, (size_t)f->size);
 				} else {
-					memset (buff, ' ', (size_t)diff);
+					memset (buff, pad, (size_t)diff);
 					memcpy (buff + diff, l->data, (size_t)l->size);
 				}
 			} else {
@@ -12489,9 +12497,14 @@ cb_build_move_literal (cb_tree src, cb_tree dst)
 					memcpy (buff, l->data, (size_t)f->size);
 				} else {
 					memcpy (buff, l->data, (size_t)l->size);
-					memset (buff + l->size, ' ', (size_t)diff);
+					memset (buff + l->size, pad, (size_t)diff);
 				}
 			}
+		}
+		/* buff is created in host charset (including the sign),
+		   now convert it to the data charset */
+		if (cat == CB_CATEGORY_NUMERIC || !l->raw) {
+			cb_data_convert (buff, (size_t)f->size);
 		}
 		bbyte = *buff;
 		if (f->size == 1) {

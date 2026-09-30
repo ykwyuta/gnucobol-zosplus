@@ -11028,6 +11028,14 @@ create_first_segment (PHEAP_ENTRY ptr_heap)
 	return 0;
 }
 
+/* store VFILE status (given in host charset) as data */
+static void
+set_vfile_status (unsigned char *status, const char *value)
+{
+	memcpy (status, value, 2);
+	cob_charset_from_host (COB_CS, status, 2);
+}
+
 /*  CBL_OPEN_VFILE */
 static int
 open_vfile (cob_u16_ptr heap_id, unsigned char status[2], const int gc_ext)
@@ -11073,7 +11081,7 @@ open_vfile (cob_u16_ptr heap_id, unsigned char status[2], const int gc_ext)
 	}
 
 	if (heap == MAX_HEAP) {
-		memcpy (status, "99", 2);
+		set_vfile_status (status, "99");
 		return MAX_HEAPS_EXCEEDED;
 	}
 
@@ -11082,9 +11090,9 @@ open_vfile (cob_u16_ptr heap_id, unsigned char status[2], const int gc_ext)
 
 	return_code = create_first_segment (ptr_heap);
 	if (return_code == 0) {
-		memcpy (status, "00", 2);
+		set_vfile_status (status, "00");
 	} else {
-		memcpy (status, "99", 2);
+		set_vfile_status (status, "99");
 	}
 
 	return return_code;

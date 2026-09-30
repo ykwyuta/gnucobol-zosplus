@@ -497,12 +497,14 @@ is_field_display (cob_field *f)
 	return 1;
 }
 
-/* FIXME: display_alnum_dump shows the data "as is", for non-native
-   data charsets the text should be converted to the host charset
-   while the hex values should stay unconverted */
 
+
+/* dump of alphanumeric data: 'f' is the field with its data converted
+   to the host charset, 'raw' the original data (for LOW-/HIGH-VALUE and
+   the hex output) */
 static void
-display_alnum_dump (cob_field *f, FILE *fp, unsigned int indent, unsigned int max_width)
+display_alnum_dump_host (cob_field *f, const unsigned char *raw, FILE *fp,
+	unsigned int indent, unsigned int max_width)
 {
 	const unsigned int fsize = (unsigned int)f->size;
 	unsigned int	i, j, pos, len, colsize, bgn, duplen;
@@ -512,10 +514,10 @@ display_alnum_dump (cob_field *f, FILE *fp, unsigned int indent, unsigned int ma
 	lowv = highv = spacev = zerov = printv = delv = 0;
 	colsize = max_width - indent - 2;
 	for (i = 0; i < fsize; i++) {
-		if (f->data[i] == 0x00) {
+		if (raw[i] == 0x00) {
 			lowv++;
 			delv++;
-		} else if (f->data[i] == 0xFF) {
+		} else if (raw[i] == 0xFF) {
 			highv++;
 		} else if (f->data[i] == ' ') {
 			spacev++;
@@ -558,7 +560,7 @@ display_alnum_dump (cob_field *f, FILE *fp, unsigned int indent, unsigned int ma
 	/* remove trailing LOW-VALUES with note */
 	if (lowv != 0
 	 && (lowv + printv) == fsize) {
-		for (len = fsize; len != 0 && f->data[len-1] == 0x00; len--);
+		for (len = fsize; len != 0 && raw[len-1] == 0x00; len--);
 		if (len + lowv == fsize) {
 			for (i = 0; len > colsize; i += colsize, len -= colsize) {
 				fprintf (fp, "'%.*s'\n%*s", colsize, &f->data[i], indent, " ");
@@ -682,10 +684,10 @@ display_alnum_dump (cob_field *f, FILE *fp, unsigned int indent, unsigned int ma
 			if (f->data[i] >= ' '
 			 && f->data[i] <= 0x7F) {
 				fprintf (fp, " %c", f->data[i]);
-				sprintf (&wrk[j], "%02X", f->data[i]);
+				sprintf (&wrk[j], "%02X", raw[i]);
 			} else {
 				fprintf (fp, "  ");
-				sprintf (&wrk[j], "%02X", f->data[i]);
+				sprintf (&wrk[j], "%02X", raw[i]);
 			}
 			if ((j+2) < colsize
 			 && ((i+1) % 4) == 0
@@ -701,6 +703,15 @@ display_alnum_dump (cob_field *f, FILE *fp, unsigned int indent, unsigned int ma
 			fprintf (fp, "\n%*s", indent, " ");
 		}
 	}
+}
+
+static void
+display_alnum_dump (cob_field *f, FILE *fp, unsigned int indent, unsigned int max_width)
+{
+	cob_field	tmp;
+	cob_field	*hf = cob_charset_field_to_host (COB_CS, f, &tmp);
+	display_alnum_dump_host (hf, f->data, fp, indent, max_width);
+	cob_charset_field_release (f, hf);
 }
 
 

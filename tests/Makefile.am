@@ -54,6 +54,7 @@ testsuite_sources = \
 	testsuite.src/run_initialize.at \
 	testsuite.src/run_misc.at \
 	testsuite.src/run_ml.at \
+	testsuite.src/run_ebcdic.at \
 	testsuite.src/run_refmod.at \
 	testsuite.src/run_reportwriter.at \
 	testsuite.src/run_returncode.at \

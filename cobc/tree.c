@@ -4320,6 +4320,22 @@ cb_literal_value (cb_tree x)
 	}
 }
 
+/* as cb_literal_value, but characters are converted to the data charset
+   (ordinal numbers, LOW-VALUE, HIGH-VALUE, NULL and hexadecimal literals
+   are already in the data charset) */
+int
+cb_literal_data_value (cb_tree x)
+{
+	const int	val = cb_literal_value (x);
+	if (x == cb_space || x == cb_zero || x == cb_quote
+	 || (CB_LITERAL_P (x)
+	  && CB_TREE_CLASS (x) != CB_CLASS_NUMERIC
+	  && !CB_LITERAL (x)->raw)) {
+		return cb_data_char ((unsigned char)val);
+	}
+	return val;
+}
+
 /* Report */
 
 struct cb_report *
@@ -6263,6 +6279,7 @@ cb_build_binary_op (cb_tree x, const enum cb_binary_op_op op, cb_tree y)
 		 * TODO: build cob_fields and call cob_cmp from libcob.
 		 */
 		} else if (cb_constant_folding
+		 && !cb_data_charset	/* order depends on the data charset */
 		 && CB_LITERAL_P (x)
 		 && CB_LITERAL_P (y)
 		 && !CB_NUMERIC_LITERAL_P (x)
@@ -7495,6 +7512,29 @@ cb_build_ml_suppress_checks (struct cb_ml_generate_tree *tree)
 	return CB_TREE (check);
 }
 
+
+/* convert a single character from host to data charset */
+unsigned char
+cb_data_char (const unsigned char c)
+{
+	if (cb_data_charset && cb_data_charset->from_host) {
+		return cb_data_charset->from_host[c];
+	}
+	return c;
+}
+
+/* convert data from host to data charset in place */
+void
+cb_data_convert (unsigned char *data, const size_t size)
+{
+	if (cb_data_charset && cb_data_charset->from_host) {
+		const unsigned char	*tab = cb_data_charset->from_host;
+		unsigned char	*end = data + size;
+		for (; data < end; data++) {
+			*data = tab[*data];
+		}
+	}
+}
 
 enum cb_colseq cb_default_colseq = CB_COLSEQ_NATIVE;
 enum cb_colseq cb_default_file_colseq = CB_COLSEQ_NATIVE;

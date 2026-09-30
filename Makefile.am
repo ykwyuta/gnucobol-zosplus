@@ -27,7 +27,8 @@ BUILT_SOURCES = tarstamp.h
 ACLOCAL_AMFLAGS = -I m4 --install
 # CLEANFILES = $(bin_SCRIPTS)
 dist_noinst_SCRIPTS = autogen.sh build_aux/bootstrap po/update_linguas.sh \
-	build_aux/create_win_dist.sh build_aux/create_mingw_bindist.sh
+	build_aux/create_win_dist.sh build_aux/create_mingw_bindist.sh \
+	build_aux/gen-charset-tables.py
 
 # wrapper for the build environment
 noinst_SCRIPTS = pre-inst-env

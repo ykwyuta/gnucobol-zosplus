@@ -1051,7 +1051,7 @@ ss_itoa_u10 (int value)
 		digit = u % radix;
 		u /= radix;
 
-		*p++ = COB_I2D (digit);
+		*p++ = (char)('0' + digit);	/* host string */
 
 	} while (u > 0);
 
@@ -1779,7 +1779,9 @@ cob_get_sign_ebcdic (unsigned char *p)
 {
 	const cob_charset	*cs = COB_CS;
 	if (cs->flags & COB_CS_EBCDIC) {
-		/* EBCDIC data: the sign is the zone nibble */
+		/* EBCDIC data: the sign is the zone nibble,
+		   which is "unpunched" to an unsigned digit (zone F),
+		   same as the character based variant below */
 		const unsigned char sign_nibble = *p & 0xF0;
 		/* What to do here outside of 0 - 9? */
 		if ((*p & 0x0F) > 9) {
@@ -1791,11 +1793,13 @@ cob_get_sign_ebcdic (unsigned char *p)
 		/* positive, non-preferred */
 		case 0xA0:
 		case 0xE0:
+			*p = 0xF0 | (*p & 0x0F);
 			return 1;
 		/* negative */
 		case 0xD0:
 		/* negative, non-preferred */
 		case 0xB0:
+			*p = 0xF0 | (*p & 0x0F);
 			return -1;
 		/* unsigned  */
 		case 0xF0:
@@ -3987,16 +3991,13 @@ cob_real_get_sign (cob_field *f, const int adjust_ebcdic)
 			return 1;
 		}
 		if (adjust_ebcdic) {
-			if (cs->flags & COB_CS_EBCDIC) {
-				/* note: this is the "old" behavior on EBCDIC machines,
-				   CHECKME: cob_get_sign_ebcdic may return 0 here */
-				if (COB_MODULE_PTR->ebcdic_sign) {
-					return cob_get_sign_ebcdic (p);
-				}
-				return cob_get_sign_ascii (p) < 0 ? -2 : 2;
-			}
+			/* note: data with the sign "unpunched" is returned
+			   as adjusted (-2 / 2), to be re-punched by the caller */
 			if (COB_MODULE_PTR->ebcdic_sign) {
 				return cob_get_sign_ebcdic (p) < 0 ? -2 : 2;
+			}
+			if (cs->flags & COB_CS_EBCDIC) {
+				return cob_get_sign_ascii (p) < 0 ? -2 : 2;
 			}
 			return ((*p & 0xF0) == 0x70) ? -1 : 1;
 		} else {
@@ -4667,11 +4668,15 @@ cob_check_numeric (const cob_field *f, const char *name)
 		buff = cob_fast_malloc ((size_t)COB_SMALL_BUFF);
 		p = buff;
 		if (COB_FIELD_IS_NUMDISP(f) || COB_FIELD_IS_ANY_ALNUM(f)) {
+			/* the message is shown in the host charset */
+			const cob_charset	*cs = COB_CS;
 			while (data < end) {
-				if (isprint (*data)) {
-					*p++ = *data++;
+				const unsigned char	c = COB_CS_TO_HOST (cs, *data);
+				data++;
+				if (isprint (c)) {
+					*p++ = c;
 				} else {
-					p += sprintf (p, "\\%03o", *data++);
+					p += sprintf (p, "\\%03o", c);
 				}
 			}
 		} else {
@@ -6602,9 +6607,22 @@ int
 cob_sys_runtime_error_proc (const void *err_flags, const void *err_msg)
 {
 	const char *msg = (const char*)err_msg;
+	char	host_msg[COB_ERRBUF_SIZE];
 
 	COB_CHK_PARMS (CBL_RUNTIME_ERROR, 2);
 	COB_UNUSED (err_flags);
+
+	/* the message is COBOL data, convert to host charset */
+	if (msg && COB_MODULE_PTR && COB_CS->to_host) {
+		size_t	len = strlen (msg);
+		if (len >= sizeof (host_msg)) {
+			len = sizeof (host_msg) - 1;
+		}
+		memcpy (host_msg, msg, len);
+		host_msg[len] = 0;
+		cob_charset_to_host (COB_CS, (unsigned char *)host_msg, len);
+		msg = host_msg;
+	}
 
 	if (msg && msg[0]) {
 		cob_runtime_error ("%s: %s",
@@ -6725,6 +6743,7 @@ cob_sys_hosted (void *p, const void *var)
 	const char		*name = var;
 	cob_u8_ptr		data = p;
 	size_t			i;
+	char			host_name[16];
 
 	COB_CHK_PARMS (CBL_GC_HOSTED, 2);
 
@@ -6734,6 +6753,12 @@ cob_sys_hosted (void *p, const void *var)
 
 	if (COB_MODULE_PTR->cob_procedure_params[1]) {
 		i = (int)COB_MODULE_PTR->cob_procedure_params[1]->size;
+		/* the variable name is COBOL data, convert to host charset */
+		if (COB_CS->to_host && i < sizeof (host_name)) {
+			memcpy (host_name, var, i);
+			cob_charset_to_host (COB_CS, (unsigned char *)host_name, i);
+			name = host_name;
+		}
 		if ((i == 4) && !memcmp (name, "argc", 4)) {
 			*((int *)data) = cob_argc;
 			return 0;
@@ -7696,9 +7721,16 @@ cob_sys_printable (void *p1, ...)
 	}
 #endif
 	data = p1;
-	for (n = 0; n < datalen; ++n) {
-		if (!isprint (data[n])) {
-			data[n] = dotrep;
+	{
+		/* check in host charset */
+		const unsigned char	*to_host = COB_CS->to_host;
+		if (cobglobptr->cob_call_params <= 1) {
+			dotrep = COB_CS_FROM_HOST (COB_CS, dotrep);
+		}
+		for (n = 0; n < datalen; ++n) {
+			if (!isprint (to_host ? to_host[data[n]] : data[n])) {
+				data[n] = dotrep;
+			}
 		}
 	}
 #ifdef	HAVE_SETLOCALE
@@ -9258,6 +9290,12 @@ cob_runtime_error (const char *fmt, ...)
 				/* fresh error buffer with guaranteed size */
 				char local_err_str[COB_ERRBUF_SIZE];
 				memcpy (local_err_str, runtime_err_str, COB_ERRBUF_SIZE);
+				/* the message is passed as data, assuming the handler
+				   uses the same data charset as the current module */
+				if (err_module_pointer) {
+					cob_charset_from_host (cob_module_charset (err_module_pointer),
+						(unsigned char *)local_err_str, strlen (local_err_str));
+				}
 				err_field.data = (unsigned char *)local_err_str;
 
 				/* ensure that error handlers set their own locations */

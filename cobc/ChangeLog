@@ -1,3 +1,26 @@
+2026-09-30  ykwyuta <ykwyuta@gmail.com>
+
+	experimental support for data in EBCDIC (P1 of
+	docs/proposal/ebcdic-internal-encoding-ja.md):
+	* flag.def, cobc.c, cobc.h: new option -fdata-codeset=<codeset> to
+	  specify the character set of the data in the program (NATIVE,
+	  IBM-037, IBM-930, IBM-939, IBM-1390, IBM-1399); EBCDIC data always
+	  uses the EBCDIC sign (zone nibble)
+	* tree.c (cb_data_char, cb_data_convert, cb_literal_data_value): new
+	  functions to convert from host to data charset
+	* tree.c (cb_build_binary_op): no constant folding of alphanumeric
+	  literal comparisons for a non-native data charset
+	* tree.h, scanner.l: new flag cb_literal.raw for hexadecimal literals,
+	  which are never converted
+	* codegen.c: literals, figurative constants, VALUE / INITIALIZE data,
+	  CLASS conditions, DEBUG-ITEM data and the default byte are generated
+	  in the data charset; module->charset is set for non-native data
+	* typeck.c: MOVE of literals and figurative constants are built in the
+	  data charset, no comparison against the native SPACE / ZERO buffers
+	  for non-native data
+	* parser.y: SUPPRESS WHEN character in the data charset
+	* config.c: remember if defaultbyte was given as character
+
 
 2026-09-16  David Declerck <david.declerck@ocamlpro.com>
 

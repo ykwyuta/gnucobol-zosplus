@@ -1,0 +1,321 @@
+## Copyright (C) 2026 Free Software Foundation, Inc.
+##
+## This file is part of GnuCOBOL.
+##
+## The GnuCOBOL compiler is free software: you can redistribute it
+## and/or modify it under the terms of the GNU General Public License
+## as published by the Free Software Foundation, either version 3 of the
+## License, or (at your option) any later version.
+##
+## GnuCOBOL is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU General Public License
+## along with GnuCOBOL.  If not, see <https://www.gnu.org/licenses/>.
+
+### GnuCOBOL Test Suite
+
+### data in EBCDIC (-fdata-codeset),
+### see docs/proposal/ebcdic-internal-encoding-ja.md
+
+AT_SETUP([EBCDIC data: invalid -fdata-codeset])
+AT_KEYWORDS([ebcdic data-codeset])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       PROCEDURE        DIVISION.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-4711 prog.cob], [1], [],
+[cobc: error: invalid parameter: -fdata-codeset
+])
+AT_CHECK([$COMPILE -fdata-codeset=native prog.cob], [0], [], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: literals and hexadecimal literals])
+AT_KEYWORDS([ebcdic data-codeset literal])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-CODE      PIC X(4)  VALUE 'AB12'.
+       01  WK-HEX       PIC X(2)  VALUE X'C1F0'.
+       01  WK-PAD       PIC X(4)  VALUE 'A'.
+       01  WK-SPC       PIC X(2)  VALUE SPACES.
+       01  WK-ZERO      PIC X(2)  VALUE ZERO.
+       01  WK-QUOTE     PIC X(1)  VALUE QUOTE.
+       PROCEDURE        DIVISION.
+           DISPLAY FUNCTION HEX-OF (WK-CODE)
+           DISPLAY FUNCTION HEX-OF (WK-HEX)
+           DISPLAY FUNCTION HEX-OF (WK-PAD)
+           DISPLAY FUNCTION HEX-OF (WK-SPC) FUNCTION HEX-OF (WK-ZERO)
+                   FUNCTION HEX-OF (WK-QUOTE)
+           IF WK-CODE (1:1) NOT = X'C1'
+              DISPLAY 'A is not X"C1"'
+           END-IF
+           IF WK-HEX NOT = 'A0'
+              DISPLAY 'X"C1F0" is not "A0"'
+           END-IF
+           MOVE 'XYZ' TO WK-PAD
+           DISPLAY FUNCTION HEX-OF (WK-PAD)
+           MOVE X'C2' TO WK-PAD
+           DISPLAY FUNCTION HEX-OF (WK-PAD)
+           MOVE ALL 'C' TO WK-PAD
+           DISPLAY WK-PAD
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[C1C2F1F2
+C1F0
+C1404040
+4040F0F07F
+E7E8E940
+C2404040
+CCCC
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: zoned and packed decimal])
+AT_KEYWORDS([ebcdic data-codeset sign])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-AMT       PIC S9(3) VALUE -123.
+       01  WK-POS       PIC S9(3) VALUE +45.
+       01  WK-UNS       PIC 9(3)  VALUE 7.
+       01  WK-SEP       PIC S9(3) SIGN LEADING SEPARATE VALUE -9.
+       01  WK-PK        PIC S9(3) COMP-3.
+       01  WK-ED        PIC -ZZ,ZZ9.99.
+       PROCEDURE        DIVISION.
+           DISPLAY FUNCTION HEX-OF (WK-AMT) ' '
+                   FUNCTION HEX-OF (WK-POS) ' '
+                   FUNCTION HEX-OF (WK-UNS) ' '
+                   FUNCTION HEX-OF (WK-SEP)
+           COMPUTE WK-AMT = WK-AMT * 2 + 7
+           DISPLAY WK-AMT ' ' FUNCTION HEX-OF (WK-AMT)
+           MOVE WK-AMT TO WK-PK
+           DISPLAY FUNCTION HEX-OF (WK-PK)
+           ADD 1 TO WK-UNS
+           DISPLAY WK-UNS
+           MOVE -1234.5 TO WK-ED
+           DISPLAY '<' WK-ED '> ' FUNCTION HEX-OF (WK-ED)
+           IF WK-POS IS NOT NUMERIC
+              DISPLAY 'WK-POS is not numeric'
+           END-IF
+           DISPLAY FUNCTION NUMVAL ('  -12.5 ')
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[F1F2D3 F0F4C5 F0F0F7 60F0F0F9
+-239 F2F3D9
+239D
+008
+<- 1,234.50> 6040F16BF2F3F44BF5F0
+-00000012.5
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: collating sequence])
+AT_KEYWORDS([ebcdic data-codeset compare])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-LOWER     PIC X VALUE 'a'.
+       01  WK-UPPER     PIC X VALUE 'A'.
+       01  WK-DIGIT     PIC X VALUE '9'.
+       PROCEDURE        DIVISION.
+           IF WK-LOWER < WK-UPPER
+              DISPLAY 'a < A'
+           END-IF
+           IF WK-DIGIT > WK-UPPER
+              DISPLAY '9 > A'
+           END-IF
+           IF 'a' < 'A'
+              DISPLAY 'literal a < A'
+           END-IF
+           IF SPACE < 'A'
+              DISPLAY 'SPACE < A'
+           END-IF
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-037 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[a < A
+9 > A
+literal a < A
+SPACE < A
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: CCSID 930 lowercase letters])
+AT_KEYWORDS([ebcdic data-codeset class])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       ENVIRONMENT      DIVISION.
+       CONFIGURATION    SECTION.
+       SPECIAL-NAMES.
+           CLASS LOWER-AZ IS 'a' THRU 'z'.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-LOW       PIC X(3) VALUE 'abz'.
+       01  WK-UP        PIC X(3).
+       PROCEDURE        DIVISION.
+           DISPLAY FUNCTION HEX-OF (WK-LOW)
+           MOVE FUNCTION UPPER-CASE (WK-LOW) TO WK-UP
+           DISPLAY WK-UP ' ' FUNCTION HEX-OF (WK-UP)
+           DISPLAY FUNCTION LOWER-CASE (WK-UP)
+           IF WK-LOW IS ALPHABETIC-LOWER
+              DISPLAY 'ALPHABETIC-LOWER'
+           END-IF
+           IF WK-LOW IS LOWER-AZ
+              DISPLAY 'LOWER-AZ'
+           END-IF
+           IF WK-UP IS NOT LOWER-AZ
+              DISPLAY 'NOT LOWER-AZ'
+           END-IF
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-930 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[6263B9
+ABZ C1C2E9
+abz
+ALPHABETIC-LOWER
+LOWER-AZ
+NOT LOWER-AZ
+], [])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-939 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[8182A9
+ABZ C1C2E9
+abz
+ALPHABETIC-LOWER
+LOWER-AZ
+NOT LOWER-AZ
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: ACCEPT and DISPLAY])
+AT_KEYWORDS([ebcdic data-codeset])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  WK-IN        PIC X(5).
+       01  WK-NUM       PIC 9(3).
+       PROCEDURE        DIVISION.
+           ACCEPT WK-IN
+           DISPLAY WK-IN ' ' FUNCTION HEX-OF (WK-IN)
+           ACCEPT WK-NUM
+           ADD 1 TO WK-NUM
+           DISPLAY WK-NUM
+           STOP RUN.
+])
+
+AT_DATA([input.txt], [Hello
+41
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog < input.txt], [0],
+[Hello C885939396
+042
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: SEQUENTIAL and LINE SEQUENTIAL files])
+AT_KEYWORDS([ebcdic data-codeset runfile])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       ENVIRONMENT      DIVISION.
+       INPUT-OUTPUT     SECTION.
+       FILE-CONTROL.
+           SELECT SEQF ASSIGN TO 'seq.dat'
+               ORGANIZATION IS SEQUENTIAL
+               FILE STATUS IS WK-STATUS.
+           SELECT LSF  ASSIGN TO 'ls.txt'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA             DIVISION.
+       FILE             SECTION.
+       FD  SEQF.
+       01  SEQ-REC.
+           05  S-CODE   PIC X(4).
+           05  S-AMT    PIC S9(3).
+           05  S-PK     PIC S9(3) COMP-3.
+       FD  LSF.
+       01  LS-REC       PIC X(20).
+       WORKING-STORAGE  SECTION.
+       01  WK-STATUS    PIC XX.
+       01  WK-REC       PIC X(9).
+       01  WK-IN        PIC X(20).
+       PROCEDURE        DIVISION.
+           OPEN OUTPUT SEQF LSF
+           DISPLAY 'STATUS ' WK-STATUS ' ' FUNCTION HEX-OF (WK-STATUS)
+           MOVE 'AB12' TO S-CODE
+           MOVE -123   TO S-AMT
+           MOVE -123   TO S-PK
+           WRITE SEQ-REC
+           MOVE 'Hello abz 123' TO LS-REC
+           WRITE LS-REC
+           CLOSE SEQF LSF
+           OPEN INPUT SEQF LSF
+           READ SEQF INTO WK-REC
+           DISPLAY FUNCTION HEX-OF (WK-REC)
+           READ LSF INTO WK-IN
+           IF WK-IN NOT = 'Hello abz 123'
+              DISPLAY 'LINE SEQUENTIAL: ' WK-IN
+           END-IF
+           READ SEQF
+           DISPLAY 'STATUS ' WK-STATUS ' ' FUNCTION HEX-OF (WK-STATUS)
+           CLOSE SEQF LSF
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[STATUS 00 F0F0
+C1C2F1F2F1F2D3123D
+STATUS 10 F1F0
+], [])
+AT_CHECK([cat ls.txt], [0],
+[Hello abz 123
+], [])
+
+AT_CLEANUP

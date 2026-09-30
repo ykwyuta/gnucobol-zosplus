@@ -100,6 +100,12 @@ CB_FLAG_NQ (1, "ebcdic-table", CB_FLAG_GETOPT_EBCDIC_TABLE,
 	_("  -febcdic-table=<cconv-table>/<file>\tEBCDIC/ASCII translation table\n"
 	  "                        * e.g. default, ebcdic500_latin1..."))
 
+CB_FLAG_NQ (1, "data-codeset", CB_FLAG_GETOPT_DATA_CODESET,
+	_("  -fdata-codeset=<codeset>\tcharacter set of the data in the program\n"
+	  "                        (EXPERIMENTAL), may be one of: NATIVE,\n"
+	  "                        IBM-037, IBM-930, IBM-939, IBM-1390, IBM-1399\n"
+	  "                        * default: NATIVE"))
+
 CB_FLAG_NQ (1, "default-colseq", CB_FLAG_GETOPT_DEFAULT_COLSEQ,
 	_("  -fdefault-colseq=[ASCII|EBCDIC|NATIVE]\tdefine default collating sequence\n"
 	  "                        * default: NATIVE"))
