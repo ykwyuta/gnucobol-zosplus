@@ -1,5 +1,15 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* tree.c (cb_tree_type), field.c: numeric / numeric-edited items with
+	  USAGE NATIONAL for data charsets (2 bytes per position, a sign is
+	  always separate)
+	* typeck.c (cb_build_identifier): reference modification of national
+	  items counts characters of 2 bytes for data charsets
+	* flag.def, codegen.c: -fdata-codeset=HOST for native data with
+	  national (UTF-16) support
+	* tree.c (cb_data_is_converted), typeck.c: constant folding and
+	  SPACE / ZERO optimizations only disabled for data charsets that
+	  differ from the host one
 	* codegen.c (output_attr): ALL national literals get the attribute flag
 	  COB_FLAG_NATIONAL_ALL
 	* codegen.c (output_initialize_to_value): VALUE of national (UTF-16)

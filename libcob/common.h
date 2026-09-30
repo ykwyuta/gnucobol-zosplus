@@ -716,6 +716,8 @@ typedef __mpz_struct mpz_t[1];
 #define COB_TYPE_NUMERIC_FP_BIN64	0x19U
 #define COB_TYPE_NUMERIC_FP_BIN128	0x1AU
 #define COB_TYPE_NUMERIC_COMP5		0x1BU
+#define COB_TYPE_NUMERIC_NATIONAL	0x1CU	/* numeric with USAGE NATIONAL
+						   (UTF-16 digits, data charsets) */
 
 #define COB_TYPE_NUMERIC_EDITED		0x24U
 
@@ -726,6 +728,8 @@ typedef __mpz_struct mpz_t[1];
 
 #define COB_TYPE_NATIONAL		0x40U
 #define COB_TYPE_NATIONAL_EDITED	0x41U
+#define COB_TYPE_NATIONAL_NUMERIC_EDITED	0x42U	/* numeric-edited with
+						   USAGE NATIONAL (data charsets) */
 
 /* Field flags */
 
@@ -1281,6 +1285,8 @@ typedef struct __cob_screen {
 /* flags in cob_charset.flags */
 #define COB_CS_EBCDIC	0x01U	/* EBCDIC based character set */
 #define COB_CS_MIXED	0x02U	/* SO/SI delimited DBCS may be contained */
+#define COB_CS_HOST	0x04U	/* data in the host charset, with national
+				   (UTF-16) support (-fdata-codeset=HOST) */
 
 typedef struct __cob_charset {
 	const char		*name;		/* for example "NATIVE", "IBM-1399" */
@@ -1324,6 +1330,7 @@ typedef struct __cob_charset {
 } cob_charset;
 
 COB_EXPIMP const cob_charset	cob_charset_native;
+COB_EXPIMP const cob_charset	cob_charset_host;
 COB_EXPIMP const cob_charset	cob_charset_ibm037;
 COB_EXPIMP const cob_charset	cob_charset_ibm930;
 COB_EXPIMP const cob_charset	cob_charset_ibm939;

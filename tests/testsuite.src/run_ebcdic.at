@@ -987,3 +987,211 @@ AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog], [0],
 ], [])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: numeric national items])
+AT_KEYWORDS([ebcdic data-codeset national])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. prog.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 N1   PIC 9(4) USAGE NATIONAL.
+       01 N2   PIC S9(3)V9 USAGE NATIONAL VALUE -1.5.
+       01 N3   PIC -(4)9.99 USAGE NATIONAL.
+       01 D1   PIC 9(4) VALUE 30.
+       01 X1   PIC X(4).
+       01 U1   PIC N(4) USAGE NATIONAL.
+       PROCEDURE DIVISION.
+           MOVE 5 TO N1
+           DISPLAY '<' N1 '>'
+           MOVE ZERO TO N1
+           DISPLAY '<' N1 '>'
+           MOVE 42 TO N1
+           INITIALIZE N1
+           DISPLAY '<' N1 '> <' N2 '> ' FUNCTION HEX-OF (N2)
+           MOVE 13 TO N1
+           IF N1 = 13 DISPLAY 'EQ13' END-IF
+           ADD N1 TO D1
+           DISPLAY D1
+           SUBTRACT 20 FROM N2
+           DISPLAY '<' N2 '>'
+           DIVIDE N2 BY 2 GIVING N3 ROUNDED
+           DISPLAY '<' N3 '>'
+           MOVE N1 TO X1
+           DISPLAY '<' X1 '>'
+           MOVE N1 TO U1
+           DISPLAY '<' U1 '> ' FUNCTION HEX-OF (U1)
+           MOVE N3 TO N2
+           DISPLAY '<' N2 '>'
+           IF N1 NUMERIC DISPLAY 'NUMERIC' END-IF
+           GOBACK.
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog], [0],
+[<0005>
+<0000>
+<0000> <0015-> 0030003000310035002D
+EQ13
+0043
+<0215->
+<  -10.75>
+<0013>
+<0013> 0030003000310033
+<0107->
+NUMERIC
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: functions with national arguments])
+AT_KEYWORDS([ebcdic data-codeset national functions])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. prog.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WU   PIC N(8) USAGE NATIONAL VALUE NC'Abcｘｙ東京'.
+       01 WR   PIC N(10) USAGE NATIONAL.
+       01 WX   PIC X(4) VALUE 'xy'.
+       PROCEDURE DIVISION.
+           MOVE FUNCTION UPPER-CASE (WU) TO WR
+           DISPLAY '<' WR '>'
+           MOVE FUNCTION LOWER-CASE (WU) TO WR
+           DISPLAY '<' WR '>'
+           MOVE FUNCTION REVERSE (WU) TO WR
+           DISPLAY '<' WR '>'
+           DISPLAY '<' FUNCTION TRIM (WU) '>'
+                   FUNCTION LENGTH (FUNCTION TRIM (WU))
+           DISPLAY '<' FUNCTION CONCATENATE (WU (1:3) WX NC'大阪') '>'
+           DISPLAY '<' FUNCTION SUBSTITUTE (WU NC'東京' NC'名古屋') '>'
+           DISPLAY '<' FUNCTION SUBSTITUTE-CASE (WU NC'ABC' NC'x') '>'
+           DISPLAY '<' FUNCTION UPPER-CASE (WU) (4:2) '>'
+           GOBACK.
+])
+
+# note: free format, as the fixed-format margins count bytes
+AT_CHECK([$COMPILE -free -Wno-dialect -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog], [0],
+[<ABCＸＹ東京   >
+<abcｘｙ東京   >
+< 京東ｙｘcbA  >
+<Abcｘｙ東京>000000007
+<Abcxy  大阪>
+<Abcｘｙ名古屋 >
+<xｘｙ東京 >
+<ＸＹ>
+], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([national items with -fdata-codeset=HOST])
+AT_KEYWORDS([data-codeset national host])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. prog.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WU   PIC N(10) USAGE NATIONAL.
+       01 WA   PIC N(4) USAGE NATIONAL VALUE NC'東京'.
+       01 WB   PIC N(4) USAGE NATIONAL VALUE NC'大阪'.
+       01 WX   PIC X(6) VALUE 'ab'.
+       01 PTR  PIC 99.
+       01 CNT  PIC 99.
+       01 U1   PIC N(3) USAGE NATIONAL.
+       01 U2   PIC N(3) USAGE NATIONAL.
+       01 U3   PIC N(3) USAGE NATIONAL.
+       01 D1   PIC N(1) USAGE NATIONAL.
+       01 C1   PIC 99.
+       01 TL   PIC 99.
+       PROCEDURE DIVISION.
+           MOVE 1 TO PTR
+           STRING WA DELIMITED BY SPACE
+                  NC'、' DELIMITED BY SIZE
+                  WB DELIMITED BY SPACE
+                  WX DELIMITED BY SPACE
+                  INTO WU WITH POINTER PTR
+           DISPLAY '<' WU '> ' PTR
+           MOVE NC'東京、大阪、名古屋' TO WU
+           MOVE 1 TO PTR
+           UNSTRING WU DELIMITED BY NC'、'
+                  INTO U1 DELIMITER IN D1 COUNT IN C1
+                       U2 U3
+                  WITH POINTER PTR TALLYING IN TL
+           DISPLAY '<' U1 '><' U2 '><' U3 '><' D1 '> ' C1 ' ' PTR
+                   ' ' TL
+           MOVE 0 TO CNT
+           INSPECT WU TALLYING CNT FOR ALL NC'、'
+           DISPLAY 'ALL: ' CNT
+           MOVE 0 TO CNT
+           INSPECT WU TALLYING CNT FOR CHARACTERS BEFORE NC'名'
+           DISPLAY 'CHARS BEFORE: ' CNT
+           MOVE 0 TO CNT
+           INSPECT WU TALLYING CNT FOR TRAILING SPACE
+           DISPLAY 'TRAILING: ' CNT
+           INSPECT WU REPLACING ALL NC'、' BY NC'・'
+           DISPLAY '<' WU '>'
+           INSPECT WU REPLACING CHARACTERS BY NC'＊' AFTER NC'屋'
+           DISPLAY '<' WU '>'
+           INSPECT WU CONVERTING NC'東大' TO NC'西小'
+           DISPLAY '<' WU '>'
+           INSPECT WU REPLACING ALL NC'＊' BY SPACE
+           DISPLAY '<' WU '>'
+           GOBACK.
+])
+
+AT_DATA([prog2.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. prog.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WU   PIC N(8) USAGE NATIONAL VALUE NC'Abcｘｙ東京'.
+       01 WR   PIC N(10) USAGE NATIONAL.
+       01 WX   PIC X(4) VALUE 'xy'.
+       PROCEDURE DIVISION.
+           MOVE FUNCTION UPPER-CASE (WU) TO WR
+           DISPLAY '<' WR '>'
+           MOVE FUNCTION LOWER-CASE (WU) TO WR
+           DISPLAY '<' WR '>'
+           MOVE FUNCTION REVERSE (WU) TO WR
+           DISPLAY '<' WR '>'
+           DISPLAY '<' FUNCTION TRIM (WU) '>'
+                   FUNCTION LENGTH (FUNCTION TRIM (WU))
+           DISPLAY '<' FUNCTION CONCATENATE (WU (1:3) WX NC'大阪') '>'
+           DISPLAY '<' FUNCTION SUBSTITUTE (WU NC'東京' NC'名古屋') '>'
+           DISPLAY '<' FUNCTION SUBSTITUTE-CASE (WU NC'ABC' NC'x') '>'
+           DISPLAY '<' FUNCTION UPPER-CASE (WU) (4:2) '>'
+           GOBACK.
+])
+
+AT_CHECK([$COMPILE -Wno-dialect -fdata-codeset=HOST prog.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog], [0],
+[<東京、大阪ab   > 08
+<東京 ><大阪 ><名古屋><、> 02 11 03
+ALL: 02
+CHARS BEFORE: 06
+TRAILING: 01
+<東京・大阪・名古屋 >
+<東京・大阪・名古屋＊>
+<西京・小阪・名古屋＊>
+<西京・小阪・名古屋 >
+], [])
+AT_CHECK([$COMPILE -free -Wno-dialect -fdata-codeset=HOST prog2.cob], [0], [], [])
+AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog2], [0],
+[<ABCＸＹ東京   >
+<abcｘｙ東京   >
+< 京東ｙｘcbA  >
+<Abcｘｙ東京>000000007
+<Abcxy  大阪>
+<Abcｘｙ名古屋 >
+<xｘｙ東京 >
+<ＸＹ>
+], [])
+
+AT_CLEANUP

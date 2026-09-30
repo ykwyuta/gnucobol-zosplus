@@ -258,6 +258,9 @@ Note: also defined together with __clang__ in both frontends:
 #define	COB_CS			\
 	((COB_MODULE_PTR && COB_MODULE_PTR->charset) \
 		? COB_MODULE_PTR->charset : &cob_charset_native)
+/* data in the host charset (native, or HOST with national support) */
+#define	COB_CS_IS_HOST_DATA(cs)	\
+	((cs) == &cob_charset_native || (cs) == &cob_charset_host)
 #define	COB_CH_SPACE		(COB_CS->space)
 #define	COB_CH_ZERO		(COB_CS->zero)
 #define	COB_CH_PLUS		(COB_CS->plus)
@@ -544,6 +547,9 @@ COB_HIDDEN unsigned char	*cob_charset_utf16_from_host	(const cob_charset *,
 COB_HIDDEN unsigned char	*cob_charset_dbcs_to_mixed	(const cob_charset *,
 					const unsigned char *, const size_t, size_t *);
 COB_HIDDEN void		cob_move_national	(cob_field *, cob_field *);
+COB_HIDDEN void		cob_national_num_get	(cob_field *, cob_field *,
+					cob_field_attr *);
+COB_HIDDEN void		cob_national_num_put	(cob_field *, cob_field *);
 COB_HIDDEN unsigned char	*cob_field_to_utf16	(const cob_charset *,
 					cob_field *, size_t *);
 COB_HIDDEN unsigned char	*cob_all_to_utf16	(const cob_charset *,

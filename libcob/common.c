@@ -4268,6 +4268,24 @@ cob_is_numeric (const cob_field *f)
 	switch (COB_FIELD_TYPE (f)) {
 	case COB_TYPE_NUMERIC_BINARY:
 		return 1;
+	case COB_TYPE_NUMERIC_NATIONAL:
+		{
+			/* national decimal: check the display form, all UTF-16
+			   units must be in the single byte range */
+			cob_field	tmp;
+			cob_field_attr	attr;
+			int		ret;
+			size_t		i;
+			for (i = 0; i < f->size; i += 2) {
+				if (f->data[i] != 0) {
+					return 0;
+				}
+			}
+			cob_national_num_get ((cob_field *)f, &tmp, &attr);
+			ret = cob_is_numeric (&tmp);
+			cob_free (tmp.data);
+			return ret;
+		}
 	case COB_TYPE_NUMERIC_FLOAT:
 		{
 			float		fval;
@@ -4369,7 +4387,7 @@ cob_is_alpha (const cob_field *f)
 	const unsigned char *end = p + f->size;
 	const cob_charset	*cs = COB_CS;
 
-	if (cs == &cob_charset_native) {
+	if (COB_CS_IS_HOST_DATA (cs)) {
 		/* native data: class depends on LC_CTYPE */
 		while (p < end) {
 			if (*p == (unsigned char)' '
@@ -4399,7 +4417,7 @@ cob_is_upper (const cob_field *f)
 	const unsigned char *end = p + f->size;
 	const cob_charset	*cs = COB_CS;
 
-	if (cs == &cob_charset_native) {
+	if (COB_CS_IS_HOST_DATA (cs)) {
 		/* native data: class depends on LC_CTYPE */
 		while (p < end) {
 			if (*p == (unsigned char)' '
@@ -4429,7 +4447,7 @@ cob_is_lower (const cob_field *f)
 	const unsigned char *end = p + f->size;
 	const cob_charset	*cs = COB_CS;
 
-	if (cs == &cob_charset_native) {
+	if (COB_CS_IS_HOST_DATA (cs)) {
 		/* native data: class depends on LC_CTYPE */
 		while (p < end) {
 			if (*p == (unsigned char)' '
@@ -4702,6 +4720,10 @@ explain_field_type (const cob_field *f)
 		return "NATIONAL";
 	case COB_TYPE_NATIONAL_EDITED:
 		return "NATIONAL EDITED";
+	case COB_TYPE_NUMERIC_NATIONAL:
+		return "NUMERIC NATIONAL";
+	case COB_TYPE_NATIONAL_NUMERIC_EDITED:
+		return "NATIONAL NUMERIC EDITED";
 	default:
 		break;
 	}
@@ -7226,7 +7248,7 @@ cob_sys_toupper (void *p1, const int length)
 
 	if (length > 0) {
 		const cob_charset	*cs = COB_CS;
-		if (cs == &cob_charset_native) {
+		if (COB_CS_IS_HOST_DATA (cs)) {
 			/* native data: depends on LC_CTYPE */
 			for (n = 0; n < (size_t)length; ++n) {
 				data[n] = (cob_u8_t)toupper (data[n]);
@@ -7250,7 +7272,7 @@ cob_sys_tolower (void *p1, const int length)
 
 	if (length > 0) {
 		const cob_charset	*cs = COB_CS;
-		if (cs == &cob_charset_native) {
+		if (COB_CS_IS_HOST_DATA (cs)) {
 			/* native data: depends on LC_CTYPE */
 			for (n = 0; n < (size_t)length; ++n) {
 				data[n] = (cob_u8_t)tolower (data[n]);

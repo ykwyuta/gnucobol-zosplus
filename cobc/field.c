@@ -3164,6 +3164,18 @@ unbounded_again:
 					n += f->pic->str[i].times_repeated;
 				}
 				f->size = n * 2;
+			} else if (cb_data_charset
+			 && (f->pic->category == CB_CATEGORY_NUMERIC
+			  || f->pic->category == CB_CATEGORY_NUMERIC_EDITED)) {
+				/* national decimal: 2 bytes per position,
+				   a sign is always separate (trailing if not
+				   specified) */
+				f->size = f->pic->size * COB_NATIONAL_SIZE;
+				if (f->pic->category == CB_CATEGORY_NUMERIC
+				 && f->pic->have_sign) {
+					f->flag_sign_separate = 1;
+					f->size += COB_NATIONAL_SIZE;
+				}
 			} else {
 				f->size = f->pic->size * COB_NATIONAL_SIZE;
 			}

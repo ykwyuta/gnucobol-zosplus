@@ -534,17 +534,79 @@ comp_field (const void *m1, const void *m2)
 }
 
 /* Reference modification */
+/* national (UTF-16) data for data charsets (-fdata-codeset) */
+static int
+is_utf16_result (const cob_field *f)
+{
+	return COB_MODULE_PTR && COB_MODULE_PTR->charset
+	    && COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f);
+}
+
+/* simple case mapping for UTF-16 characters: ASCII, Latin-1,
+   Greek, Cyrillic and full-width Latin letters */
+static unsigned int
+ucs_toupper (const unsigned int c)
+{
+	if ((c >= 0x61 && c <= 0x7A)
+	 || (c >= 0xE0 && c <= 0xFE && c != 0xF7)
+	 || (c >= 0x3B1 && c <= 0x3C9 && c != 0x3C2)
+	 || (c >= 0x430 && c <= 0x44F)
+	 || (c >= 0xFF41 && c <= 0xFF5A)) {
+		return c - 0x20;
+	}
+	if (c >= 0x450 && c <= 0x45F) {
+		return c - 0x50;
+	}
+	if (c == 0xFF) {
+		return 0x178;
+	}
+	return c;
+}
+
+static unsigned int
+ucs_tolower (const unsigned int c)
+{
+	if ((c >= 0x41 && c <= 0x5A)
+	 || (c >= 0xC0 && c <= 0xDE && c != 0xD7)
+	 || (c >= 0x391 && c <= 0x3A9 && c != 0x3A2)
+	 || (c >= 0x410 && c <= 0x42F)
+	 || (c >= 0xFF21 && c <= 0xFF3A)) {
+		return c + 0x20;
+	}
+	if (c >= 0x400 && c <= 0x40F) {
+		return c + 0x50;
+	}
+	if (c == 0x178) {
+		return 0xFF;
+	}
+	return c;
+}
+
+static void
+utf16_case (cob_field *dst, const cob_field *src, const int upper)
+{
+	size_t	i;
+	for (i = 0; i + 1 < src->size; i += 2) {
+		const unsigned int	c = (src->data[i] << 8) | src->data[i + 1];
+		const unsigned int	r = upper ? ucs_toupper (c) : ucs_tolower (c);
+		dst->data[i] = (unsigned char)(r >> 8);
+		dst->data[i + 1] = (unsigned char)(r & 0xFF);
+	}
+}
+
 static void
 calc_ref_mod (cob_field *f, const int offset, const int length)
 {
 	size_t		calcoff;
 	size_t		size;
+	/* national (UTF-16) results: offset and length count characters */
+	const size_t	unit = is_utf16_result (f) ? 2 : 1;
 
-	if ((size_t)offset <= f->size) {
-		calcoff = (size_t)offset - 1;
+	if ((size_t)offset * unit <= f->size) {
+		calcoff = ((size_t)offset - 1) * unit;
 		size = f->size - calcoff;
-		if (length > 0 && (size_t)length < size) {
-			size = (size_t)length;
+		if (length > 0 && (size_t)length * unit < size) {
+			size = (size_t)length * unit;
 		}
 		f->size = size;
 		if (calcoff > 0) {
@@ -1368,6 +1430,84 @@ substitute_matches (cob_field *original, cob_field **matches, cob_field **reps,
 	}
 }
 
+/* SUBSTITUTE / SUBSTITUTE-CASE for national (UTF-16) data:
+   all arguments are converted to UTF-16, matching is done by characters */
+static cob_field *
+substitute_national (const int offset, const int length, cob_field *original,
+	cob_field **matches, cob_field **reps, const int numreps,
+	const int ignore_case)
+{
+	static const cob_field_attr	national_attr =
+		{COB_TYPE_NATIONAL, 0, 0, 0, NULL};
+	const cob_charset	*cs = COB_CS;
+	unsigned char	**m = cob_malloc ((size_t)numreps * sizeof (unsigned char *));
+	unsigned char	**r = cob_malloc ((size_t)numreps * sizeof (unsigned char *));
+	size_t		*msize = cob_malloc ((size_t)numreps * sizeof (size_t));
+	size_t		*rsize = cob_malloc ((size_t)numreps * sizeof (size_t));
+	unsigned char	*out;
+	size_t		out_size = 0, out_max, pos = 0, maxrep = 2;
+	cob_field	field;
+	int		i;
+
+	for (i = 0; i < numreps; ++i) {
+		m[i] = cob_field_to_utf16 (cs, matches[i], &msize[i]);
+		r[i] = cob_field_to_utf16 (cs, reps[i], &rsize[i]);
+		if (rsize[i] > maxrep) {
+			maxrep = rsize[i];
+		}
+	}
+	out_max = original->size * maxrep + 2;
+	out = cob_fast_malloc (out_max);
+	while (pos + 1 < original->size) {
+		for (i = 0; i < numreps; ++i) {
+			size_t	k;
+			if (msize[i] == 0 || pos + msize[i] > original->size) {
+				continue;
+			}
+			for (k = 0; k + 1 < msize[i]; k += 2) {
+				unsigned int	c1 = (original->data[pos + k] << 8) | original->data[pos + k + 1];
+				unsigned int	c2 = (m[i][k] << 8) | m[i][k + 1];
+				if (ignore_case) {
+					c1 = ucs_tolower (c1);
+					c2 = ucs_tolower (c2);
+				}
+				if (c1 != c2) {
+					break;
+				}
+			}
+			if (k + 1 >= msize[i]) {
+				break;
+			}
+		}
+		if (i < numreps) {
+			memcpy (out + out_size, r[i], rsize[i]);
+			out_size += rsize[i];
+			pos += msize[i];
+		} else {
+			out[out_size++] = original->data[pos];
+			out[out_size++] = original->data[pos + 1];
+			pos += 2;
+		}
+	}
+	for (i = 0; i < numreps; ++i) {
+		cob_free (m[i]);
+		cob_free (r[i]);
+	}
+	cob_free (m);
+	cob_free (r);
+	cob_free (msize);
+	cob_free (rsize);
+
+	COB_FIELD_INIT (out_size, NULL, &national_attr);
+	make_field_entry (&field);
+	memcpy (curr_field->data, out, out_size);
+	cob_free (out);
+	if (unlikely (offset > 0)) {
+		calc_ref_mod (curr_field, offset, length);
+	}
+	return curr_field;
+}
+
 static cob_field *
 substitute (const int offset, const int length, const int params,
 	    int (*cmp_func)(const void *, const void *, size_t),
@@ -1397,6 +1537,14 @@ substitute (const int offset, const int length, const int params,
 
 	va_end (args);
 
+	if (is_utf16_result (original)) {
+		cob_field	*ret = substitute_national (offset, length, original,
+			matches, reps, numreps, cmp_func != &memcmp);
+		cob_free (matches);
+		cob_free (reps);
+		return ret;
+	}
+
 	/* Perform substitution */
 
 	calcsize = get_substituted_size (original, matches, reps, numreps, cmp_func);
@@ -1422,7 +1570,7 @@ static int
 int_strncasecmp (const void *s1, const void *s2, size_t n)
 {
 	const cob_charset	*cs = COB_CS;
-	if (cs == &cob_charset_native) {
+	if (COB_CS_IS_HOST_DATA (cs)) {
 		return (int) strncasecmp (s1, s2, n);
 	} else {
 		/* compare case-insensitive in the data charset */
@@ -3811,9 +3959,11 @@ cob_intr_upper_case (const int offset, const int length, cob_field *srcfield)
 	make_field_entry (srcfield);
 
 	size = srcfield->size;
-	{
+	if (is_utf16_result (srcfield)) {
+		utf16_case (curr_field, srcfield, 1);
+	} else {
 		const cob_charset	*cs = COB_CS;
-		if (cs == &cob_charset_native) {
+		if (COB_CS_IS_HOST_DATA (cs)) {
 			/* native data: depends on LC_CTYPE */
 			for (i = 0; i < size; ++i) {
 				curr_field->data[i] = (cob_u8_t)toupper ((unsigned char)srcfield->data[i]);
@@ -3838,9 +3988,11 @@ cob_intr_lower_case (const int offset, const int length, cob_field *srcfield)
 	make_field_entry (srcfield);
 
 	size = srcfield->size;
-	{
+	if (is_utf16_result (srcfield)) {
+		utf16_case (curr_field, srcfield, 0);
+	} else {
 		const cob_charset	*cs = COB_CS;
-		if (cs == &cob_charset_native) {
+		if (COB_CS_IS_HOST_DATA (cs)) {
 			/* native data: depends on LC_CTYPE */
 			for (i = 0; i < size; ++i) {
 				curr_field->data[i] = (cob_u8_t)tolower (srcfield->data[i]);
@@ -3865,8 +4017,16 @@ cob_intr_reverse (const int offset, const int length, cob_field *srcfield)
 	make_field_entry (srcfield);
 
 	size = srcfield->size;
-	for (i = 0; i < size; ++i) {
-		curr_field->data[i] = srcfield->data[size - i - 1];
+	if (is_utf16_result (srcfield)) {
+		/* national: reverse the characters */
+		for (i = 0; i + 1 < size; i += 2) {
+			curr_field->data[i] = srcfield->data[size - i - 2];
+			curr_field->data[i + 1] = srcfield->data[size - i - 1];
+		}
+	} else {
+		for (i = 0; i < size; ++i) {
+			curr_field->data[i] = srcfield->data[size - i - 1];
+		}
 	}
 	if (unlikely (offset > 0)) {
 		calc_ref_mod (curr_field, offset, length);
@@ -4125,6 +4285,40 @@ cob_intr_concatenate (const int offset, const int length,
 	}
 	va_end (args);
 
+	/* national: if any argument is national, the result is national */
+	for (i = 0; i < params; ++i) {
+		if (is_utf16_result (f[i])) {
+			break;
+		}
+	}
+	if (i < params) {
+		static const cob_field_attr	national_attr =
+			{COB_TYPE_NATIONAL, 0, 0, 0, NULL};
+		const cob_charset	*cs = COB_CS;
+		unsigned char	**conv = cob_malloc ((size_t)params * sizeof (unsigned char *));
+		size_t		*conv_size = cob_malloc ((size_t)params * sizeof (size_t));
+		calcsize = 0;
+		for (i = 0; i < params; ++i) {
+			conv[i] = cob_field_to_utf16 (cs, f[i], &conv_size[i]);
+			calcsize += conv_size[i];
+		}
+		COB_FIELD_INIT (calcsize, NULL, &national_attr);
+		make_field_entry (&field);
+		p = curr_field->data;
+		for (i = 0; i < params; ++i) {
+			memcpy (p, conv[i], conv_size[i]);
+			p += conv_size[i];
+			cob_free (conv[i]);
+		}
+		cob_free (conv);
+		cob_free (conv_size);
+		if (unlikely (offset > 0)) {
+			calc_ref_mod (curr_field, offset, length);
+		}
+		cob_free (f);
+		return curr_field;
+	}
+
 	COB_FIELD_INIT (calcsize, NULL, &const_alpha_attr);
 	make_field_entry (&field);
 
@@ -4180,6 +4374,33 @@ cob_intr_trim (const int offset, const int length,
 	const unsigned char	space = COB_CH_SPACE;
 
 	make_field_entry (srcfield);
+
+	if (is_utf16_result (srcfield)) {
+		/* national: trim national spaces */
+		size_t	b = 0, e = srcfield->size;
+		const unsigned char	*d = srcfield->data;
+		if (direction != 2) {
+			while (b + 1 < e && d[b] == 0x00 && d[b + 1] == 0x20) {
+				b += 2;
+			}
+		}
+		if (direction != 1) {
+			while (e >= b + 2 && d[e - 2] == 0x00 && d[e - 1] == 0x20) {
+				e -= 2;
+			}
+		}
+		if (e <= b) {
+			curr_field->size = 0;
+			curr_field->data[0] = 0;
+			return curr_field;
+		}
+		memmove (curr_field->data, d + b, e - b);
+		curr_field->size = e - b;
+		if (unlikely (offset > 0)) {
+			calc_ref_mod (curr_field, offset, length);
+		}
+		return curr_field;
+	}
 
 	for (i = 0; i < srcfield->size; ++i) {
 		if (srcfield->data[i] != space) {

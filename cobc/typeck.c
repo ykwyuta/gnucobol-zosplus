@@ -2696,6 +2696,29 @@ cb_build_identifier (cb_tree x, const int subchk)
 
 	refmod_checks (x, f, r);
 
+	/* reference modification of national (UTF-16 / DBCS) items counts
+	   characters of 2 bytes for data charsets, convert to bytes */
+	if (r->offset && !r->flag_refmod_bytes
+	 && cb_data_charset && f->pic && !f->children
+	 && (f->pic->category == CB_CATEGORY_NATIONAL
+	  || f->pic->category == CB_CATEGORY_NATIONAL_EDITED)) {
+		r->flag_refmod_bytes = 1;
+		if (CB_LITERAL_P (r->offset)) {
+			r->offset = cb_int (cb_get_int (r->offset) * 2 - 1);
+		} else {
+			r->offset = cb_build_binary_op (
+				cb_build_binary_op (r->offset, '*', cb_int (2)),
+				'-', cb_int1);
+		}
+		if (r->length) {
+			if (CB_LITERAL_P (r->length)) {
+				r->length = cb_int (cb_get_int (r->length) * 2);
+			} else {
+				r->length = cb_build_binary_op (r->length, '*', cb_int (2));
+			}
+		}
+	}
+
 	if (f->storage == CB_STORAGE_CONSTANT) {
 		return f->values;
 	}
@@ -7193,7 +7216,7 @@ cb_build_cond_fields (struct cb_binary_op *p,
 	}
 	/* note: COB_SPACES_ALPHABETIC / COB_ZEROES_ALPHABETIC are native only */
 	if (right == cb_space
-	 && !cb_data_charset
+	 && !cb_data_is_converted ()
 	 && (l_class == CB_CLASS_ALPHANUMERIC || l_class == CB_CLASS_ALPHABETIC)
 	 && (size1 > 0 && size1 <= COB_SPACES_ALPHABETIC_BYTE_LENGTH)) {
 		return CB_BUILD_FUNCALL_3 ("memcmp",
@@ -7202,7 +7225,7 @@ cb_build_cond_fields (struct cb_binary_op *p,
 			cb_int (size1));
 	}
 	if (right == cb_zero
-	 && !cb_data_charset
+	 && !cb_data_is_converted ()
 	 && (l_class == CB_CLASS_ALPHANUMERIC || l_class == CB_CLASS_ALPHABETIC)
 	 && (size1 > 0 && size1 <= COB_ZEROES_ALPHABETIC_BYTE_LENGTH)) {
 		return CB_BUILD_FUNCALL_3 ("memcmp",

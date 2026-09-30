@@ -1,5 +1,15 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* common.h, move.c (cob_national_num_get, cob_national_num_put),
+	  numeric.c, common.c (cob_is_numeric), termio.c: new field types
+	  COB_TYPE_NUMERIC_NATIONAL and COB_TYPE_NATIONAL_NUMERIC_EDITED for
+	  numeric / numeric-edited items with USAGE NATIONAL (UTF-16 digits)
+	* intrinsic.c: UPPER-CASE, LOWER-CASE, REVERSE, TRIM, CONCATENATE,
+	  SUBSTITUTE and SUBSTITUTE-CASE handle national (UTF-16) arguments,
+	  reference modification of national results counts characters
+	* charset.c, common.h, coblocal.h: new data charset cob_charset_host
+	  (-fdata-codeset=HOST): data in the host charset with national
+	  (UTF-16) support
 	* common.h: new attribute flag COB_FLAG_NATIONAL_ALL for ALL literals
 	  with national (UTF-16) data
 	* common.c (cob_cmp_national): comparison with national (UTF-16) data

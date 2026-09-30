@@ -535,6 +535,17 @@ MOVE NC'東京大阪名' TO PIC NBNN/N0N               → 東 京大/阪0名
 MOVE G'漢字' TO PIC GBG                             → 4F58 4040 48F2
 ```
 
+#### 数字の NATIONAL・組み込み関数・ネイティブでの NATIONAL
+
+| 機能 | 内容 |
+|------|------|
+| 数字の NATIONAL | `PIC 9(n) USAGE NATIONAL`（国語 10 進）と `PIC ZZ9.99 USAGE NATIONAL`（国語の数字編集）に対応。1 桁 2 バイトの UTF-16（`0030`〜`0039`）で、符号は常に分離（SIGN 句がなければ後置）。実行時には新しい型 `COB_TYPE_NUMERIC_NATIONAL` / `COB_TYPE_NATIONAL_NUMERIC_EDITED` を使い、計算・MOVE・比較・NUMERIC の判定の入口で 1 バイトの数字項目に変換して処理する |
+| 組み込み関数 | UPPER-CASE、LOWER-CASE（ASCII・Latin-1・ギリシャ文字・キリル文字・全角英字）、REVERSE、TRIM、CONCATENATE、SUBSTITUTE、SUBSTITUTE-CASE が UTF-16 の引数を文字単位で扱う。LENGTH は文字数を返す |
+| 部分参照 | NATIONAL（UTF-16 / DBCS）項目の部分参照 `X (位置:長さ)` を文字単位（2 バイト）で数える |
+| ネイティブでの NATIONAL | 既定の動作（上流の GnuCOBOL と同じ仮実装）は変えず、新しい指定 `-fdata-codeset=HOST` で、データはホストの文字コードのまま NATIONAL（UTF-16）を有効にする。ホストの文字コードは実行時のロケール（または `COB_HOST_CODESET`）から決める |
+
+注意: 固定形式のソースの 72 桁目の制限はバイト数で数えるため、UTF-8 の日本語を含む行は早く切れます（自由形式 `-free` なら問題ありません）。
+
 #### MOVE の検査と DBCS の切れ目
 
 * コンパイル時に、IBM の規則に合わせて次をエラーにします。
@@ -571,7 +582,7 @@ EBCDIC モード（IBM-037）での既存テストの失敗は、EXTFH 関連が
 
 ### 次の作業
 
-* NATIONAL の残り: 数字の NATIONAL（`PIC 9 USAGE NATIONAL`）、NATIONAL の組み込み関数（UPPER-CASE など）、ネイティブ（`-fdata-codeset` なし）の NATIONAL
+* NATIONAL の細部: 浮動小数点の数字編集、NUMVAL などの数値関数に UTF-16 の引数、サロゲートペア（U+10000 以上）の文字単位の扱い
 * SCREEN SECTION での DBCS の表示
 
 ## 11. まとめ

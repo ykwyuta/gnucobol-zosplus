@@ -1717,6 +1717,42 @@ cob_field_to_utf16 (const cob_charset *cs, cob_field *f, size_t *size)
 	return cob_charset_to_utf16 (cs, f->data, f->size, size);
 }
 
+/* national decimal items (numeric / numeric-edited with USAGE NATIONAL):
+   the data is UTF-16, get a numeric display / numeric edited field in the
+   data charset with the same attributes ('attr' and the allocated data
+   of 'tmp' are set up here, the data to be freed with cob_free) */
+void
+cob_national_num_get (cob_field *f, cob_field *tmp, cob_field_attr *attr)
+{
+	const cob_charset	*cs = COB_CS;
+	size_t		i;
+	*attr = *f->attr;
+	attr->type = COB_FIELD_TYPE (f) == COB_TYPE_NUMERIC_NATIONAL
+		? COB_TYPE_NUMERIC_DISPLAY : COB_TYPE_NUMERIC_EDITED;
+	tmp->size = f->size / 2;
+	tmp->data = cob_fast_malloc (tmp->size + 1);
+	tmp->attr = attr;
+	for (i = 0; i < tmp->size; i++) {
+		const unsigned int	ucs = (f->data[i * 2] << 8) | f->data[i * 2 + 1];
+		tmp->data[i] = ucs < 0x100 ? COB_CS_FROM_HOST (cs, ucs)
+			: COB_CS_FROM_HOST (cs, '?');
+	}
+}
+
+/* store the numeric display / numeric edited data of 'tmp' into the
+   national decimal item 'f' */
+void
+cob_national_num_put (cob_field *tmp, cob_field *f)
+{
+	const cob_charset	*cs = COB_CS;
+	size_t		i;
+	for (i = 0; i < tmp->size && i * 2 + 1 < f->size; i++) {
+		const unsigned char	c = COB_CS_TO_HOST (cs, tmp->data[i]);
+		f->data[i * 2] = 0;
+		f->data[i * 2 + 1] = c;
+	}
+}
+
 /* get a figurative constant / ALL literal as UTF-16 data with 'size' bytes
    (allocated, to be freed with cob_free) */
 unsigned char *
@@ -1919,6 +1955,27 @@ cob_move (cob_field *src, cob_field *dst)
 		data[1] = 0;
 		src = &temp;
 	}
+	/* national decimal items: convert from / to numeric display */
+	if (COB_FIELD_TYPE (src) == COB_TYPE_NUMERIC_NATIONAL
+	 || COB_FIELD_TYPE (src) == COB_TYPE_NATIONAL_NUMERIC_EDITED) {
+		cob_field	tmp;
+		cob_field_attr	attr;
+		cob_national_num_get (src, &tmp, &attr);
+		cob_move (&tmp, dst);
+		cob_free (tmp.data);
+		return;
+	}
+	if (COB_FIELD_TYPE (dst) == COB_TYPE_NUMERIC_NATIONAL
+	 || COB_FIELD_TYPE (dst) == COB_TYPE_NATIONAL_NUMERIC_EDITED) {
+		cob_field	tmp;
+		cob_field_attr	attr;
+		cob_national_num_get (dst, &tmp, &attr);
+		cob_move (src, &tmp);
+		cob_national_num_put (&tmp, dst);
+		cob_free (tmp.data);
+		return;
+	}
+
 	/* national (UTF-16) data for a data charset */
 	if (COB_MODULE_PTR && COB_MODULE_PTR->charset
 	 && (IS_UTF16_FIELD (dst)

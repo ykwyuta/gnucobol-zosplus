@@ -68,6 +68,30 @@ const cob_charset	cob_charset_native = {
 	NULL
 };
 
+/* data in the host charset, but with national (UTF-16) support;
+   the iconv name is taken from the host charset at runtime */
+const cob_charset	cob_charset_host = {
+	"HOST",
+	0,
+#ifdef	COB_EBCDIC_HOST
+	COB_CS_EBCDIC | COB_CS_HOST,
+#else
+	COB_CS_HOST,
+#endif
+	' ', '0', '+', '-', '.', ',', '*', '/', '"', '\'',
+	'C', 'R', 'D', 'B',
+	0, 0,
+	{ 0, 0 },
+	native_spaces,
+	native_zeroes,
+	native_ctype,
+	native_upper,
+	native_lower,
+	NULL,
+	NULL,
+	NULL
+};
+
 static void
 init_native_tables (void)
 {
@@ -156,6 +180,9 @@ cob_get_charset (const char *name)
 	}
 	if (!strcasecmp (name, "NATIVE")) {
 		return &cob_charset_native;
+	}
+	if (!strcasecmp (name, "HOST")) {
+		return &cob_charset_host;
 	}
 	/* skip known prefixes */
 	if (!strncmp (p, "IBM", 3) || !strncmp (p, "ibm", 3)) {
@@ -834,6 +861,24 @@ cob_charset_convert (const char *to, const char *from,
 #endif
 }
 
+/* iconv name of the data charset, for the host charset (-fdata-codeset=HOST)
+   the one of the locale / COB_HOST_CODESET */
+static const char *
+data_iconv_name (const cob_charset *cs)
+{
+	if (cs->iconv_name) {
+		return cs->iconv_name;
+	}
+	if (cs->flags & COB_CS_HOST) {
+		check_host_codeset ();
+		if (host_codeset) {
+			return host_codeset;
+		}
+		return "ISO-8859-1";
+	}
+	return NULL;
+}
+
 /* convert data (in the data charset, with SO/SI for DBCS) to UTF-16 */
 unsigned char *
 cob_charset_to_utf16 (const cob_charset *cs, const unsigned char *src,
@@ -841,8 +886,9 @@ cob_charset_to_utf16 (const cob_charset *cs, const unsigned char *src,
 {
 	unsigned char	*out;
 	size_t		i;
-	if (cs->iconv_name) {
-		out = cob_charset_convert ("UTF-16BE", cs->iconv_name, src, size, outsize);
+	const char	*name = data_iconv_name (cs);
+	if (name) {
+		out = cob_charset_convert ("UTF-16BE", name, src, size, outsize);
 		if (out) {
 			return out;
 		}
@@ -865,8 +911,9 @@ cob_charset_from_utf16 (const cob_charset *cs, const unsigned char *src,
 {
 	unsigned char	*out;
 	size_t		i;
-	if (cs->iconv_name) {
-		out = cob_charset_convert (cs->iconv_name, "UTF-16BE", src, size, outsize);
+	const char	*name = data_iconv_name (cs);
+	if (name) {
+		out = cob_charset_convert (name, "UTF-16BE", src, size, outsize);
 		if (out) {
 			return out;
 		}

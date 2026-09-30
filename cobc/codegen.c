@@ -11538,7 +11538,9 @@ output_module_init_function (struct cb_program *prog)
 	output_line ("module__->module_returning = %u;", prog->flag_void ? 0 : 1);
 #endif
 	output_line ("module__->ebcdic_sign = %d;", cb_ebcdic_sign);
-	if (cb_data_charset) {
+	if (cb_data_charset == &cob_charset_host) {
+		output_line ("module__->charset = &cob_charset_host;");
+	} else if (cb_data_charset) {
 		output_line ("module__->charset = &cob_charset_ibm%03u;",
 			cb_data_charset->ccsid);
 	}

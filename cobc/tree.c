@@ -1607,6 +1607,10 @@ cb_tree_type (const cb_tree x, const struct cb_field *f)
 		case CB_USAGE_BIT:
 			return COB_TYPE_BOOLEAN;
 		case CB_USAGE_NATIONAL:
+			/* national decimal: UTF-16 digits for data charsets */
+			if (cb_data_charset) {
+				return COB_TYPE_NUMERIC_NATIONAL;
+			}
 #if 0	/* FIXME: both are wrong... but numeric possibly best for "unfinished" */
 			return COB_TYPE_NATIONAL_EDITED;
 #else
@@ -1621,6 +1625,9 @@ cb_tree_type (const cb_tree x, const struct cb_field *f)
 		}
 	case CB_CATEGORY_NUMERIC_EDITED:
 	case CB_CATEGORY_FLOATING_EDITED:
+		if (cb_data_charset && f->usage == CB_USAGE_NATIONAL) {
+			return COB_TYPE_NATIONAL_NUMERIC_EDITED;
+		}
 		return COB_TYPE_NUMERIC_EDITED;
 	case CB_CATEGORY_OBJECT_REFERENCE:
 	case CB_CATEGORY_DATA_POINTER:
@@ -6454,7 +6461,7 @@ cb_build_binary_op (cb_tree x, const enum cb_binary_op_op op, cb_tree y)
 		 * TODO: build cob_fields and call cob_cmp from libcob.
 		 */
 		} else if (cb_constant_folding
-		 && !cb_data_charset	/* order depends on the data charset */
+		 && !cb_data_is_converted ()	/* order depends on the data charset */
 		 && CB_LITERAL_P (x)
 		 && CB_LITERAL_P (y)
 		 && !CB_NUMERIC_LITERAL_P (x)
@@ -7721,6 +7728,14 @@ cb_data_is_ebcdic (void)
 #else
 	return 0;
 #endif
+}
+
+/* check if the data charset differs from the host charset
+   (-fdata-codeset with an EBCDIC charset, not NATIVE / HOST) */
+int
+cb_data_is_converted (void)
+{
+	return cb_data_charset && cb_data_charset->from_host;
 }
 
 /* convert a single character from host to data charset */

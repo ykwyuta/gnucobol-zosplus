@@ -1913,6 +1913,15 @@ cob_decimal_set_field (cob_decimal *dec, cob_field *field)
 	case COB_TYPE_NUMERIC_FP_DEC128:
 		cob_decimal_set_ieee128dec (dec, field);
 		break;
+	case COB_TYPE_NUMERIC_NATIONAL:
+		{
+			cob_field	tmp;
+			cob_field_attr	attr;
+			cob_national_num_get (field, &tmp, &attr);
+			cob_decimal_set_display (dec, &tmp);
+			cob_free (tmp.data);
+			break;
+		}
 	default:
 		cob_decimal_set_display (dec, field);
 		break;
@@ -2146,6 +2155,19 @@ cob_decimal_get_field (cob_decimal *d, cob_field *f, const int opt)
 		return cob_decimal_get_binary (d, f, opt);
 	case COB_TYPE_NUMERIC_DISPLAY:
 		return cob_decimal_get_display (d, f, opt);
+	case COB_TYPE_NUMERIC_NATIONAL:
+		{
+			cob_field	tmp;
+			cob_field_attr	attr;
+			int		ret;
+			cob_national_num_get (f, &tmp, &attr);
+			ret = cob_decimal_get_display (d, &tmp, opt);
+			if (!ret) {
+				cob_national_num_put (&tmp, f);
+			}
+			cob_free (tmp.data);
+			return ret;
+		}
 	case COB_TYPE_NUMERIC_PACKED:
 		return cob_decimal_get_packed (d, f, opt);
 	case COB_TYPE_NUMERIC_FLOAT:

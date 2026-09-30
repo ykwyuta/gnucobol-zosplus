@@ -103,6 +103,7 @@ CB_FLAG_NQ (1, "ebcdic-table", CB_FLAG_GETOPT_EBCDIC_TABLE,
 CB_FLAG_NQ (1, "data-codeset", CB_FLAG_GETOPT_DATA_CODESET,
 	_("  -fdata-codeset=<codeset>\tcharacter set of the data in the program\n"
 	  "                        (EXPERIMENTAL), may be one of: NATIVE,\n"
+	  "                        HOST (native data with national support),\n"
 	  "                        IBM-037, IBM-930, IBM-939, IBM-1390, IBM-1399\n"
 	  "                        * default: NATIVE"))
 

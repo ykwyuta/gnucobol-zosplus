@@ -221,7 +221,8 @@ display_alnum (const cob_field *f, FILE *fp)
 	const unsigned char	*to_host = cs->to_host;
 
 	/* the data is converted to the host charset */
-	if (to_host && COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f)) {
+	if (cs != &cob_charset_native
+	 && COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f)) {
 		/* national item: UTF-16 */
 		size_t	size;
 		unsigned char	*host = cob_charset_utf16_to_host (cs, f->data, f->size, &size);
@@ -343,6 +344,15 @@ cob_display_common (const cob_field *f, FILE *fp)
 #endif
 			fprintf (fp, "%x%x", *p >> 4, *p & 0xF);
 		}
+		return;
+	}
+	if (COB_FIELD_TYPE (f) == COB_TYPE_NUMERIC_NATIONAL) {
+		/* national decimal: the UTF-16 characters as stored */
+		static const cob_field_attr	national_attr =
+			{COB_TYPE_NATIONAL, 0, 0, 0, NULL};
+		cob_field	temp = *f;
+		temp.attr = &national_attr;
+		display_alnum (&temp, fp);
 		return;
 	}
 	if (COB_FIELD_IS_NUMERIC (f)) {
@@ -1148,7 +1158,8 @@ cob_accept (cob_field *f)
 		p[size++] = (char) ipchr;
 	}
 	/* the input is in host charset */
-	if (COB_CS->from_host && COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f)) {
+	if (COB_CS != &cob_charset_native
+	 && COB_FIELD_IS_NATIONAL (f) && !COB_FIELD_DBCS (f)) {
 		/* national item: UTF-16 */
 		static const cob_field_attr	national_attr =
 			{COB_TYPE_NATIONAL, 0, 0, 0, NULL};
