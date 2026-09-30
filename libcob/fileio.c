@@ -9197,9 +9197,11 @@ free_extfh_fcd (void)
 static void
 update_file_to_fcd (cob_file *f, FCD3 *fcd, unsigned char *fnstatus)
 {
-	if (fnstatus)
+	if (fnstatus) {
+		/* the file status field is in data charset, the FCD in host charset */
 		memcpy (fcd->fileStatus, fnstatus, 2);
-	else if (f->file_status)
+		cob_charset_to_host (COB_CS, fcd->fileStatus, 2);
+	} else if (f->file_status)
 		memcpy (fcd->fileStatus, f->file_status, 2);
 	/* FIXME: use switch here */
 	if (f->open_mode == COB_OPEN_CLOSED
@@ -10311,10 +10313,71 @@ cob_extfh_delete (EXTFH_FUNC callfh, cob_file *f,
 	update_fcd_to_file (fcd, f, fnstatus, 0);
 }
 
+/*
+ * FCD for data in a charset other than the host one (-fdata-codeset):
+ * a COBOL program calling EXTFH uses the file status and the file name
+ * in the data charset, while fileio works with the host charset;
+ * these are converted in place (note: external file handlers get the
+ * FCD in the host charset, as those are commonly written in C)
+ */
+static void
+fcd_charset (const cob_charset *cs, FCD3 *fcd, const int to_host,
+	const int with_name)
+{
+	unsigned char	*st = fcd->fileStatus;
+	if (to_host) {
+		st[0] = COB_CS_TO_HOST (cs, st[0]);
+		/* note: for status 9x the second byte is binary */
+		if (st[0] != '9') {
+			st[1] = COB_CS_TO_HOST (cs, st[1]);
+		}
+	} else {
+		if (st[0] != '9') {
+			st[1] = COB_CS_FROM_HOST (cs, st[1]);
+		}
+		st[0] = COB_CS_FROM_HOST (cs, st[0]);
+	}
+	if (with_name && fcd->fnamePtr) {
+		unsigned char	*fn = (unsigned char *)fcd->fnamePtr;
+		const size_t	len = LDCOMPX2 (fcd->fnameLen);
+		size_t		i;
+		for (i = 0; i < len && fn[i]; i++) {
+			fn[i] = to_host ? COB_CS_TO_HOST (cs, fn[i])
+				: COB_CS_FROM_HOST (cs, fn[i]);
+		}
+	}
+}
+
+static int	sys_extfh_host (const void *, void *);
+
 /* COBOL wrapper for EXTFH call to prevent warnings about FCD3 structure
    with additional checks */
 int
 cob_sys_extfh (const void *opcode_ptr, void *fcd_ptr)
+{
+	const cob_charset	*cs = COB_CS;
+	FCD3	*fcd = (FCD3 *) fcd_ptr;
+	int	with_name;
+	int	ret;
+
+	if (!cs->to_host
+	 || !fcd
+	 || cobglobptr->cob_call_params < 2
+	 || !COB_MODULE_PTR->cob_procedure_params[1]
+	 || COB_MODULE_PTR->cob_procedure_params[1]->size < 5) {
+		return sys_extfh_host (opcode_ptr, fcd_ptr);
+	}
+	/* FCD in data charset (-fdata-codeset) */
+	with_name = COB_MODULE_PTR->cob_procedure_params[1]->size >= sizeof (FCD3)
+		&& fcd->fcdVer == FCD_VER_64Bit;
+	fcd_charset (cs, fcd, 1, with_name);
+	ret = sys_extfh_host (opcode_ptr, fcd_ptr);
+	fcd_charset (cs, fcd, 0, with_name);
+	return ret;
+}
+
+static int
+sys_extfh_host (const void *opcode_ptr, void *fcd_ptr)
 {
 	FCD3 *fcd = (FCD3 *) fcd_ptr;
 
@@ -10787,6 +10850,7 @@ org_handling:
 	case OP_DELETE_FILE:
 		cob_delete_file (f, fs);
 		memcpy (fcd->fileStatus, fnstatus, 2);
+		cob_charset_to_host (COB_CS, fcd->fileStatus, 2);
 		return sts;
 
 	case OP_GETINFO:			/* Nothing needed here */

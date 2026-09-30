@@ -4159,3 +4159,44 @@ AT_CHECK([$COMPILE prog.cob], [0], [], [])
 MANUAL_CHECK([$COBCRUN_DIRECT ./prog], [0], [], [])
 
 AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: SCREEN SECTION])
+AT_KEYWORDS([screen ebcdic data-codeset])
+
+AT_SKIP_IF([test "$COB_HAS_CURSES" != "yes"])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  success-flag PIC X VALUE 'N'.
+           88  success  VALUE 'Y', 'y'.
+       01  num-field    PIC S9(3) VALUE -12.
+
+       SCREEN           SECTION.
+       01  scr.
+           03  LINE 1 VALUE 'Enter "y" if "Abc xyz 012" and "-012"'
+               & ' are shown below.'.
+           03  LINE 3 COL 1 VALUE 'Abc xyz 012'.
+           03  LINE 4 COL 1 PIC -999 FROM num-field.
+           03  LINE 6 COL 1 PIC X, REQUIRED USING success-flag.
+
+       PROCEDURE        DIVISION.
+           DISPLAY scr
+           ACCEPT scr
+           *> the input is stored in EBCDIC
+           IF success AND COB-CRT-STATUS = 0
+              AND (success-flag = X'E8' OR X'A8')
+               GOBACK RETURNING 0
+           ELSE
+               GOBACK RETURNING 1
+           END-IF
+           .
+])
+
+AT_CHECK([$COMPILE -fdata-codeset=IBM-037 prog.cob], [0], [], [])
+MANUAL_CHECK([$COBCRUN_DIRECT ./prog], [0], [], [])
+
+AT_CLEANUP

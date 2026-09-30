@@ -4293,6 +4293,146 @@ field_display_at_curpos (cob_field *f,
 
 /* Global functions */
 
+/* screen I/O for data in a charset other than the host one
+   (-fdata-codeset): the screen code works with the host charset, so all
+   fields used are temporarily replaced by copies in the host charset and
+   the native charset is active; changed fields are converted back
+   afterwards; note: DBCS data is not supported on the screen */
+
+struct screen_swap {
+	cob_field	**slot;		/* where the field pointer is stored */
+	cob_field	*orig;
+	cob_field	*copy;
+	int		write_back;
+};
+
+static struct screen_swap	*screen_swaps = NULL;
+static size_t			screen_swap_count = 0;
+static size_t			screen_swap_max = 0;
+static const cob_charset	*screen_saved_cs = NULL;
+
+static int
+is_display_data (const cob_field *f)
+{
+	switch (COB_FIELD_TYPE (f)) {
+	case COB_TYPE_GROUP:
+	case COB_TYPE_ALPHANUMERIC:
+	case COB_TYPE_ALPHANUMERIC_ALL:
+	case COB_TYPE_ALPHANUMERIC_EDITED:
+	case COB_TYPE_NUMERIC_DISPLAY:
+	case COB_TYPE_NUMERIC_EDITED:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static void
+screen_swap_field (cob_field **slot, const int write_back)
+{
+	cob_field		*orig = *slot;
+	cob_field		*copy;
+	struct screen_swap	*sw;
+
+	if (!orig || !orig->data || !orig->attr) {
+		return;
+	}
+	if (screen_swap_count == screen_swap_max) {
+		if (!screen_swaps) {
+			screen_swap_max = 32;
+			screen_swaps = cob_malloc (screen_swap_max * sizeof (struct screen_swap));
+		} else {
+			screen_swaps = cob_realloc (screen_swaps,
+				screen_swap_max * sizeof (struct screen_swap),
+				screen_swap_max * 2 * sizeof (struct screen_swap));
+			screen_swap_max *= 2;
+		}
+	}
+	copy = cob_malloc (sizeof (cob_field));
+	*copy = *orig;
+	copy->data = cob_malloc (orig->size + 1);
+	memcpy (copy->data, orig->data, orig->size);
+	if (is_display_data (orig)) {
+		cob_charset_to_host (screen_saved_cs, copy->data, copy->size);
+	}
+	sw = &screen_swaps[screen_swap_count++];
+	sw->slot = slot;
+	sw->orig = orig;
+	sw->copy = copy;
+	sw->write_back = write_back;
+	*slot = copy;
+}
+
+static void
+screen_swap_tree (cob_screen *s, const int write_back)
+{
+	for (; s; s = s->next) {
+		screen_swap_field (&s->field, write_back);
+		screen_swap_field (&s->value, 0);
+		screen_swap_field (&s->line, 0);
+		screen_swap_field (&s->column, 0);
+		screen_swap_field (&s->foreg, 0);
+		screen_swap_field (&s->backg, 0);
+		screen_swap_field (&s->prompt, 0);
+		if (s->child) {
+			screen_swap_tree (s->child, write_back);
+		}
+	}
+}
+
+/* start screen I/O in the host charset, returns 1 if active */
+static int
+screen_host_begin (void)
+{
+	if (screen_saved_cs
+	 || !COB_MODULE_PTR
+	 || !COB_MODULE_PTR->charset
+	 || !COB_MODULE_PTR->charset->to_host) {
+		return 0;
+	}
+	screen_saved_cs = COB_MODULE_PTR->charset;
+	screen_swap_count = 0;
+	screen_swap_field (&COB_MODULE_PTR->crt_status, 1);
+	screen_swap_field (&COB_MODULE_PTR->cursor_pos, 1);
+	return 1;
+}
+
+/* end screen I/O in the host charset: convert changed fields back */
+static void
+screen_host_end (const int active)
+{
+	size_t	i;
+	if (!active) {
+		return;
+	}
+	/* in reverse order, as a slot may be swapped more than once */
+	for (i = screen_swap_count; i > 0; i--) {
+		struct screen_swap	*sw = &screen_swaps[i - 1];
+		if (sw->write_back) {
+			memcpy (sw->orig->data, sw->copy->data, sw->orig->size);
+			if (is_display_data (sw->orig)) {
+				cob_charset_from_host (screen_saved_cs,
+					sw->orig->data, sw->orig->size);
+			}
+		}
+		*sw->slot = sw->orig;
+		cob_free (sw->copy->data);
+		cob_free (sw->copy);
+	}
+	screen_swap_count = 0;
+	COB_MODULE_PTR->charset = screen_saved_cs;
+	screen_saved_cs = NULL;
+}
+
+/* switch to the native charset after the fields were swapped */
+static void
+screen_host_switch (const int active)
+{
+	if (active) {
+		COB_MODULE_PTR->charset = NULL;
+	}
+}
+
 /* DISPLAY scr-name */
 void
 cob_screen_display (cob_screen *s, cob_field *line, cob_field *column,
@@ -4300,11 +4440,18 @@ cob_screen_display (cob_screen *s, cob_field *line, cob_field *column,
 {
 	int	sline;
 	int	scolumn;
+	int	host;
 	init_cob_screen_if_needed ();
 
 	extract_line_and_col_vals (line, column, DISPLAY_STATEMENT,
 				zero_line_col_allowed, &sline, &scolumn);
+	host = screen_host_begin ();
+	if (host) {
+		screen_swap_tree (s, 0);
+		screen_host_switch (host);
+	}
 	screen_display (s, sline, scolumn);
+	screen_host_end (host);
 }
 
 /* ACCEPT scr-name */
@@ -4315,9 +4462,18 @@ cob_screen_accept (cob_screen *s, cob_field *line, cob_field *column,
 	int	sline;
 	int	scolumn;
 
+	int	host;
+
 	extract_line_and_col_vals (line, column, ACCEPT_STATEMENT,
 				zero_line_col_allowed, &sline, &scolumn);
+	host = screen_host_begin ();
+	if (host) {
+		screen_swap_tree (s, 1);
+		screen_swap_field (&ftimeout, 0);
+		screen_host_switch (host);
+	}
 	screen_accept (s, sline, scolumn, ftimeout);
+	screen_host_end (host);
 }
 
 /* DISPLAY scr-item WITH/AT */
@@ -4389,12 +4545,26 @@ cob_display_field (cob_field *f, const cob_flags_t fattr, const char *parms, ...
 		va_end (args);
 	}
 
+	int	host;
+
 	init_cob_screen_if_needed ();
 
 	extract_line_and_col_vals (line, column, DISPLAY_STATEMENT,
 			zero_line_col_allowed, &sline, &scolumn);
+	host = screen_host_begin ();
+	if (host) {
+		screen_swap_field (&f, 0);
+		screen_swap_field (&fgc, 0);
+		screen_swap_field (&bgc, 0);
+		screen_swap_field (&fscroll, 0);
+		screen_swap_field (&size_is, 0);
+		screen_swap_field (&control, 0);
+		screen_swap_field (&color, 0);
+		screen_host_switch (host);
+	}
 	field_display (f, fattr, sline, scolumn, fgc, bgc,
 			fscroll, size_is, control, color);
+	screen_host_end (host);
 }
 
 /* ACCEPT scr-item WITH/AT */
@@ -4472,10 +4642,27 @@ cob_accept_field (cob_field *f, const cob_flags_t fattr, const char *parms, ...)
 		va_end (args);
 	}
 
+	int	host;
+
 	extract_line_and_col_vals (line, column, ACCEPT_STATEMENT,
 			zero_line_col_allowed, &sline, &scolumn);
+	host = screen_host_begin ();
+	if (host) {
+		screen_swap_field (&f, 1);
+		screen_swap_field (&fgc, 0);
+		screen_swap_field (&bgc, 0);
+		screen_swap_field (&fscroll, 0);
+		screen_swap_field (&ftimeout, 0);
+		screen_swap_field (&prompt, 0);
+		screen_swap_field (&size_is, 0);
+		screen_swap_field (&cursor, 1);
+		screen_swap_field (&control, 0);
+		screen_swap_field (&color, 0);
+		screen_host_switch (host);
+	}
 	field_accept (f, fattr, sline, scolumn, fgc, bgc,
 			fscroll, ftimeout, prompt, size_is, cursor, control, color);
+	screen_host_end (host);
 }
 
 /* DISPLAY scr-item WITH/AT - compat-function for < 3.2 */
@@ -4489,11 +4676,23 @@ cob_field_display (cob_field *f, cob_field *line, cob_field *column,
 	int	sline;
 	int	scolumn;
 
+	int	host;
+
 	init_cob_screen_if_needed ();
 	extract_line_and_col_vals (line, column, DISPLAY_STATEMENT,
 			zero_line_col_allowed, &sline, &scolumn);
+	host = screen_host_begin ();
+	if (host) {
+		screen_swap_field (&f, 0);
+		screen_swap_field (&fgc, 0);
+		screen_swap_field (&bgc, 0);
+		screen_swap_field (&fscroll, 0);
+		screen_swap_field (&size_is, 0);
+		screen_host_switch (host);
+	}
 	field_display (f, (cob_flags_t)fattr, sline, scolumn, fgc, bgc,
 			fscroll, size_is, NULL, NULL);
+	screen_host_end (host);
 }
 
 /* ACCEPT scr-item WITH/AT - compat-function for < 3.2 */
@@ -4508,10 +4707,24 @@ cob_field_accept (cob_field *f, cob_field *line, cob_field *column,
 	int	sline;
 	int	scolumn;
 
+	int	host;
+
 	extract_line_and_col_vals (line, column, ACCEPT_STATEMENT,
 			zero_line_col_allowed, &sline, &scolumn);
+	host = screen_host_begin ();
+	if (host) {
+		screen_swap_field (&f, 1);
+		screen_swap_field (&fgc, 0);
+		screen_swap_field (&bgc, 0);
+		screen_swap_field (&fscroll, 0);
+		screen_swap_field (&ftimeout, 0);
+		screen_swap_field (&prompt, 0);
+		screen_swap_field (&size_is, 0);
+		screen_host_switch (host);
+	}
 	field_accept (f, (cob_flags_t)fattr, sline, scolumn, fgc, bgc,
 			fscroll, ftimeout, prompt, size_is, NULL, NULL, NULL);
+	screen_host_end (host);
 }
 
 /* x'E4' system call - clear screen */
@@ -4659,6 +4872,11 @@ cob_exit_screen (void)
 	cob_flags_t	flags;
 	char		exit_msg[COB_MINI_BUFF];
 
+	if (screen_swaps) {
+		cob_free (screen_swaps);
+		screen_swaps = NULL;
+		screen_swap_max = 0;
+	}
 	if (!cobglobptr) {
 		return;
 	}

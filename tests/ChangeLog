@@ -1,5 +1,8 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* testsuite.src/run_ebcdic.at: test for CALL EXTFH with EBCDIC data
+	* testsuite.src/run_manual_screen.at: test for SCREEN SECTION with
+	  EBCDIC data
 	* testsuite.src/run_ebcdic.at: tests for national (UTF-16) items,
 	  NATIONAL-OF / DISPLAY-OF and MOVE with DBCS items
 	* testsuite.src/run_ebcdic.at: test for user-defined DBCS characters

@@ -633,7 +633,9 @@ AT_DATA([prog.cob], [
 AT_DATA([input.txt], [大阪x
 ])
 
-AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [], [])
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 prog.cob], [0], [],
+[prog.cob:8: warning: national-character literal used
+])
 AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog < input.txt], [0],
 [<東京ab> 67714EAC00610062
 45624566 4
@@ -648,7 +650,9 @@ FFFFFFFFFFFFFFFFFFFFFFFF
 ], [])
 
 # with -fnsymbol=national PIC N and N literals are UTF-16
-AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 -fnsymbol=national -o prog2 prog.cob], [0], [], [])
+AT_CHECK([$COMPILE -fdata-codeset=IBM-1399 -fnsymbol=national -o prog2 prog.cob], [0], [],
+[prog.cob:8: warning: national-character literal used
+])
 AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog2 < input.txt], [0],
 [<東京ab> 67714EAC00610062
 65E5672C 4
@@ -769,5 +773,65 @@ AT_CHECK([COB_HOST_CODESET=UTF-8 $COBCRUN_DIRECT ./prog2], [0],
 [<A漢> C10E4F58
 <A漢?> C10E4F5848
 ], [])
+
+AT_CLEANUP
+
+
+AT_SETUP([EBCDIC data: CALL EXTFH])
+AT_KEYWORDS([ebcdic data-codeset EXTFH FCD])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION   DIVISION.
+       PROGRAM-ID.      prog.
+       DATA             DIVISION.
+       WORKING-STORAGE  SECTION.
+       01  FILE-NAME    PIC X(20) VALUE 'extfh.dat'.
+       01  FH-ACTION    PIC X(2).
+       01  REC          PIC X(10).
+       01  FCD-AREA.
+            COPY xfhfcd3.
+       PROCEDURE        DIVISION.
+           MOVE LOW-VALUES TO FCD-AREA
+           MOVE LENGTH OF FCD-AREA TO FCD-LENGTH
+           MOVE FCD--VERSION-NUMBER TO FCD-VERSION
+           MOVE FCD--SEQUENTIAL-ORG TO FCD-ORGANIZATION
+           MOVE 0 TO FCD-ACCESS-MODE
+           MOVE 128 TO FCD-OPEN-MODE
+           MOVE 0 TO FCD-RECORDING-MODE
+           MOVE 9 TO FCD-NAME-LENGTH
+           SET FCD-FILENAME-ADDRESS TO ADDRESS OF FILE-NAME
+           SET FCD-RECORD-ADDRESS TO ADDRESS OF REC
+           MOVE 10 TO FCD-MIN-REC-LENGTH FCD-MAX-REC-LENGTH
+                      FCD-CURRENT-REC-LEN
+      *>   OPEN INPUT of a missing file
+           MOVE X'FA00' TO FH-ACTION
+           CALL 'EXTFH' USING FH-ACTION FCD-AREA
+           DISPLAY 'OPEN INPUT: ' FCD-FILE-STATUS
+      *>   OPEN OUTPUT, WRITE, CLOSE
+           MOVE X'FA01' TO FH-ACTION
+           CALL 'EXTFH' USING FH-ACTION FCD-AREA
+           DISPLAY 'OPEN OUTPUT: ' FCD-FILE-STATUS
+           MOVE 'Record-1' TO REC
+           MOVE X'FAF3' TO FH-ACTION
+           CALL 'EXTFH' USING FH-ACTION FCD-AREA
+           DISPLAY 'WRITE: ' FCD-FILE-STATUS
+           MOVE X'FA80' TO FH-ACTION
+           CALL 'EXTFH' USING FH-ACTION FCD-AREA
+           DISPLAY 'CLOSE: ' FCD-FILE-STATUS
+           DISPLAY '<' FILE-NAME (1:9) '>'
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE -fnotrunc -fdata-codeset=IBM-037 prog.cob], [0], [], [])
+AT_CHECK([$COBCRUN_DIRECT ./prog], [0],
+[OPEN INPUT: 35
+OPEN OUTPUT: 00
+WRITE: 00
+CLOSE: 00
+<extfh.dat>
+], [])
+# the file name is in host charset, the data in EBCDIC
+AT_CHECK([od -An -tx1 extfh.dat | tr -d ' \n'], [0],
+[d9858396998460f14040], [])
 
 AT_CLEANUP

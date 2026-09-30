@@ -1,5 +1,15 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* screenio.c (screen_host_begin, screen_host_end, screen_swap_field,
+	  screen_swap_tree): screen I/O for data charsets works on copies of
+	  the fields in the host charset (with the native charset active),
+	  changed fields, CRT STATUS and CURSOR are converted back
+	* fileio.c (cob_sys_extfh, fcd_charset): for data charsets the file
+	  status and file name in the FCD of a COBOL program calling EXTFH are
+	  converted between data and host charset; the FCD used internally and
+	  passed to external file handlers stays in host charset
+	* fileio.c (update_file_to_fcd): convert the file status of the COBOL
+	  status field to host charset for the FCD
 	* common.h: new attribute flag COB_FLAG_DBCS
 	* charset.c (cob_charset_convert, cob_charset_to_utf16,
 	  cob_charset_from_utf16, cob_charset_utf16_to_host,

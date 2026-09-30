@@ -524,7 +524,7 @@ FUNCTION DISPLAY-OF (UTF-16項目, 1208) → UTF-8 のバイト列 E6 9D B1 E4 B
 * 英数字の定数が受け側より長く、DBCS の途中で切り捨てられる場合は、`-Wtruncate` で「SI が欠ける」旨の警告を出します。
 * 英数字同士の MOVE は、IBM と同じくバイト単位のままです（SI が欠けたり、2 バイト文字の途中で切れたりすることがあります）。そうしたデータも、表示などの変換では異常終了せず、欠けた文字を代替文字（`?`）にして出力します。
 
-### P4（周辺機能）: REPORT WRITER と XML / JSON を実装
+### P4（周辺機能）: 完了（REPORT WRITER、XML / JSON、SCREEN SECTION、EXTFH）
 
 | 項目 | 内容 |
 |------|------|
@@ -535,9 +535,23 @@ FUNCTION DISPLAY-OF (UTF-16項目, 1208) → UTF-8 のバイト列 E6 9D B1 E4 B
 
 EBCDIC モード（IBM-037）での失敗件数は、REPORT WRITER が 23 件から 1 件、XML / JSON が 27 件から 1 件になりました。残りはどちらもテストの前提によるものです（ASCII の符号 `H` を期待する、`X'0A'` の改行と比較している。EBCDIC のデータでは改行は `X'25'` になる）。
 
+#### SCREEN SECTION と EXTFH / FCD
+
+| 項目 | 内容 |
+|------|------|
+| SCREEN SECTION（screenio.c） | 画面の処理は、ホストの文字を前提にした細かな編集処理が多いため、画面の操作ごとに境界で変換する。画面項目・VALUE・PROMPT・LINE / COL などの項目をホストの文字コードの写しに差し替え、ネイティブの文字コードで処理したあと、入力された項目と CRT STATUS、CURSOR をデータ文字コードに戻す（符号付きの数字項目も、EBCDIC の符号をそのまま ASCII のゾーン表現として引き継げる） |
+| EXTFH / FCD（fileio.c） | COBOL から `CALL "EXTFH"` するとき、FCD の状態コードとファイル名をデータ文字コードからホストの文字コードに変換し、終了時に戻す。GnuCOBOL 内部と外部ファイルハンドラー（多くは C で書かれる）に渡す FCD はホストの文字コードのまま |
+
+EBCDIC モード（IBM-037）での既存テストの失敗は、EXTFH 関連が 11 件から 2 件になり、全体では 73 件から 63 件になりました。
+
+制限事項:
+
+* SCREEN SECTION では DBCS（SO / SI を含む日本語）を表示できない（1 バイトの表で変換するため）
+* `FH--FCD` で COBOL から直接参照する内部の FCD の状態コード・ファイル名はホストの文字コード（C の外部ファイルハンドラーとの互換のため）
+* COBOL で書いた外部ファイルハンドラーには、FCD がホストの文字コードのまま渡される
+
 ### 次の作業
 
-* P4 の残り: SCREEN SECTION（screenio.c）、EXTFH / FCD
 * NATIONAL の残り: 比較（UTF-16 と英数字の比較の変換）、STRING / UNSTRING / INSPECT、NATIONAL 編集項目、ネイティブ（`-fdata-codeset` なし）の NATIONAL
 
 ## 11. まとめ
