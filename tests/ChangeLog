@@ -1,5 +1,6 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* testsuite.src/run_manual_screen.at: test for SCREEN SECTION with DBCS
 	* testsuite.src/run_ebcdic.at: tests for numeric national items,
 	  functions with national arguments and -fdata-codeset=HOST
 	* testsuite.src/run_ebcdic.at: tests for comparison, STRING / UNSTRING /

@@ -1134,6 +1134,11 @@ cob_screen_attr (cob_field *fgc, cob_field *bgc, cob_flags_t attr,
 	return attr;
 }
 
+/* DBCS data on the screen (data charsets with DBCS, see screen_swap_field) */
+static int	screen_dbcs_active = 0;
+static int	screen_ctype_switched = 0;	/* LC_CTYPE of the user is active */
+static const char	*screen_dbcs_text (const unsigned char *);
+
 static int
 cob_screen_init (void)
 {
@@ -1181,6 +1186,17 @@ cob_screen_init (void)
 		setlocale (LC_CTYPE, cobglobptr->cob_locale_ctype);
 	}
 #endif
+#endif
+
+#ifdef	HAVE_SETLOCALE
+	/* data charsets with DBCS: the screen needs the LC_CTYPE of the user
+	   for the output of DBCS characters */
+	if (COB_MODULE_PTR && COB_MODULE_PTR->charset
+	 && (COB_MODULE_PTR->charset->flags & COB_CS_MIXED)
+	 && cobglobptr->cob_locale_ctype
+	 && setlocale (LC_CTYPE, cobglobptr->cob_locale_ctype)) {
+		screen_ctype_switched = 1;
+	}
 #endif
 
 	if (!initscr ()) {
@@ -1573,6 +1589,20 @@ static void
 cob_addnstr (const char *data, const int size)
 {
 	raise_ec_on_truncation (size);
+	if (screen_dbcs_active) {
+		/* output DBCS characters, see screen_swap_field */
+		int	i;
+		for (i = 0; i < size; i++) {
+			const char	*text = screen_dbcs_text ((const unsigned char *)data + i);
+			if (text && i + 1 < size) {
+				waddstr (mywin, text);
+				i++;
+			} else {
+				waddch (mywin, (const chtype)(unsigned char)data[i]);
+			}
+		}
+		return;
+	}
 	waddnstr (mywin, data, size);
 }
 
@@ -1953,7 +1983,14 @@ cob_screen_puts (cob_screen *s, cob_field *f, const cob_u32_t is_input,
 		p = f->data;
 		raise_ec_on_truncation (f->size);
 		for (size = 0; size < f->size; size++, p++) {
-			if (s->attr & COB_SCREEN_SECURE) {
+			const char	*text = screen_dbcs_active
+				? screen_dbcs_text (p) : NULL;
+			if (text && !(s->attr & COB_SCREEN_SECURE)
+			 && size + 1 < f->size) {
+				/* DBCS character: 2 columns */
+				waddstr (mywin, text);
+				size++, p++;
+			} else if (s->attr & COB_SCREEN_SECURE) {
 				cob_addch_no_trunc_check (COB_CH_AS);
 			} else if (*p <= ' ' && stmt == ACCEPT_STATEMENT) {
 				cob_addch_no_trunc_check (default_prompt_char);
@@ -4304,7 +4341,13 @@ struct screen_swap {
 	cob_field	*orig;
 	cob_field	*copy;
 	int		write_back;
+	char		**dbcs_text;	/* DBCS: text (host charset) at the position
+					   of the first placeholder, otherwise NULL */
+	unsigned char	*initial;	/* DBCS: initial content of the copy */
 };
+
+/* placeholder in the host copy for both bytes of a DBCS character */
+#define SCREEN_DBCS_PLACEHOLDER	0x1F
 
 static struct screen_swap	*screen_swaps = NULL;
 static size_t			screen_swap_count = 0;
@@ -4325,6 +4368,106 @@ is_display_data (const cob_field *f)
 	default:
 		return 0;
 	}
+}
+
+/* DBCS data (with SO/SI in alphanumeric items, or DBCS items):
+   each DBCS character is replaced by two placeholders in the host copy
+   and SO/SI by spaces - like on a 3270 terminal, so that each byte
+   corresponds to one screen column; the text of the DBCS character in
+   the host charset is output by cob_addnstr / cob_screen_puts */
+static void
+screen_dbcs_copy (struct screen_swap *sw)
+{
+	const cob_charset	*cs = screen_saved_cs;
+	const unsigned char	*src = sw->orig->data;
+	unsigned char		*dst = sw->copy->data;
+	const size_t		size = sw->orig->size;
+	const int		pure = COB_FIELD_IS_DBCS (sw->orig) ? 1 : 0;
+	int			in_dbcs = pure;
+	int			any = 0;
+	char			**texts = cob_malloc ((size + 1) * sizeof (char *));
+	size_t			i;
+
+	for (i = 0; i < size; i++) {
+		const unsigned char	b = src[i];
+		if (!pure && b == cs->so) {
+			dst[i] = ' ';
+			in_dbcs = 1;
+			continue;
+		}
+		if (!pure && b == cs->si) {
+			dst[i] = ' ';
+			in_dbcs = 0;
+			continue;
+		}
+		if (in_dbcs && i + 1 < size) {
+			unsigned char	mixed[4];
+			size_t		n;
+			mixed[0] = cs->so;
+			mixed[1] = b;
+			mixed[2] = src[i + 1];
+			mixed[3] = cs->si;
+			texts[i] = (char *)cob_charset_text_to_host (cs, mixed, 4, &n);
+			dst[i] = dst[i + 1] = SCREEN_DBCS_PLACEHOLDER;
+			any = 1;
+			i++;
+			continue;
+		}
+		dst[i] = COB_CS_TO_HOST (cs, b);
+	}
+	if (!any) {
+		cob_free (texts);
+		return;
+	}
+	sw->dbcs_text = texts;
+	sw->initial = cob_malloc (size + 1);
+	memcpy (sw->initial, dst, size);
+}
+
+/* convert back a changed host copy with DBCS data: unchanged DBCS
+   characters and SO/SI keep their original bytes */
+static void
+screen_dbcs_write_back (struct screen_swap *sw)
+{
+	const cob_charset	*cs = screen_saved_cs;
+	unsigned char		*orig = sw->orig->data;
+	const unsigned char	*copy = sw->copy->data;
+	const unsigned char	*initial = sw->initial;
+	const size_t		size = sw->orig->size;
+	size_t			i;
+
+	if (memcmp (copy, initial, size) == 0) {
+		return;	/* unchanged: keep the original data */
+	}
+	for (i = 0; i < size; i++) {
+		if (sw->dbcs_text[i] && i + 1 < size
+		 && copy[i] == SCREEN_DBCS_PLACEHOLDER
+		 && copy[i + 1] == SCREEN_DBCS_PLACEHOLDER) {
+			i++;	/* unchanged DBCS character */
+			continue;
+		}
+		if (initial[i] == ' ' && copy[i] == ' '
+		 && (orig[i] == cs->so || orig[i] == cs->si)) {
+			continue;	/* unchanged SO / SI */
+		}
+		orig[i] = COB_CS_FROM_HOST (cs, copy[i]);
+	}
+}
+
+/* text of the DBCS character starting at 'p' (in a host copy), or NULL */
+static const char *
+screen_dbcs_text (const unsigned char *p)
+{
+	size_t	i;
+	for (i = 0; i < screen_swap_count; i++) {
+		const struct screen_swap	*sw = &screen_swaps[i];
+		if (sw->dbcs_text
+		 && p >= sw->copy->data
+		 && p < sw->copy->data + sw->copy->size) {
+			return sw->dbcs_text[p - sw->copy->data];
+		}
+	}
+	return NULL;
 }
 
 static void
@@ -4352,14 +4495,19 @@ screen_swap_field (cob_field **slot, const int write_back)
 	*copy = *orig;
 	copy->data = cob_malloc (orig->size + 1);
 	memcpy (copy->data, orig->data, orig->size);
-	if (is_display_data (orig)) {
-		cob_charset_to_host (screen_saved_cs, copy->data, copy->size);
-	}
 	sw = &screen_swaps[screen_swap_count++];
 	sw->slot = slot;
 	sw->orig = orig;
 	sw->copy = copy;
 	sw->write_back = write_back;
+	sw->dbcs_text = NULL;
+	sw->initial = NULL;
+	if (screen_dbcs_active
+	 && (is_display_data (orig) || COB_FIELD_IS_DBCS (orig))) {
+		screen_dbcs_copy (sw);
+	} else if (is_display_data (orig)) {
+		cob_charset_to_host (screen_saved_cs, copy->data, copy->size);
+	}
 	*slot = copy;
 }
 
@@ -4392,6 +4540,10 @@ screen_host_begin (void)
 	}
 	screen_saved_cs = COB_MODULE_PTR->charset;
 	screen_swap_count = 0;
+	/* DBCS on the screen needs the locale of the user, see cob_screen_init */
+	screen_dbcs_active = screen_ctype_switched
+		&& (screen_saved_cs->flags & COB_CS_MIXED)
+		&& cob_charset_text_is_variable (screen_saved_cs);
 	screen_swap_field (&COB_MODULE_PTR->crt_status, 1);
 	screen_swap_field (&COB_MODULE_PTR->cursor_pos, 1);
 	return 1;
@@ -4408,18 +4560,31 @@ screen_host_end (const int active)
 	/* in reverse order, as a slot may be swapped more than once */
 	for (i = screen_swap_count; i > 0; i--) {
 		struct screen_swap	*sw = &screen_swaps[i - 1];
-		if (sw->write_back) {
+		if (sw->write_back && sw->dbcs_text) {
+			screen_dbcs_write_back (sw);
+		} else if (sw->write_back) {
 			memcpy (sw->orig->data, sw->copy->data, sw->orig->size);
 			if (is_display_data (sw->orig)) {
 				cob_charset_from_host (screen_saved_cs,
 					sw->orig->data, sw->orig->size);
 			}
 		}
+		if (sw->dbcs_text) {
+			size_t	k;
+			for (k = 0; k < sw->orig->size; k++) {
+				if (sw->dbcs_text[k]) {
+					cob_free (sw->dbcs_text[k]);
+				}
+			}
+			cob_free (sw->dbcs_text);
+			cob_free (sw->initial);
+		}
 		*sw->slot = sw->orig;
 		cob_free (sw->copy->data);
 		cob_free (sw->copy);
 	}
 	screen_swap_count = 0;
+	screen_dbcs_active = 0;
 	COB_MODULE_PTR->charset = screen_saved_cs;
 	screen_saved_cs = NULL;
 }
@@ -4877,6 +5042,12 @@ cob_exit_screen (void)
 		screen_swaps = NULL;
 		screen_swap_max = 0;
 	}
+#ifdef	HAVE_SETLOCALE
+	if (screen_ctype_switched) {
+		setlocale (LC_CTYPE, "C");
+		screen_ctype_switched = 0;
+	}
+#endif
 	if (!cobglobptr) {
 		return;
 	}

@@ -1,5 +1,10 @@
 2026-09-30  ykwyuta <ykwyuta@gmail.com>
 
+	* screenio.c (screen_dbcs_copy, screen_dbcs_write_back,
+	  screen_dbcs_text, cob_addnstr, cob_screen_puts, cob_screen_init):
+	  DBCS data (with SO/SI or DBCS items) is shown on the screen for data
+	  charsets with DBCS, using the LC_CTYPE of the user; unchanged DBCS
+	  characters are kept on ACCEPT
 	* common.h, move.c (cob_national_num_get, cob_national_num_put),
 	  numeric.c, common.c (cob_is_numeric), termio.c: new field types
 	  COB_TYPE_NUMERIC_NATIONAL and COB_TYPE_NATIONAL_NUMERIC_EDITED for
