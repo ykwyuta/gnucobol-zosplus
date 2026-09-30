@@ -518,6 +518,10 @@ struct config_tbl {
 COB_HIDDEN void		cob_init_numeric	(cob_global *);
 COB_HIDDEN void		cob_init_charset	(void);
 COB_HIDDEN const cob_charset	*cob_module_charset	(const cob_module *);
+COB_HIDDEN void		cob_charset_from_host	(const cob_charset *, unsigned char *, size_t);
+COB_HIDDEN void		cob_charset_to_host	(const cob_charset *, unsigned char *, size_t);
+COB_HIDDEN cob_field	*cob_charset_field_to_host	(const cob_charset *, const cob_field *, cob_field *);
+COB_HIDDEN void		cob_charset_field_release	(const cob_field *, cob_field *);
 COB_HIDDEN void		cob_init_cconv		(cob_global *);
 COB_HIDDEN void		cob_init_termio		(cob_global *, cob_settings *);
 COB_HIDDEN void		cob_init_fileio		(cob_global *, cob_settings *);

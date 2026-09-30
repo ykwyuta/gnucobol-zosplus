@@ -106,3 +106,51 @@ cob_init_charset (void)
 {
 	init_native_tables ();
 }
+
+/* convert 'size' bytes of 'data' in place from host to data charset */
+void
+cob_charset_from_host (const cob_charset *cs, unsigned char *data, size_t size)
+{
+	if (cs->from_host) {
+		unsigned char	*end = data + size;
+		for (; data < end; data++) {
+			*data = cs->from_host[*data];
+		}
+	}
+}
+
+/* convert 'size' bytes of 'data' in place from data to host charset */
+void
+cob_charset_to_host (const cob_charset *cs, unsigned char *data, size_t size)
+{
+	if (cs->to_host) {
+		unsigned char	*end = data + size;
+		for (; data < end; data++) {
+			*data = cs->to_host[*data];
+		}
+	}
+}
+
+/* return a field with the content of 'f' in host charset:
+   either 'f' itself (no conversion necessary) or 'tmp' with allocated
+   and converted data, to be released by cob_charset_field_release */
+cob_field *
+cob_charset_field_to_host (const cob_charset *cs, const cob_field *f, cob_field *tmp)
+{
+	if (!f || !cs->to_host || !f->data || f->size == 0) {
+		return (cob_field *)f;
+	}
+	*tmp = *f;
+	tmp->data = cob_fast_malloc (f->size);
+	memcpy (tmp->data, f->data, f->size);
+	cob_charset_to_host (cs, tmp->data, f->size);
+	return tmp;
+}
+
+void
+cob_charset_field_release (const cob_field *orig, cob_field *used)
+{
+	if (used && used != orig) {
+		cob_free (used->data);
+	}
+}

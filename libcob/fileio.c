@@ -446,7 +446,7 @@ cob_findkey_attr (cob_file *f, cob_field *kf, int *fullkeylen, int *partlen)
 #define COB_CHAR_LF	'\n'
 #define COB_CHAR_SPC	' '
 #define COB_CHAR_TAB	'\t'
-#ifdef COB_EBCDIC_MACHINE
+#ifdef COB_EBCDIC_HOST	/* note: LINE SEQUENTIAL checks are done in host charset */
 #define COB_CHAR_BS	0x16
 #define COB_CHAR_ESC	0x27
 #define COB_CHAR_SI	0x0F
@@ -1482,11 +1482,13 @@ save_status (cob_file *f, cob_field *fnstatus, const int status)
 		memcpy (f->file_status, "0P", (size_t)2);
 #endif
 	} else {
-		f->file_status[0] = (unsigned char)COB_I2D (status / 10);
-		f->file_status[1] = (unsigned char)COB_I2D (status % 10);
+		/* note: the internal file_status is in host charset */
+		f->file_status[0] = (unsigned char)('0' + status / 10);
+		f->file_status[1] = (unsigned char)('0' + status % 10);
 	}
 	if (fnstatus) {
 		memcpy (fnstatus->data, f->file_status, (size_t)2);
+		cob_charset_from_host (COB_CS, fnstatus->data, 2);
 	}
 	if (f->file_status[0] == '0') {
 		/* EOP is non-fatal therefore 00 status but needs exception */
@@ -2576,16 +2578,46 @@ sequential_rewrite (cob_file *f, const int opt)
 					 && x != COB_CHAR_FF && x != COB_CHAR_SI && x != COB_CHAR_TAB)
 
 #if defined (COB_EXPERIMENTAL)
-#ifdef COB_EBCDIC_MACHINE
+#ifdef COB_EBCDIC_HOST
 #define IS_NOT_PRINTABLE(x)	(x > 0x40 && !isprint (x))
 #else
 #define IS_NOT_PRINTABLE(x)	(x > 0x7E && !isprint (x))
 #endif
 #endif
 
+/* LINE SEQUENTIAL files are text files in the host charset;
+   if the data charset differs (and no CODE-SET is used) the record
+   data is converted on WRITE / REWRITE and READ;
+   the checks for control characters are done in the host charset */
+
+static unsigned char	*ls_conv_buff = NULL;
+static size_t		ls_conv_size = 0;
+
+/* return the record data to be written, converted to host charset
+   if necessary (in a buffer that is valid until the next call) */
+static unsigned char *
+lineseq_host_data (cob_file *f, const size_t size)
+{
+	const cob_charset	*cs = COB_CS;
+	if (!cs->to_host || f->sort_collating || size == 0) {
+		return f->record->data;
+	}
+	if (size > ls_conv_size) {
+		if (ls_conv_buff) {
+			cob_free (ls_conv_buff);
+		}
+		ls_conv_size = size;
+		ls_conv_buff = cob_malloc (ls_conv_size);
+	}
+	memcpy (ls_conv_buff, f->record->data, size);
+	cob_charset_to_host (cs, ls_conv_buff, size);
+	return ls_conv_buff;
+}
+
 static int
 lineseq_read (cob_file *f, const int read_opts)
 {
+	const unsigned char	*from_host;
 	FILE	*fp;
 	unsigned char	*dataptr;
 	size_t		i = 0;
@@ -2616,6 +2648,7 @@ lineseq_read (cob_file *f, const int read_opts)
 	COB_UNUSED (read_opts);
 #endif
 
+	from_host = f->sort_collating ? NULL : COB_CS->from_host;
 	dataptr = f->record->data;
 again:
 	fp = (FILE *)f->file;
@@ -2697,7 +2730,7 @@ again:
 		}
 #endif
 		if (i < f->record_max) {
-			*dataptr++ = (unsigned char)n;
+			*dataptr++ = from_host ? from_host[(unsigned char)n] : (unsigned char)n;
 			i++;
 			if (i == f->record_max
 			 && (cobsetptr->cob_ls_split)) {
@@ -2753,7 +2786,7 @@ again:
 	}
 	if (i < f->record_max) {
 		/* Fill the record with spaces */
-		memset ((unsigned char *)f->record->data + i, ' ',
+		memset ((unsigned char *)f->record->data + i, COB_CH_SPACE,
 			f->record_max - i);
 	}
 	f->record->size = i;
@@ -2798,7 +2831,7 @@ lineseq_size (cob_file *f)
 		return 0;
 	}
 	for (i = f->record->size - 1; ; --i) {
-		if (f->record->data[i] != ' ') {
+		if (f->record->data[i] != COB_CH_SPACE) {
 			i++;
 			break;
 		}
@@ -2854,6 +2887,7 @@ lineseq_write (cob_file *f, const int opt)
 
 	/* Write to the file */
 	if (size) {
+		unsigned char	*data = lineseq_host_data (f, size);
 		errno = 0;
 #if 0 /* Note: file specific features are 4.x only ... */
 		if ((f->file_features & COB_FILE_LS_VALIDATE)) {
@@ -2862,7 +2896,7 @@ lineseq_write (cob_file *f, const int opt)
 		 && !f->flag_line_adv
 		 && !f->sort_collating /* pre-validated */) {
 #endif
-			register unsigned char	*p = f->record->data;
+			register unsigned char	*p = data;
 			const unsigned char *p_max = p + size;
 			while (p < p_max) {
 				if (IS_BAD_CHAR (*p)) {
@@ -2870,9 +2904,9 @@ lineseq_write (cob_file *f, const int opt)
 				}
 				p++;
 			}
-			COB_CHECKED_FWRITE (fp, f->record->data, size);
+			COB_CHECKED_FWRITE (fp, data, size);
 		} else if (cobsetptr->cob_ls_nulls) {
-			register unsigned char	*p = f->record->data;
+			register unsigned char	*p = data;
 			const unsigned char *p_max = p + size;
 			while (p < p_max) {
 				if (*p < ' ') {
@@ -2881,7 +2915,7 @@ lineseq_write (cob_file *f, const int opt)
 				COB_CHECKED_FPUTC (*p++, fp);
 			}
 		} else {
-			COB_CHECKED_FWRITE (fp, f->record->data, size);
+			COB_CHECKED_FWRITE (fp, data, size);
 		}
 	}
 
@@ -2931,6 +2965,7 @@ lineseq_rewrite (cob_file *f, const int opt)
 	const size_t		size = f->record->size;
 	size_t		psize, slotlen;
 	off_t		curroff;
+	unsigned char	*data;
 
 	COB_UNUSED (opt);
 #if 0 /* pipes are GC4+ only feature */
@@ -2939,6 +2974,7 @@ lineseq_rewrite (cob_file *f, const int opt)
 #endif
 
 	curroff = ftell (fp);	/* Current file position */
+	data = lineseq_host_data (f, size);
 
 	psize = size;
 	slotlen = curroff - f->record_off - 1;
@@ -2954,7 +2990,7 @@ lineseq_rewrite (cob_file *f, const int opt)
 	}
 	if (cobsetptr->cob_ls_nulls) {
 #endif
-		register unsigned char	*p = f->record->data;
+		register unsigned char	*p = data;
 		const unsigned char *p_max = p + size;
 		while (p < p_max) {
 			if (*p++ < ' ') {
@@ -2979,7 +3015,7 @@ lineseq_rewrite (cob_file *f, const int opt)
 		if (cobsetptr->cob_ls_validate
 		 && !f->flag_line_adv) {
 #endif
-			register unsigned char	*p = f->record->data;
+			register unsigned char	*p = data;
 			const unsigned char *p_max = p + size;
 			while (p < p_max) {
 				if (IS_BAD_CHAR (*p)) {
@@ -2987,14 +3023,14 @@ lineseq_rewrite (cob_file *f, const int opt)
 				}
 				p++;
 			}
-			COB_CHECKED_FWRITE (fp, f->record->data, size);
+			COB_CHECKED_FWRITE (fp, data, size);
 		} else
 #if 0 /* Note: file specific features are 4.x only ... */
 		if ((f->file_features & COB_FILE_LS_NULLS)) {
 #else
 		if (cobsetptr->cob_ls_nulls) {
 #endif
-			register unsigned char	*p = f->record->data;
+			register unsigned char	*p = data;
 			const unsigned char *p_max = p + size;
 			unsigned char *last_p = p;
 			while (p < p_max) {
@@ -3013,7 +3049,7 @@ lineseq_rewrite (cob_file *f, const int opt)
 				COB_CHECKED_FWRITE (fp, last_p, p_max - last_p);
 			}
 		} else {
-			COB_CHECKED_FWRITE (fp, f->record->data, size);
+			COB_CHECKED_FWRITE (fp, data, size);
 		}
 		if (psize < slotlen) {
 			/* In case new record was shorter, pad with spaces */
@@ -7143,9 +7179,10 @@ cob_savekey (cob_file *f, int idx, unsigned char *data)
 /* System routines */
 
 /* stores the field's rtrimmed string content into a fresh allocated
-   string, which later needs to be passed to cob_free */
+   string, which later needs to be passed to cob_free;
+   the data is expected in host charset */
 static void *
-cob_str_from_fld (const cob_field *f)
+cob_str_from_fld_host (const cob_field *f)
 {
 #if	0	/* Quotes in file */
 	register int	quote_switch = 0;
@@ -7195,6 +7232,18 @@ cob_str_from_fld (const cob_field *f)
 	*s = 0;
 
 	return mptr;
+}
+
+/* stores the field's rtrimmed string content into a fresh allocated
+   string (in host charset), which later needs to be passed to cob_free */
+static void *
+cob_str_from_fld (const cob_field *f)
+{
+	cob_field	tmp;
+	cob_field	*hf = cob_charset_field_to_host (COB_CS, f, &tmp);
+	void		*ret = cob_str_from_fld_host (hf);
+	cob_charset_field_release (f, hf);
+	return ret;
 }
 
 /* set the name for the internal filename buffer from a field
@@ -7622,7 +7671,7 @@ cob_sys_get_current_dir (const int flags, const int dir_length,
 	if (flags) {
 		return 129;
 	}
-	memset (dir, ' ', (size_t)dir_length);
+	memset (dir, COB_CH_SPACE, (size_t)dir_length);
 	dirname = getcwd (NULL, (size_t)0);
 	if (dirname == NULL) {
 		return 128;
@@ -7643,6 +7692,9 @@ cob_sys_get_current_dir (const int flags, const int dir_length,
 	} else {
 		memcpy (dir, dirname, (size_t)dir_size);
 	}
+	/* directory name is in host charset */
+	cob_charset_from_host (COB_CS, (unsigned char *)dir,
+		(size_t)dir_size + has_space);
 	cob_free (dirname);
 	return 0;
 }
@@ -8148,7 +8200,7 @@ cob_copy_check (cob_field *to_record, cob_field *from_record)
 
 	if (unlikely (tosize > fromsize)) {
 		memcpy (toptr, fromptr, fromsize);
-		memset (toptr + fromsize, ' ', tosize - fromsize);
+		memset (toptr + fromsize, COB_CH_SPACE, tosize - fromsize);
 	} else {
 		memcpy (toptr, fromptr, tosize);
 	}
@@ -8915,6 +8967,12 @@ cob_exit_fileio (void)
 {
 	cob_exit_fileio_closeall ();
 
+	if (ls_conv_buff) {
+		cob_free (ls_conv_buff);
+		ls_conv_buff = NULL;
+		ls_conv_size = 0;
+	}
+
 #if	defined(WITH_INDEX_EXTFH) || defined(WITH_SEQRA_EXTFH)
 	extfh_cob_exit_fileio ();
 #endif
@@ -9295,6 +9353,7 @@ update_fcd_to_file (FCD3* fcd, cob_file *f, cob_field *fnstatus, int wasOpen)
 		}
 		if (fnstatus) {
 			memcpy (fnstatus->data, fcd->fileStatus, 2);
+			cob_charset_from_host (COB_CS, fnstatus->data, 2);
 		}
 	}
 	if (wasOpen > 0) {
@@ -9554,7 +9613,9 @@ copy_fcd_to_file (FCD3* fcd, cob_file *f, struct fcd_file *fcd_list_entry)
 			}
 		}
 		/* now copy that until the first space/low-value up to
-		   max_size as upper-case */
+		   max_size as upper-case;
+		   FIXME: the assign data is in data charset, the EXTFH / FCD
+		          interface expects host charset */
 		for (k = 0; origin[k] && origin[k] > ' ' && k < max_size; k++) {
 			fdname[k] = (char)toupper((unsigned char)origin[k]);
 		}

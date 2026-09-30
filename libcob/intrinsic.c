@@ -1478,7 +1478,7 @@ enum numval_type {
 };
 
 static cob_field *
-numval (cob_field *srcfield, cob_field *currency, const enum numval_type type)
+numval_host (cob_field *srcfield, cob_field *currency, const enum numval_type type)
 {
 	unsigned char	final_buff [COB_MAX_DIGITS + 1] = { 0 };
 	unsigned char	*p, *p_end;
@@ -1884,6 +1884,7 @@ cob_alloc_set_field_str (const char *str, const int offset, const int length)
 	COB_FIELD_INIT (str_len, NULL, &const_alpha_attr);
 	make_field_entry (&field);
 	memcpy (curr_field->data, str, str_len);
+	cob_charset_from_host (COB_CS, curr_field->data, str_len);
 
 	if (unlikely (offset > 0)) {
 		calc_ref_mod (curr_field, offset, length);
@@ -1897,7 +1898,7 @@ cob_alloc_set_field_spaces (const int n)
 
 	COB_FIELD_INIT (n, NULL, &const_alpha_attr);
 	make_field_entry (&field);
-	memset (curr_field->data, ' ', (size_t)n);
+	memset (curr_field->data, COB_CH_SPACE, (size_t)n);
 }
 
 /* Date/time functions */
@@ -2515,12 +2516,16 @@ static void
 copy_data_to_null_terminated_str (cob_field *f, char * const out_str,
 				  const size_t out_str_max)
 {
-	size_t	chars_before_space = num_leading_nonspace ((char *)f->data,
-							   f->size);
+	/* the result is in host charset */
+	cob_field	tmp;
+	cob_field	*hf = cob_charset_field_to_host (COB_CS, f, &tmp);
+	size_t	chars_before_space = num_leading_nonspace ((char *)hf->data,
+							   hf->size);
 	size_t	length = cob_min_int (chars_before_space, out_str_max);
 
-	strncpy (out_str, (char *)f->data, length);
+	strncpy (out_str, (char *)hf->data, length);
 	out_str[length] = '\0';
+	cob_charset_field_release (f, hf);
 }
 
 static int
@@ -3791,8 +3796,18 @@ cob_intr_upper_case (const int offset, const int length, cob_field *srcfield)
 	make_field_entry (srcfield);
 
 	size = srcfield->size;
-	for (i = 0; i < size; ++i) {
-		curr_field->data[i] = (cob_u8_t)toupper ((unsigned char)srcfield->data[i]);
+	{
+		const cob_charset	*cs = COB_CS;
+		if (cs == &cob_charset_native) {
+			/* native data: depends on LC_CTYPE */
+			for (i = 0; i < size; ++i) {
+				curr_field->data[i] = (cob_u8_t)toupper ((unsigned char)srcfield->data[i]);
+			}
+		} else {
+			for (i = 0; i < size; ++i) {
+				curr_field->data[i] = COB_CS_TOUPPER (cs, srcfield->data[i]);
+			}
+		}
 	}
 	if (unlikely (offset > 0)) {
 		calc_ref_mod (curr_field, offset, length);
@@ -3808,8 +3823,18 @@ cob_intr_lower_case (const int offset, const int length, cob_field *srcfield)
 	make_field_entry (srcfield);
 
 	size = srcfield->size;
-	for (i = 0; i < size; ++i) {
-		curr_field->data[i] = (cob_u8_t)tolower (srcfield->data[i]);
+	{
+		const cob_charset	*cs = COB_CS;
+		if (cs == &cob_charset_native) {
+			/* native data: depends on LC_CTYPE */
+			for (i = 0; i < size; ++i) {
+				curr_field->data[i] = (cob_u8_t)tolower (srcfield->data[i]);
+			}
+		} else {
+			for (i = 0; i < size; ++i) {
+				curr_field->data[i] = COB_CS_TOLOWER (cs, srcfield->data[i]);
+			}
+		}
 	}
 	if (unlikely (offset > 0)) {
 		calc_ref_mod (curr_field, offset, length);
@@ -3842,28 +3867,30 @@ cob_intr_bit_of (cob_field *srcfield)
 	const size_t		size = srcfield->size * 8;
 	unsigned char		*byte = srcfield->data;
 	size_t		i, j;
+	const unsigned char	zero = COB_CH_ZERO;
+	const unsigned char	one = zero + 1;
 
 	COB_FIELD_INIT (size, NULL, &const_alpha_attr);
 	make_field_entry (&field);
 
 	for (i = j = 0; i < srcfield->size; ++i) {
-		curr_field->data[j++] = *byte & 0x80 ? '1' : '0';
-		curr_field->data[j++] = *byte & 0x40 ? '1' : '0';
-		curr_field->data[j++] = *byte & 0x20 ? '1' : '0';
-		curr_field->data[j++] = *byte & 0x10 ? '1' : '0';
-		curr_field->data[j++] = *byte & 0x08 ? '1' : '0';
-		curr_field->data[j++] = *byte & 0x04 ? '1' : '0';
-		curr_field->data[j++] = *byte & 0x02 ? '1' : '0';
-		curr_field->data[j++] = *byte & 0x01 ? '1' : '0';
+		curr_field->data[j++] = *byte & 0x80 ? one : zero;
+		curr_field->data[j++] = *byte & 0x40 ? one : zero;
+		curr_field->data[j++] = *byte & 0x20 ? one : zero;
+		curr_field->data[j++] = *byte & 0x10 ? one : zero;
+		curr_field->data[j++] = *byte & 0x08 ? one : zero;
+		curr_field->data[j++] = *byte & 0x04 ? one : zero;
+		curr_field->data[j++] = *byte & 0x02 ? one : zero;
+		curr_field->data[j++] = *byte & 0x01 ? one : zero;
 		byte++;
 	}
 	return curr_field;
 }
 
 static int
-has_bit_checked (const unsigned char byte) {
-	if (byte == '0') return 0;
-	if (byte != '1') {
+has_bit_checked (const unsigned char byte, const unsigned char zero) {
+	if (byte == zero) return 0;
+	if (byte != zero + 1) {
 		cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
 	}
 	return 1;
@@ -3876,6 +3903,7 @@ cob_intr_bit_to_char (cob_field *srcfield)
 	const size_t		size = srcfield->size / 8;
 	unsigned char		*byte_val, *char_val;
 	size_t		i;
+	const unsigned char	zero = COB_CH_ZERO;
 
 	COB_FIELD_INIT (size, NULL, &const_alpha_attr);
 	make_field_entry (&field);
@@ -3884,14 +3912,14 @@ cob_intr_bit_to_char (cob_field *srcfield)
 	char_val = curr_field->data;
 	for (i = 0; i < size; i++) {
 		*char_val = 0;
-		if (has_bit_checked(*byte_val++)) *char_val |= 0x80;
-		if (has_bit_checked(*byte_val++)) *char_val |= 0x40;
-		if (has_bit_checked(*byte_val++)) *char_val |= 0x20;
-		if (has_bit_checked(*byte_val++)) *char_val |= 0x10;
-		if (has_bit_checked(*byte_val++)) *char_val |= 0x08;
-		if (has_bit_checked(*byte_val++)) *char_val |= 0x04;
-		if (has_bit_checked(*byte_val++)) *char_val |= 0x02;
-		if (has_bit_checked(*byte_val++)) *char_val |= 0x01;
+		if (has_bit_checked (*byte_val++, zero)) *char_val |= 0x80;
+		if (has_bit_checked (*byte_val++, zero)) *char_val |= 0x40;
+		if (has_bit_checked (*byte_val++, zero)) *char_val |= 0x20;
+		if (has_bit_checked (*byte_val++, zero)) *char_val |= 0x10;
+		if (has_bit_checked (*byte_val++, zero)) *char_val |= 0x08;
+		if (has_bit_checked (*byte_val++, zero)) *char_val |= 0x04;
+		if (has_bit_checked (*byte_val++, zero)) *char_val |= 0x02;
+		if (has_bit_checked (*byte_val++, zero)) *char_val |= 0x01;
 		char_val++;
 	}
 	return curr_field;
@@ -3919,6 +3947,8 @@ cob_intr_hex_of (cob_field *srcfield)
 			*ret_pos++ = hex_val[*src_pos++ & 0xF];
 		}
 	}
+	/* the result is created in host charset */
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	return curr_field;
 }
 
@@ -3929,6 +3959,7 @@ cob_intr_hex_to_char (cob_field *srcfield)
 	const size_t		size = srcfield->size / 2;
 	const unsigned char *end = srcfield->data + size * 2;
 	register unsigned char *hex_char, *p;
+	const cob_charset	*cs = COB_CS;
 
 	if (size * 2 != srcfield->size) {
 		/* possibly raise nonfatal exception here -> we only process the valid ones */
@@ -3941,25 +3972,28 @@ cob_intr_hex_to_char (cob_field *srcfield)
 
 	p = srcfield->data;
 	while (p < end) {
+		/* parse in host charset */
 		unsigned char dst;
-		if (*p >= '0' && *p <= '9') {
-			dst = COB_D2I (*p);
-		} else if (*p >= 'A' && *p <= 'F') {
-			dst = *p - 'A' + 10;
-		} else if (*p >= 'a' && *p <= 'f') {
-			dst = *p - 'a' + 10;
+		unsigned char c = COB_CS_TO_HOST (cs, *p);
+		if (c >= '0' && c <= '9') {
+			dst = COB_D2I (c);
+		} else if (c >= 'A' && c <= 'F') {
+			dst = c - 'A' + 10;
+		} else if (c >= 'a' && c <= 'f') {
+			dst = c - 'a' + 10;
 		} else {
 			dst = 0;
 			cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
 		}
 		p++;
 		dst *= 16;
-		if (*p >= '0' && *p <= '9') {
-			dst = dst + COB_D2I (*p);
-		} else if (*p >= 'A' && *p <= 'F') {
-			dst = dst + *p - 'A' + 10;
-		} else if (*p >= 'a' && *p <= 'f') {
-			dst = dst + *p - 'a' + 10;
+		c = COB_CS_TO_HOST (cs, *p);
+		if (c >= '0' && c <= '9') {
+			dst = dst + COB_D2I (c);
+		} else if (c >= 'A' && c <= 'F') {
+			dst = dst + c - 'A' + 10;
+		} else if (c >= 'a' && c <= 'f') {
+			dst = dst + c - 'a' + 10;
 		} else {
 			cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
 		}
@@ -3981,6 +4015,7 @@ cob_intr_module_date (void)
 	make_field_entry (&field);
 	snprintf (buff, sizeof(buff), "%8.8u", COB_MODULE_PTR->module_date);
 	memcpy (curr_field->data, buff, (size_t)8);
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	return curr_field;
 }
 
@@ -3996,6 +4031,7 @@ cob_intr_module_time (void)
 	make_field_entry (&field);
 	snprintf (buff, sizeof(buff), "%6.6u", COB_MODULE_PTR->module_time);
 	memcpy (curr_field->data, buff, (size_t)6);
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	return curr_field;
 }
 
@@ -4014,7 +4050,7 @@ cob_intr_module_caller_id (void)
 		COB_FIELD_INIT (1, NULL, &const_alpha_attr);
 		make_field_entry (&field);
 		curr_field->size = 0;
-		curr_field->data[0] = ' ';
+		curr_field->data[0] = COB_CH_SPACE;
 		return curr_field;
 	}
 	cob_alloc_set_field_str (COB_MODULE_PTR->next->module_name, 0, 0);
@@ -4044,7 +4080,7 @@ cob_intr_module_path (void)
 		COB_FIELD_INIT (1, NULL, &const_alpha_attr);
 		make_field_entry (&field);
 		curr_field->size = 0;
-		curr_field->data[0] = ' ';
+		curr_field->data[0] = COB_CH_SPACE;
 		return curr_field;
 	}
 	cob_alloc_set_field_str (*COB_MODULE_PTR->module_path, 0, 0);
@@ -4126,27 +4162,28 @@ cob_intr_trim (const int offset, const int length,
 	unsigned char	*end;
 	size_t		i;
 	size_t		size;
+	const unsigned char	space = COB_CH_SPACE;
 
 	make_field_entry (srcfield);
 
 	for (i = 0; i < srcfield->size; ++i) {
-		if (srcfield->data[i] != ' ') {
+		if (srcfield->data[i] != space) {
 			break;
 		}
 	}
 	if (i == srcfield->size) {
 		curr_field->size = 0;
-		curr_field->data[0] = ' ';
+		curr_field->data[0] = COB_CH_SPACE;
 		return curr_field;
 	}
 
 	begin = srcfield->data;
 	if (direction != 2) {
-		for (; *begin == ' '; ++begin) ;
+		for (; *begin == space; ++begin) ;
 	}
 	end = srcfield->data + srcfield->size - 1;
 	if (direction != 1) {
-		for (; *end == ' '; end--) ;
+		for (; *end == space; end--) ;
 	}
 
 	size = 0;
@@ -4175,6 +4212,7 @@ cob_intr_exception_file (void)
 		field.size = 2;
 		make_field_entry (&field);
 		memcpy (curr_field->data, "00", (size_t)2);
+		cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	} else {
 		flen = strlen (cobglobptr->cob_error_file->select_name);
 		field.size = flen + 2;
@@ -4183,6 +4221,7 @@ cob_intr_exception_file (void)
 			cobglobptr->cob_error_file->file_status, (size_t)2);
 		memcpy (&(curr_field->data[2]),
 			cobglobptr->cob_error_file->select_name, flen);
+			cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	}
 	return curr_field;
 }
@@ -4198,7 +4237,7 @@ cob_intr_exception_location (void)
 		COB_FIELD_INIT (0, NULL, &const_alpha_attr);
 		field.size = 1;
 		make_field_entry (&field);
-		*(curr_field->data) = ' ';
+		*(curr_field->data) = COB_CH_SPACE;
 	} else {
 		char buff[COB_SMALL_BUFF];
 		if (cobglobptr->last_exception_section
@@ -4240,13 +4279,14 @@ cob_intr_exception_status (void)
 	COB_FIELD_INIT (31, NULL, &const_alpha_attr);
 	make_field_entry (&field);
 
-	memset (curr_field->data, ' ', (size_t)31);
+	memset (curr_field->data, COB_CH_SPACE, (size_t)31);
 	if (cob_get_last_exception_code() != 0) {
 		except_name = cob_get_last_exception_name ();
 		if (except_name == NULL) {
 			except_name = "EXCEPTION-OBJECT";
 		}
 		memcpy (curr_field->data, except_name, strlen (except_name));
+		cob_charset_from_host (COB_CS, curr_field->data, strlen (except_name));
 	}
 	return curr_field;
 }
@@ -4262,7 +4302,7 @@ cob_intr_exception_statement (void)
 	COB_FIELD_INIT (31, NULL, &const_alpha_attr);
 	make_field_entry (&field);
 
-	memset (curr_field->data, ' ', (size_t)31);
+	memset (curr_field->data, COB_CH_SPACE, (size_t)31);
 	if (cobglobptr->last_exception_statement != STMT_UNKNOWN) {
 		const char *statement = cob_statement_name[cobglobptr->last_exception_statement];
 		flen = strlen (statement);
@@ -4270,6 +4310,7 @@ cob_intr_exception_statement (void)
 			flen = 31;
 		}
 		memcpy (curr_field->data, statement, flen);
+		cob_charset_from_host (COB_CS, curr_field->data, flen);
 	}
 	return curr_field;
 }
@@ -4312,6 +4353,7 @@ cob_intr_current_date (const int offset, const int length)
 	add_offset_time (0, &time.utc_offset, 16, buff);
 
 	memcpy (curr_field->data, buff, (size_t)21);
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	if (offset != 0) {
 		calc_ref_mod (curr_field, offset, length);
 	}
@@ -4378,7 +4420,7 @@ cob_intr_stored_char_length (cob_field *srcfield)
 	count = srcfield->size;
 	p = srcfield->data + srcfield->size - 1;
 	for (; count > 0; count--, p--) {
-		if (*p != ' ') {
+		if (*p != COB_CH_SPACE) {
 			break;
 		}
 	}
@@ -4453,7 +4495,7 @@ cob_intr_date_of_integer (cob_field *srcdays)
 	days = cob_get_int (srcdays);
 	if (!valid_integer_date (days)) {
 		cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
-		memset (curr_field->data, (int)'0', (size_t)8);
+		memset (curr_field->data, COB_CH_ZERO, (size_t)8);
 		return curr_field;
 	}
 
@@ -4461,6 +4503,7 @@ cob_intr_date_of_integer (cob_field *srcdays)
 
 	snprintf (buff, (size_t)15, "%4.4d%2.2d%2.2d", year, month, days);
 	memcpy (curr_field->data, buff, (size_t)8);
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	return curr_field;
 }
 
@@ -4483,7 +4526,7 @@ cob_intr_day_of_integer (cob_field *srcdays)
 	days = cob_get_int (srcdays);
 	if (!valid_integer_date (days)) {
 		cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
-		memset (curr_field->data, (int)'0', (size_t)7);
+		memset (curr_field->data, COB_CH_ZERO, (size_t)7);
 		return curr_field;
 	}
 
@@ -4493,6 +4536,7 @@ cob_intr_day_of_integer (cob_field *srcdays)
 		(cob_u16_t) days);
 
 	memcpy (curr_field->data, buff, (size_t)7);
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	return curr_field;
 }
 
@@ -4960,6 +5004,20 @@ cob_intr_sqrt (cob_field *srcfield)
 	return curr_field;
 }
 
+/* NUMVAL / NUMVAL-C: the arguments are parsed in host charset */
+static cob_field *
+numval (cob_field *srcfield, cob_field *currency, const enum numval_type type)
+{
+	const cob_charset	*cs = COB_CS;
+	cob_field	tmp1, tmp2;
+	cob_field	*f1 = cob_charset_field_to_host (cs, srcfield, &tmp1);
+	cob_field	*f2 = cob_charset_field_to_host (cs, currency, &tmp2);
+	cob_field	*ret = numval_host (f1, f2, type);
+	cob_charset_field_release (srcfield, f1);
+	cob_charset_field_release (currency, f2);
+	return ret;
+}
+
 cob_field *
 cob_intr_numval (cob_field *srcfield)
 {
@@ -4974,8 +5032,8 @@ cob_intr_numval_c (cob_field *srcfield, cob_field *currency)
 
 /* NUMVAL-F implementation */
 
-cob_field *
-cob_intr_numval_f (cob_field *srcfield)
+static cob_field *
+numval_f_host (cob_field *srcfield)
 {
 	unsigned char	*final_buff;
 	unsigned char	*p, *p_end;
@@ -5851,8 +5909,8 @@ cob_intr_seconds_past_midnight (void)
 	return curr_field;
 }
 
-cob_field *
-cob_intr_seconds_from_formatted_time (cob_field *format_field, cob_field *time_field)
+static cob_field *
+seconds_from_formatted_time_host (cob_field *format_field, cob_field *time_field)
 {
 	size_t		str_length;
 	char		format_str[2 * COB_DATETIMESTR_LEN] = { '\0' };
@@ -5902,6 +5960,20 @@ cob_intr_seconds_from_formatted_time (cob_field *format_field, cob_field *time_f
 	cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
 	cob_alloc_set_field_uint (0);
 	return curr_field;
+}
+
+/* note: the arguments are parsed in host charset */
+cob_field *
+cob_intr_seconds_from_formatted_time (cob_field *format_field, cob_field *time_field)
+{
+	const cob_charset	*cs = COB_CS;
+	cob_field	tmp1, tmp2;
+	cob_field	*f1 = cob_charset_field_to_host (cs, format_field, &tmp1);
+	cob_field	*f2 = cob_charset_field_to_host (cs, time_field, &tmp2);
+	cob_field	*ret = seconds_from_formatted_time_host (f1, f2);
+	cob_charset_field_release (format_field, f1);
+	cob_charset_field_release (time_field, f2);
+	return ret;
 }
 
 cob_field *
@@ -6154,6 +6226,7 @@ cob_intr_mon_decimal_point (void)
 	make_field_entry (&field);
 	if (size) {
 		memcpy (curr_field->data, p->mon_decimal_point, size);
+		cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	} else {
 		curr_field->size = 0;
 		curr_field->data[0] = 0;
@@ -6189,6 +6262,7 @@ cob_intr_num_decimal_point (void)
 	make_field_entry (&field);
 	if (size) {
 		memcpy (curr_field->data, p->decimal_point, size);
+		cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	} else {
 		curr_field->size = 0;
 		curr_field->data[0] = 0;
@@ -6224,6 +6298,7 @@ cob_intr_mon_thousands_sep (void)
 	make_field_entry (&field);
 	if (size) {
 		memcpy (curr_field->data, p->mon_thousands_sep, size);
+		cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	} else {
 		curr_field->size = 0;
 		curr_field->data[0] = 0;
@@ -6259,6 +6334,7 @@ cob_intr_num_thousands_sep (void)
 	make_field_entry (&field);
 	if (size) {
 		memcpy (curr_field->data, p->thousands_sep, size);
+		cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	} else {
 		curr_field->size = 0;
 		curr_field->data[0] = 0;
@@ -6294,6 +6370,7 @@ cob_intr_currency_symbol (void)
 	make_field_entry (&field);
 	if (size) {
 		memcpy (curr_field->data, p->currency_symbol, size);
+		cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	} else {
 		curr_field->size = 0;
 		curr_field->data[0] = 0;
@@ -6306,24 +6383,49 @@ cob_intr_currency_symbol (void)
 	return curr_field;
 }
 
+/* NUMVAL-F: the argument is parsed in host charset */
+cob_field *
+cob_intr_numval_f (cob_field *srcfield)
+{
+	cob_field	tmp1;
+	cob_field	*f1 = cob_charset_field_to_host (COB_CS, srcfield, &tmp1);
+	cob_field	*ret = numval_f_host (f1);
+	cob_charset_field_release (srcfield, f1);
+	return ret;
+}
+
+/* TEST-NUMVAL / TEST-NUMVAL-C / TEST-NUMVAL-F:
+   cob_check_numval[_f] works on host charset */
 cob_field *
 cob_intr_test_numval (cob_field *srcfield)
 {
-	cob_alloc_set_field_int (cob_check_numval (srcfield, NULL, 0, 0));
+	cob_field	tmp1;
+	cob_field	*f1 = cob_charset_field_to_host (COB_CS, srcfield, &tmp1);
+	cob_alloc_set_field_int (cob_check_numval (f1, NULL, 0, 0));
+	cob_charset_field_release (srcfield, f1);
 	return curr_field;
 }
 
 cob_field *
 cob_intr_test_numval_c (cob_field *srcfield, cob_field *currency)
 {
-	cob_alloc_set_field_int (cob_check_numval (srcfield, currency, 1, 0));
+	const cob_charset	*cs = COB_CS;
+	cob_field	tmp1, tmp2;
+	cob_field	*f1 = cob_charset_field_to_host (cs, srcfield, &tmp1);
+	cob_field	*f2 = cob_charset_field_to_host (cs, currency, &tmp2);
+	cob_alloc_set_field_int (cob_check_numval (f1, f2, 1, 0));
+	cob_charset_field_release (srcfield, f1);
+	cob_charset_field_release (currency, f2);
 	return curr_field;
 }
 
 cob_field *
 cob_intr_test_numval_f (cob_field *srcfield)
 {
-	cob_alloc_set_field_int (cob_check_numval_f (srcfield));
+	cob_field	tmp1;
+	cob_field	*f1 = cob_charset_field_to_host (COB_CS, srcfield, &tmp1);
+	cob_alloc_set_field_int (cob_check_numval_f (f1));
+	cob_charset_field_release (srcfield, f1);
 	return curr_field;
 }
 
@@ -6501,24 +6603,26 @@ cob_intr_locale_compare (const int params, ...)
 	size = f1->size;
 	size2 = size;
 	for (p = f1->data + size - 1U; p != f1->data; --p) {
-		if (*p != ' ') {
+		if (*p != COB_CH_SPACE) {
 			break;
 		}
 		size2--;
 	}
 	p1 = cob_malloc (size2 + 1U);
 	memcpy (p1, f1->data, size2);
+	cob_charset_to_host (COB_CS, p1, size2);
 
 	size = f2->size;
 	size2 = size;
 	for (p = f2->data + size - 1U; p != f2->data; --p) {
-		if (*p != ' ') {
+		if (*p != COB_CH_SPACE) {
 			break;
 		}
 		size2--;
 	}
 	p2 = cob_malloc (size2 + 1U);
 	memcpy (p2, f2->data, size2);
+	cob_charset_to_host (COB_CS, p2, size2);
 
 	if (locale_field) {
 		char		locale_buff[COB_MINI_BUFF];
@@ -6536,11 +6640,11 @@ cob_intr_locale_compare (const int params, ...)
 
 	ret = strcoll ((char *)p1, (char *)p2);
 	if (ret < 0) {
-		curr_field->data[0] = '<';
+		curr_field->data[0] = COB_CS_FROM_HOST (COB_CS, '<');
 	} else if (ret > 0) {
-		curr_field->data[0] = '>';
+		curr_field->data[0] = COB_CS_FROM_HOST (COB_CS, '>');
 	} else {
-		curr_field->data[0] = '=';
+		curr_field->data[0] = COB_CS_FROM_HOST (COB_CS, '=');
 	}
 	cob_free (p1);
 	cob_free (p2);
@@ -6557,7 +6661,7 @@ derror:
 	cob_free (p1);
 	cob_free (p2);
 #endif
-	curr_field->data[0] = ' ';
+	curr_field->data[0] = COB_CH_SPACE;
 	cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
 
 	return curr_field;
@@ -6592,11 +6696,12 @@ cob_intr_formatted_date (const int offset, const int length,
 	format_date (format, days, buff);
 
 	memcpy (curr_field->data, buff, field_length);
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	goto end_of_func;
 
  invalid_args:
 	cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
-	memset (curr_field->data, ' ', strlen (format_str));
+	memset (curr_field->data, COB_CH_SPACE, strlen (format_str));
 
  end_of_func:
 	if (unlikely (offset > 0)) {
@@ -6684,11 +6789,12 @@ cob_intr_formatted_time (const int offset, const int length,
 		     buff);
 
 	memcpy (curr_field->data, buff, field_length);
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	goto end_of_func;
 
  invalid_args:
 	cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
-	memset (curr_field->data, ' ', strlen (format_str));
+	memset (curr_field->data, COB_CH_SPACE, strlen (format_str));
 
  end_of_func:
 	if (unlikely (offset > 0)) {
@@ -6789,11 +6895,12 @@ cob_intr_formatted_datetime (const int offset, const int length,
 			 fractional_seconds, offset_time_ptr, buff);
 
 	memcpy (curr_field->data, buff, (size_t) field_length);
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 	goto end_of_func;
 
  invalid_args:
 	cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
-	memset (curr_field->data, ' ', strlen (fmt_str));
+	memset (curr_field->data, COB_CH_SPACE, strlen (fmt_str));
 
  end_of_func:
 	if (unlikely (offset > 0)) {
@@ -6982,7 +7089,7 @@ cob_intr_formatted_current_date (const int offset, const int length,
 	/* Validate format */
 	if (!cob_valid_datetime_format (format_str, COB_MODULE_PTR->decimal_point)) {
 		cob_set_exception (COB_EC_ARGUMENT_FUNCTION);
-		memset (curr_field->data, ' ', field_length);
+		memset (curr_field->data, COB_CH_SPACE, field_length);
 		goto end_of_func;
 	}
 
@@ -6994,6 +7101,7 @@ cob_intr_formatted_current_date (const int offset, const int length,
 	/* Format current date */
 	format_current_date (date_fmt, time_fmt, formatted_date);
 	memcpy (curr_field->data, formatted_date, field_length);
+	cob_charset_from_host (COB_CS, curr_field->data, curr_field->size);
 
  end_of_func:
 	if (unlikely (offset > 0)) {
@@ -7092,7 +7200,7 @@ cob_intr_content_of (const int offset, const int length, const int params, ...)
 	} else {
 		COB_FIELD_INIT (1, NULL, &const_alpha_attr);
 		make_field_entry (&field);
-		curr_field->data[0] = ' ';
+		curr_field->data[0] = COB_CH_SPACE;
 		curr_field->size = 0;
 	}
 	if (unlikely(offset > 0)) {

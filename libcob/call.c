@@ -2324,17 +2324,38 @@ cob_put_field_str (const cob_field *dst, const char *str)
 	wrk.size = strlen (str);
 	wrk.data = (unsigned char *)str;
 
+	/* 'str' is in host charset, the validation is done there,
+	   the functions below expect data in the data charset */
 	if (COB_FIELD_IS_NUMERIC (dst)) {
 		if (COB_FIELD_TYPE (dst) & COB_TYPE_NUMERIC_FLOAT
 		 || COB_FIELD_TYPE (dst) & COB_TYPE_NUMERIC_DOUBLE) {
 			if (cob_check_numval_f (&wrk)) return 1;
-			wrk = *cob_intr_numval_f (&wrk);
 		} else {
 			if (cob_check_numval (&wrk, NULL, 0, 1)) return 1;
-			wrk = *cob_intr_numval (&wrk);
 		}
 	}
-	cob_move (&wrk, (cob_field *)dst);
+	{
+		const cob_charset	*cs = COB_CS;
+		unsigned char	*data_str = NULL;
+		if (cs->from_host && wrk.size > 0) {
+			data_str = cob_fast_malloc (wrk.size);
+			memcpy (data_str, str, wrk.size);
+			cob_charset_from_host (cs, data_str, wrk.size);
+			wrk.data = data_str;
+		}
+		if (COB_FIELD_IS_NUMERIC (dst)) {
+			if (COB_FIELD_TYPE (dst) & COB_TYPE_NUMERIC_FLOAT
+			 || COB_FIELD_TYPE (dst) & COB_TYPE_NUMERIC_DOUBLE) {
+				wrk = *cob_intr_numval_f (&wrk);
+			} else {
+				wrk = *cob_intr_numval (&wrk);
+			}
+		}
+		cob_move (&wrk, (cob_field *)dst);
+		if (data_str) {
+			cob_free (data_str);
+		}
+	}
 	return 0;
 }
 

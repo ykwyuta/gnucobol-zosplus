@@ -368,7 +368,12 @@ COB_TERMINAL_CODESET=UTF-8 COB_LS_CODESET=host ./prog
 | common.c | 完了 | 符号処理、`cob_correct_numeric`、NUMERIC / ALPHABETIC 判定、SPACE / ZERO との比較、CBL_TOUPPER / CBL_TOLOWER、C$JUSTIFY、C$CALLEDBY、SYSTEM、CHAINING、ACCEPT FROM 環境変数・コマンド行 |
 | cconv.c | 完了 | `cob_field_to_string` はホストのコードに変換する。変換しない `cob_field_to_string_raw` を追加し、reportio.c ではこちらを使う |
 | strings.c | 完了 | INSPECT / STRING / UNSTRING の表意定数 |
-| intrinsic.c、fileio.c、termio.c、screenio.c、call.c、mlio.c、reportio.c | 未着手 | |
+| 変換ヘルパー | 完了 | `cob_charset_from_host` / `cob_charset_to_host`（バッファを変換）、`cob_charset_field_to_host` / `cob_charset_field_release`（項目のホスト用一時コピー） |
+| intrinsic.c | 完了 | ホストで組み立てた結果（日付、例外情報、モジュール情報など）はデータ文字コードに変換する。解析が必要な引数（NUMVAL 系、日付・時刻の書式、LOCALE-COMPARE）はホスト用コピーにしてから解析する。TRIM、UPPER-CASE / LOWER-CASE、BIT-OF / BIT-TO-CHAR、HEX-OF / HEX-TO-CHAR などはデータ文字コードで処理する |
+| termio.c | 完了 | DISPLAY はホストへ、ACCEPT はホストから変換する。`-fdump` の 16 進ダンプは未対応（FIXME を記載済み） |
+| call.c | 完了 | CALL 先の名前は `cob_field_to_string` 経由でホストに変換済み。`cob_put_field_str` は C 文字列をデータ文字コードに変換する |
+| fileio.c | 完了 | LINE SEQUENTIAL はホストのテキストファイルとして、読み書き時にレコードを変換する（CODE-SET 指定時は変換しない）。FILE STATUS、ファイル名、CBL_ 系のファイル操作ルーチン、CBL_GET_CURRENT_DIR を変換する。EXTFH / FCD のファイル名は未対応（FIXME を記載済み） |
+| screenio.c、mlio.c、reportio.c | P4 に延期 | SCREEN SECTION、XML / JSON、REPORT WRITER は提案どおり P4 で対応する |
 | CBL_GC_GETOPT | 未着手 | 長いオプション名をホストのコードへ変換する必要がある（FIXME を記載済み） |
 
 ### P0 で分かったこと

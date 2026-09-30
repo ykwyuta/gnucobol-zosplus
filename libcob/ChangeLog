@@ -18,6 +18,18 @@
 	  host and data charset
 	* cconv.c (cob_field_to_string_raw), reportio.c: new function to get
 	  the field content without conversion, used for report lines
+	* charset.c (cob_charset_from_host, cob_charset_to_host,
+	  cob_charset_field_to_host, cob_charset_field_release): new helpers
+	* intrinsic.c: results created in host charset are converted to the
+	  data charset, arguments that are parsed (NUMVAL family, date/time
+	  formats, LOCALE-COMPARE) are converted to host charset first;
+	  TRIM, UPPER-CASE, LOWER-CASE, BIT-OF, BIT-TO-CHAR, HEX-OF,
+	  HEX-TO-CHAR, STORED-CHAR-LENGTH use the data charset
+	* termio.c: DISPLAY converts to, ACCEPT from host charset
+	* call.c (cob_put_field_str): convert the C string to data charset
+	* fileio.c: LINE SEQUENTIAL records are converted between host and
+	  data charset (if no CODE-SET is used), FILE STATUS is stored in
+	  data charset, file names and CBL_GET_CURRENT_DIR are converted
 
 
 2026-09-16  Simon Sobisch <simonsobisch@gnu.org>

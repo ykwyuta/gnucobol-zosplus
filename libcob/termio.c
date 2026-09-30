@@ -100,10 +100,13 @@ display_numeric (cob_field *f, FILE *fp)
 
 	/* output of data to viewport */
 	{
+		/* the data is converted to the host charset */
+		const cob_charset	*cs = COB_CS;
 		register unsigned char *q = COB_TERM_BUFF;
 		const unsigned char *end = q + size;
 		for ( ; q < end; ++q) {
-			if (putc (*q, fp) != *q) {
+			const int chr = COB_CS_TO_HOST (cs, *q);
+			if (putc (chr, fp) != chr) {
 				break;
 			}
 		}
@@ -195,10 +198,13 @@ pretty_display_numeric (cob_field *f, FILE *fp)
 
 		/* output of data to viewport */
 		{
+			/* the data is converted to the host charset */
+			const cob_charset	*cs = COB_CS;
 			register unsigned char *q = COB_TERM_BUFF;
 			const unsigned char *end = q + size;
 			for ( ; q < end; ++q) {
-				if (putc (*q, fp) != *q) {
+				const int chr = COB_CS_TO_HOST (cs, *q);
+				if (putc (chr, fp) != chr) {
 					break;
 				}
 			}
@@ -211,9 +217,11 @@ display_alnum (const cob_field *f, FILE *fp)
 {
 	const unsigned char *end = f->data + f->size;
 	unsigned char *p = f->data;
+	const unsigned char	*to_host = COB_CS->to_host;
 
+	/* the data is converted to the host charset */
 	while (p != end) {
-		const int chr = *p++;
+		const int chr = to_host ? to_host[*p++] : *p++;
 		if (putc (chr, fp) != chr) {
 			break;
 		}
@@ -478,14 +486,20 @@ cob_display (const int to_device, const int newline, const int varcnt, ...)
 static int
 is_field_display (cob_field *f)
 {
+	const cob_charset	*cs = COB_CS;
 	size_t	i;
 	for (i = 0; i < f->size; i++) {
-		if (f->data[i] < ' '
-		 || f->data[i] > 0x7F)
+		const unsigned char	c = COB_CS_TO_HOST (cs, f->data[i]);
+		if (c < ' '
+		 || c > 0x7F)
 			return 0;
 	}
 	return 1;
 }
+
+/* FIXME: display_alnum_dump shows the data "as is", for non-native
+   data charsets the text should be converted to the host charset
+   while the hex values should stay unconverted */
 
 static void
 display_alnum_dump (cob_field *f, FILE *fp, unsigned int indent, unsigned int max_width)
@@ -1053,7 +1067,7 @@ cob_accept (cob_field *f)
 		} else if (COB_MODULE_PTR->crt_status->size == 3) {
 			memcpy (COB_MODULE_PTR->crt_status->data, "0\0\0", (size_t)3);
 		} else {
-			memset (COB_MODULE_PTR->crt_status->data, '0', (size_t)4);
+			memset (COB_MODULE_PTR->crt_status->data, COB_CH_ZERO, (size_t)4);
 		}
 	}
 
@@ -1094,6 +1108,8 @@ cob_accept (cob_field *f)
 		}
 		p[size++] = (char) ipchr;
 	}
+	/* the input is in host charset */
+	cob_charset_from_host (COB_CS, p, size);
 	temp.size = size;
 	if (COB_FIELD_TYPE(f) == COB_TYPE_NUMERIC_DISPLAY) {
 		if (temp.size > f->size) {
