@@ -591,6 +591,7 @@ extern int		cb_load_std (const char *);
 extern int		cb_config_entry (char *, const char *, const int);
 extern int		cb_load_conf (const char *, const int);
 extern int		cb_load_words (void);
+extern int		cb_cobol_branch_coverage_enabled;
 
 #ifndef	HAVE_DESIGNATED_INITS
 /* "static" initialization routines in several files */

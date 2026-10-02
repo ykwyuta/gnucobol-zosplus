@@ -21,6 +21,8 @@
 Makefile.in
 Makefile
 .*
+!extras/db2sql/.gitignore
+!extras/db2sql/.env.example
 
 # generated releases
 /*.7z

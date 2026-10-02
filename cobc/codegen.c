@@ -196,6 +196,156 @@ static const char		*excp_current_section = NULL;
 static const char		*excp_current_paragraph = NULL;
 static struct cb_program	*current_prog = NULL;    /* program in codegen (only) */
 
+struct cob_cov_outcome {
+	struct cob_cov_outcome *next;
+	const char *file;
+	const char *program;
+	const char *kind;
+	unsigned int decision;
+	unsigned int id;
+	int line;
+	int column;
+	const char *result;
+};
+struct cob_cov_decision {
+	struct cob_cov_decision *next;
+	cb_tree origin;
+	unsigned int id;
+};
+static struct cob_cov_outcome *cov_first, *cov_last;
+static unsigned int cov_outcome_count;
+static unsigned int cov_decision_count;
+static struct cob_cov_decision *cov_decisions;
+static char cov_build_id[17];
+
+static unsigned int
+cov_add_outcome (cb_tree location, const char *kind,
+		 const char *result, unsigned int decision)
+{
+	struct cob_cov_outcome *entry = cobc_main_malloc (sizeof (*entry));
+	entry->next = NULL;
+	entry->file = location->source_file;
+	entry->program = current_prog->orig_program_id;
+	entry->kind = kind;
+	entry->decision = decision;
+	entry->line = location->source_line;
+	entry->column = location->source_column;
+	entry->id = cov_outcome_count++;
+	entry->result = result;
+	if (cov_last) cov_last->next = entry;
+	else cov_first = entry;
+	cov_last = entry;
+	return entry->id;
+}
+
+static unsigned int
+cov_add_if (const struct cb_if *ip)
+{
+	unsigned int decision = cov_decision_count++;
+	unsigned int first = cov_add_outcome (CB_TREE (ip), "IF", "true", decision);
+	cov_add_outcome (CB_TREE (ip), "IF", "false", decision);
+	return first;
+}
+
+static unsigned int
+cov_evaluate_decision (cb_tree origin)
+{
+	struct cob_cov_decision *entry;
+	for (entry = cov_decisions; entry; entry = entry->next) {
+		if (entry->origin == origin) return entry->id;
+	}
+	entry = cobc_main_malloc (sizeof (*entry));
+	entry->origin = origin;
+	entry->id = cov_decision_count++;
+	entry->next = cov_decisions;
+	cov_decisions = entry;
+	return entry->id;
+}
+
+static void
+cov_json_string (FILE *file, const char *value)
+{
+	const unsigned char *p = (const unsigned char *)(value ? value : "");
+	fputc ('"', file);
+	for (; *p; ++p) {
+		if (*p == '"' || *p == '\\') {
+			fputc ('\\', file);
+			fputc (*p, file);
+		} else if (*p < 0x20) {
+			fprintf (file, "\\u%04x", *p);
+		} else {
+			fputc (*p, file);
+		}
+	}
+	fputc ('"', file);
+}
+
+static void
+cov_write_map (void)
+{
+	char name[40];
+	FILE *file;
+	struct cob_cov_outcome *entry;
+	int first = 1;
+	if (!cb_cobol_branch_coverage_enabled) return;
+	snprintf (name, sizeof (name), "cobcov-%s.json", cov_build_id);
+	file = fopen (name, "w");
+	if (!file) {
+		cobc_err_msg (_("cannot write COBOL coverage map %s"), name);
+		cobc_abort_terminate (1);
+	}
+	fprintf (file, "{\"version\":1,\"build_id\":\"%s\",\"scope\":\"if,evaluate,perform,search,goto-depending,size-error,overflow,call-exception,file-handler,display-exception,accept-exception,xml-exception,json-exception\",\"outcomes\":[", cov_build_id);
+	for (entry = cov_first; entry; entry = entry->next) {
+		if (!first) fputc (',', file);
+		first = 0;
+		fprintf (file, "\n{\"id\":%u,\"file\":", entry->id);
+		cov_json_string (file, entry->file);
+		fputs (",\"program\":", file);
+		cov_json_string (file, entry->program);
+		fprintf (file, ",\"line\":%d,\"column\":%d,\"decision\":%u,\"kind\":",
+		         entry->line, entry->column, entry->decision);
+		cov_json_string (file, entry->kind);
+		fputs (",\"result\":", file);
+		cov_json_string (file, entry->result);
+		fputc ('}', file);
+	}
+	fputs ("\n]}\n", file);
+	if (fclose (file) != 0) {
+		cobc_err_msg (_("cannot finish COBOL coverage map %s"), name);
+		cobc_abort_terminate (1);
+	}
+}
+
+static void
+cov_make_build_id (const char *source)
+{
+	unsigned long long hash = 14695981039346656037ULL;
+	const unsigned char *p;
+	FILE *file;
+	int byte, index;
+	for (p = (const unsigned char *)PACKAGE_VERSION; *p; ++p)
+		hash = (hash ^ *p) * 1099511628211ULL;
+	for (index = 0; index < cb_saveargc; ++index) {
+		for (p = (const unsigned char *)cb_saveargv[index]; *p; ++p) {
+			hash = (hash ^ *p) * 1099511628211ULL;
+		}
+		hash = (hash ^ 0xffU) * 1099511628211ULL;
+	}
+	file = fopen (source, "rb");
+	if (!file) {
+		cobc_err_msg (_("cannot read preprocessed source %s for COBOL coverage"), source);
+		cobc_abort_terminate (1);
+	}
+	while ((byte = fgetc (file)) != EOF)
+		hash = (hash ^ (unsigned char)byte) * 1099511628211ULL;
+	if (ferror (file)) {
+		cobc_err_msg (_("cannot read preprocessed source %s for COBOL coverage"), source);
+		cobc_abort_terminate (1);
+	}
+	fclose (file);
+	snprintf (cov_build_id, sizeof (cov_build_id), "%016llx", hash);
+}
+
 static const struct cb_label		*last_section = NULL;
 #ifdef	GEN_SINGLE_MEMCPY
 static unsigned char		*litbuff = NULL;
@@ -6038,7 +6188,7 @@ output_occurs (struct cb_field *p)
 
 static void
 output_search_whens (cb_tree table, struct cb_field *p, cb_tree at_end,
-						cb_tree var, cb_tree whens)
+						cb_tree var, cb_tree whens, int cov_at_end)
 {
 	cb_tree		l;
 	cb_tree		idx = NULL;
@@ -6082,6 +6232,9 @@ output_search_whens (cb_tree table, struct cb_field *p, cb_tree at_end,
 	output (" > max)");
 	output_newline ();
 	output_block_open ();
+	if (cov_at_end >= 0)
+		output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+			     cov_at_end);
 	if (at_end) {
 		output_source_reference (CB_PAIR_X (at_end), STMT_AT_END);
 		output_stmt (CB_PAIR_Y (at_end));
@@ -6127,7 +6280,8 @@ output_search_whens (cb_tree table, struct cb_field *p, cb_tree at_end,
    switching head/tail to the current index until match found */
 static void
 output_search_all (cb_tree table, struct cb_field *p, cb_tree at_end,
-					cb_tree when_cond, cb_tree when_stmts)
+					cb_tree when_cond, cb_tree when_stmts,
+					int cov_when, int cov_at_end)
 {
 	cb_tree		idx;
 
@@ -6152,6 +6306,9 @@ output_search_all (cb_tree table, struct cb_field *p, cb_tree at_end,
 	/* End test, note: if ODO is 0 then "if 0 >= 0+1 -1" -> direct exit */
 	output_line ("if (head >= tail - 1)");
 	output_block_open ();
+	if (cov_at_end >= 0)
+		output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+			     cov_at_end);
 	if (at_end) {
 		output_source_reference (CB_PAIR_X (at_end), STMT_AT_END);
 		output_stmt (CB_PAIR_Y (at_end));	/* this is a CB_LIST ending with "break" */
@@ -6205,6 +6362,9 @@ output_search_all (cb_tree table, struct cb_field *p, cb_tree at_end,
 	output (")");
 	output_newline ();
 	output_block_open ();
+	if (cov_when >= 0)
+		output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+			     cov_when);
 	if (cb_flag_traceall) {
 		/* Output trace info */
 		/* note: the _position_ is set before the condition, but
@@ -6237,6 +6397,38 @@ static void
 output_search (struct cb_search *p)
 {
 	struct cb_field *fp = cb_code_field (p->table);
+	int cov_at_end = -1, cov_when = -1;
+	if (cb_cobol_branch_coverage_enabled) {
+		unsigned int decision = cov_decision_count++;
+		cb_tree location = CB_TREE (p);
+		if (p->flag_all) {
+			cb_tree candidate = p->whens;
+			if (candidate->source_file) location = candidate;
+			cov_when = (int)cov_add_outcome (location, "SEARCH ALL",
+						"WHEN 1", decision);
+		} else {
+			cb_tree item;
+			unsigned int ordinal = 0;
+			for (item = p->whens; item; item = CB_CHAIN (item)) {
+				char result[32];
+				struct cb_if *candidate = CB_IF (CB_VALUE (item));
+				cb_tree pos = CB_TREE (candidate);
+				snprintf (result, sizeof (result), "WHEN %u", ++ordinal);
+				if (!pos->source_file) pos = location;
+				candidate->cov_search_id_plus_one = 1 +
+					cov_add_outcome (pos, "SEARCH",
+						cobc_main_strdup (result), decision);
+			}
+		}
+		if (p->at_end && CB_PAIR_X (p->at_end)->source_file)
+			location = CB_PAIR_X (p->at_end);
+		cov_at_end = (int)cov_add_outcome (location,
+			p->flag_all ? "SEARCH ALL" : "SEARCH",
+			p->at_end && CB_DIRECT_P (CB_PAIR_X (p->at_end))
+			 && strcmp (CB_DIRECT (CB_PAIR_X (p->at_end))->line,
+				   "AT END") == 0 ? "AT END" : "unmatched",
+			decision);
+	}
 
 	/* output ODO run-time check for the table */
 	if (CB_EXCEPTION_ENABLE (COB_EC_BOUND_SUBSCRIPT) && fp->odo_level != 0) {
@@ -6259,10 +6451,12 @@ output_search (struct cb_search *p)
 	if (p->flag_all) {
 		/* note: no runtime check for index, because set by this code */
 		output_search_all (p->table, fp, p->at_end,
-				   CB_IF (p->whens)->test, CB_IF (p->whens)->stmt1);
+				   CB_IF (p->whens)->test, CB_IF (p->whens)->stmt1,
+				   cov_when, cov_at_end);
 	} else {
 		/* note: no runtime check for index, because if too big -> AT END */
-		output_search_whens (p->table, fp, p->at_end, p->var, p->whens);
+		output_search_whens (p->table, fp, p->at_end, p->var,
+				     p->whens, cov_at_end);
 	}
 }
 
@@ -6747,6 +6941,8 @@ output_call (struct cb_call *p)
 	const int			name_is_literal_or_prototype
 		= is_literal_or_prototype_ref (p->name);
 	int				except_id;
+	int				cov_exception = -1;
+	int				cov_normal = -1;
 #if	0	/* RXWRXW - Clear params */
 	cob_u32_t			parmnum;
 #endif
@@ -6824,6 +7020,18 @@ output_call (struct cb_call *p)
 	 && CB_FIELD_P (CB_REFERENCE (p->name)->value)
 	 && CB_FIELD (CB_REFERENCE (p->name)->value)->usage == CB_USAGE_PROGRAM_POINTER) {
 		dynamic_link = 0;
+	}
+	if (cb_cobol_branch_coverage_enabled && dynamic_link && p->stmt1) {
+		cb_tree location = CB_TREE (p);
+		if (!location->source_file && current_statement)
+			location = CB_TREE (current_statement);
+		if (location->source_file) {
+			unsigned int decision = cov_decision_count++;
+			cov_exception = (int)cov_add_outcome (location,
+				"CALL ON EXCEPTION", "exception", decision);
+			cov_normal = (int)cov_add_outcome (location,
+				"CALL ON EXCEPTION", "normal", decision);
+		}
 	}
 
 	/* Set up arguments */
@@ -7203,6 +7411,9 @@ output_call (struct cb_call *p)
 			output_block_open ();
 			except_id = cb_id++;
 			output_line ("%s%d:", CB_PREFIX_LABEL, except_id);
+			if (cov_exception >= 0)
+				output_line ("cob_cov_hit (\"%s\", %d);",
+					     cov_build_id, cov_exception);
 			output_stmt (p->stmt1);
 			output_block_close ();
 			output_line ("else");
@@ -7332,6 +7543,9 @@ output_call (struct cb_call *p)
 			CB_EXCEPTION_CODE(COB_EC_PROGRAM), CB_EXCEPTION_CODE(COB_EC_PROGRAM));
 		output_line ("\tgoto %s%d;", CB_PREFIX_LABEL, except_id);
 	}
+	if (cov_normal >= 0)
+		output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+			     cov_normal);
 
 	if (p->call_returning) {
 		if (ret_ptr) {
@@ -7811,6 +8025,7 @@ output_perform_until (struct cb_perform *p, cb_tree l)
 	struct cb_perform_varying	*v;
 	struct cb_field			*f;
 	cb_tree				next;
+	unsigned int			cov_continue = 0;
 
 	if (l == NULL) {
 		/* Perform body at the end */
@@ -7820,6 +8035,12 @@ output_perform_until (struct cb_perform *p, cb_tree l)
 
 	v = CB_PERFORM_VARYING (CB_VALUE (l));
 	next = CB_CHAIN (l);
+	if (cb_cobol_branch_coverage_enabled && v->until->source_file) {
+		unsigned int decision = cov_decision_count++;
+		cov_continue = cov_add_outcome (v->until, "PERFORM UNTIL",
+						"continue", decision);
+		cov_add_outcome (v->until, "PERFORM UNTIL", "exit", decision);
+	}
 
 	output_line ("for (;;)");
 	output_block_open ();
@@ -7868,7 +8089,17 @@ output_perform_until (struct cb_perform *p, cb_tree l)
 	output_cond (v->until, 0);
 	output (")");
 	output_newline ();
-	output_line ("  break;");
+	if (cb_cobol_branch_coverage_enabled && v->until->source_file) {
+		output_block_open ();
+		output_line ("cob_cov_hit (\"%s\", %u);", cov_build_id,
+			     cov_continue + 1);
+		output_line ("break;");
+		output_block_close ();
+		output_line ("cob_cov_hit (\"%s\", %u);", cov_build_id,
+			     cov_continue);
+	} else {
+		output_line ("  break;");
+	}
 
 	if (p->test == CB_BEFORE) {
 		output_perform_until (p, next);
@@ -7898,11 +8129,28 @@ output_perform (struct cb_perform *p)
 		output_perform_once (p);
 		break;
 	case CB_PERFORM_TIMES:
+		if (cb_cobol_branch_coverage_enabled && p->data->source_file) {
+			unsigned int decision = cov_decision_count++;
+			unsigned int zero = cov_add_outcome (p->data,
+					"PERFORM TIMES", "zero", decision);
+			cov_add_outcome (p->data, "PERFORM TIMES",
+						"one-or-more", decision);
+			output_prefix ();
+			output ("n%d = ", loop_counter);
+			output_param (cb_build_cast_llint (p->data), 0);
+			output (";");
+			output_newline ();
+			output_line ("cob_cov_hit (\"%s\", n%d > 0 ? %u : %u);",
+				     cov_build_id, loop_counter, zero + 1, zero);
+			output_line ("for (; n%d > 0; n%d--)",
+				     loop_counter, loop_counter);
+		} else {
 		output_prefix ();
 		output ("for (n%d = ", loop_counter);
 		output_param (cb_build_cast_llint (p->data), 0);
 		output ("; n%d > 0; n%d--)", loop_counter, loop_counter);
 		output_newline ();
+		}
 		loop_counter++;
 		output_block_open ();
 		last_line = -1; /* force statement reference output at begin of loop */
@@ -8136,6 +8384,8 @@ output_goto (struct cb_goto *p)
 	cb_tree		l;
 	struct cb_field	*f;
 	int		i;
+	int		cov_fallthrough = -1;
+	unsigned int	cov_decision = 0;
 
 	if (cb_flag_prof) {
 		/* Output this only if we are exiting the paragraph... */
@@ -8146,6 +8396,8 @@ output_goto (struct cb_goto *p)
 
 	i = 1;
 	if (p->depending) {
+		if (cb_cobol_branch_coverage_enabled && p->depending->source_file)
+			cov_decision = cov_decision_count++;
 		/* Check for debugging on the DEPENDING item */
 		if (current_prog->flag_gen_debug) {
 			f = CB_FIELD (cb_ref (p->depending));
@@ -8166,14 +8418,36 @@ output_goto (struct cb_goto *p)
 		for (l = p->target; l; l = CB_CHAIN (l)) {
 			cb_tree target = CB_VALUE (l);
 			cb_tree ref = cb_try_ref (target);
+			int cov_target = -1;
+			if (cb_cobol_branch_coverage_enabled && p->depending->source_file) {
+				char result[32];
+				snprintf (result, sizeof (result), "target %d", i);
+				cov_target = (int)cov_add_outcome (
+					target->source_file ? target : p->depending,
+					"GO TO DEPENDING", cobc_main_strdup (result),
+					cov_decision);
+			}
 			output_indent_level -= indent_adjust_level;
 			output_line ("case %d:", i++);
 			output_indent_level += indent_adjust_level;
+			if (cov_target >= 0)
+				output_line ("cob_cov_hit (\"%s\", %d);",
+					     cov_build_id, cov_target);
 			if (ref != cb_error_node) {
 				output_goto_1 (ref);
 			} else {
 				output_goto_entry (target);
 			}
+		}
+		if (cb_cobol_branch_coverage_enabled && p->depending->source_file) {
+			cov_fallthrough = (int)cov_add_outcome (p->depending,
+				"GO TO DEPENDING", "fallthrough", cov_decision);
+			output_indent_level -= indent_adjust_level;
+			output_line ("default:");
+			output_indent_level += indent_adjust_level;
+			output_line ("cob_cov_hit (\"%s\", %d);",
+				     cov_build_id, cov_fallthrough);
+			output_line ("break;");
 		}
 		output_block_close ();
 	} else if (p->target == NULL
@@ -8233,13 +8507,51 @@ output_alter (struct cb_alter *p)
 /* conditions IF / WHEN / PRSENT-WHEN */
 
 static void
+output_evaluate_choice (const struct cb_if *ip)
+{
+	const struct cb_cov_choice *choice;
+	unsigned int decision = cov_evaluate_decision (ip->cov_origin);
+	unsigned int variable = cov_outcome_count;
+	int first = 1;
+	output_block_open ();
+	output_line ("int cob_cov_choice_%u = -1;", variable);
+	for (choice = ip->cov_choices; choice; choice = choice->next) {
+		unsigned int id = cov_add_outcome (
+			choice->location && choice->location->source_file
+				? choice->location : ip->cov_origin,
+			"EVALUATE", choice->result, decision);
+		output_prefix ();
+		output (first ? "if (" : "else if (");
+		output_cond (choice->condition, 0);
+		output (")");
+		output_newline ();
+		output_block_open ();
+		output_line ("cob_cov_choice_%u = %u;", variable, id);
+		output_block_close ();
+		first = 0;
+	}
+	output_line ("if (cob_cov_choice_%u >= 0)", variable);
+	output_block_open ();
+	output_line ("cob_cov_hit (\"%s\", (unsigned int)cob_cov_choice_%u);",
+		     cov_build_id, variable);
+	output_stmt (ip->stmt1);
+	output_block_close ();
+	output_block_close ();
+}
+
+static void
 output_if (const struct cb_if *ip)
 {
 	char	*px;
 	int			skip_else;
+	int			cov_id = -1;
 #ifdef COBC_HAS_CUTOFF_FLAG	/* Note: will be removed completely in 4.x */
 	int			code;
 #endif
+	if (cb_cobol_branch_coverage_enabled && ip->cov_choices) {
+		output_evaluate_choice (ip);
+		return;
+	}
 	if (ip->stmt1 == NULL
 	 && ip->stmt2 == NULL) {
 		if (ip->statement != STMT_IF) {
@@ -8249,6 +8561,10 @@ output_if (const struct cb_if *ip)
 		}
 		return;
 	}
+	if (cb_cobol_branch_coverage_enabled && ip->statement == STMT_IF
+	 && ip->test != cb_true && ip->test != cb_false
+	 && CB_TREE (ip)->source_file && CB_TREE (ip)->source_line > 0)
+		cov_id = (int)cov_add_if (ip);
 
 	if (ip->statement != STMT_IF) {
 		output_newline ();
@@ -8340,6 +8656,11 @@ output_if (const struct cb_if *ip)
 		output (")");
 		output_newline ();
 		output_block_open ();
+		if (cov_id >= 0)
+			output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id, cov_id);
+		if (cb_cobol_branch_coverage_enabled && ip->cov_search_id_plus_one)
+			output_line ("cob_cov_hit (\"%s\", %u);", cov_build_id,
+				     ip->cov_search_id_plus_one - 1);
 		if (ip->stmt1) {
 			output_stmt (ip->stmt1);
 		} else {
@@ -8370,6 +8691,8 @@ output_if (const struct cb_if *ip)
 		} else {
 			output_line ("/* WHEN */");
 		}
+		if (cov_id >= 0)
+			output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id, cov_id + 1);
 		output_stmt (ip->stmt2);
 		if (gen_if_level <= cb_if_cutoff) {
 			output_indent_level -= indent_adjust_level;
@@ -8388,10 +8711,17 @@ output_if (const struct cb_if *ip)
 		} else {
 			output_line ("/* WHEN */");
 		}
+		if (cov_id >= 0)
+			output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id, cov_id + 1);
 		output_stmt (ip->stmt2);
 		output_indent_level -= indent_adjust_level;
 		output_line ("}");
 #endif
+	} else if (cov_id >= 0) {
+		output_line ("else");
+		output_block_open ();
+		output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id, cov_id + 1);
+		output_block_close ();
 	}
 #ifdef COBC_HAS_CUTOFF_FLAG	/* Note: will be removed completely in 4.x */
 	gen_if_level--;
@@ -8531,25 +8861,55 @@ get_ec_code_for_handler (const enum cb_handler_type handler_type)
 static void
 output_ferror_stmt (const struct cb_statement *stmt)
 {
+	int cov_exception = -1, cov_normal = -1;
+	if (cb_cobol_branch_coverage_enabled
+	 && (stmt->ex_handler || stmt->not_ex_handler)
+	 && CB_TREE (stmt)->source_file
+	 && (stmt->handler_type == AT_END_HANDLER
+	  || stmt->handler_type == INVALID_KEY_HANDLER
+	  || stmt->handler_type == EOP_HANDLER)) {
+		unsigned int decision = cov_decision_count++;
+		const char *kind = stmt->handler_type == AT_END_HANDLER
+			? "AT END" : stmt->handler_type == INVALID_KEY_HANDLER
+			? "INVALID KEY" : "AT EOP";
+		cov_exception = (int)cov_add_outcome (CB_TREE (stmt), kind,
+						"handler", decision);
+		cov_normal = (int)cov_add_outcome (CB_TREE (stmt), kind,
+						"normal", decision);
+	}
 	output_line ("if (unlikely(cob_glob_ptr->cob_exception_code != 0))");
 	output_block_open ();
 	if (stmt->ex_handler) {
 		output_line ("if (cob_glob_ptr->cob_exception_code == 0x%04x)",
 			     get_ec_code_for_handler (stmt->handler_type));
 		output_block_open ();
+		if (cov_exception >= 0)
+			output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+				     cov_exception);
 		output_stmt (stmt->ex_handler);
 		output_block_close ();
 		output_line ("else");
 		output_block_open ();
+	}
+	if (!stmt->ex_handler && cov_exception >= 0) {
+		output_line ("if (cob_glob_ptr->cob_exception_code == 0x%04x)",
+			     get_ec_code_for_handler (stmt->handler_type));
+		output_block_open ();
+		output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+			     cov_exception);
+		output_block_close ();
 	}
 	output_file_error (CB_FILE (stmt->file));
 	output_block_close ();
 	if (stmt->ex_handler) {
 		output_block_close ();
 	}
-	if (stmt->not_ex_handler || stmt->handler3) {
+	if (stmt->not_ex_handler || stmt->handler3 || cov_normal >= 0) {
 		output_line ("else");
 		output_block_open ();
+		if (cov_normal >= 0)
+			output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+				     cov_normal);
 		if (stmt->handler3) {
 			output_stmt (stmt->handler3);
 		}
@@ -8857,6 +9217,31 @@ output_ec_condition_for_handler (const enum cb_handler_type handler_type)
 static void
 output_handler (const struct cb_statement *stmt)
 {
+	int cov_exception = -1, cov_normal = -1;
+	if (cb_cobol_branch_coverage_enabled && !stmt->file
+	 && (stmt->ex_handler || stmt->not_ex_handler)
+	 && CB_TREE (stmt)->source_file
+	 && (stmt->handler_type == SIZE_ERROR_HANDLER
+	  || stmt->handler_type == OVERFLOW_HANDLER
+	  || stmt->handler_type == DISPLAY_HANDLER
+	  || stmt->handler_type == ACCEPT_HANDLER
+	  || stmt->handler_type == XML_HANDLER
+	  || stmt->handler_type == JSON_HANDLER)) {
+		unsigned int decision = cov_decision_count++;
+		const char *kind;
+		switch (stmt->handler_type) {
+		case SIZE_ERROR_HANDLER: kind = "SIZE ERROR"; break;
+		case OVERFLOW_HANDLER: kind = "OVERFLOW"; break;
+		case DISPLAY_HANDLER: kind = "DISPLAY EXCEPTION"; break;
+		case ACCEPT_HANDLER: kind = "ACCEPT EXCEPTION"; break;
+		case XML_HANDLER: kind = "XML EXCEPTION"; break;
+		default: kind = "JSON EXCEPTION"; break;
+		}
+		cov_exception = (int)cov_add_outcome (CB_TREE (stmt), kind,
+						"exception", decision);
+		cov_normal = (int)cov_add_outcome (CB_TREE (stmt), kind,
+						"normal", decision);
+	}
 	if (stmt->file) {
 		output_ferror_stmt (stmt);
 		return;
@@ -8865,19 +9250,33 @@ output_handler (const struct cb_statement *stmt)
 	if (stmt->ex_handler) {
 		output_ec_condition_for_handler (stmt->handler_type);
 		output_block_open ();
+		if (cov_exception >= 0)
+			output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+				     cov_exception);
 		output_stmt (stmt->ex_handler);
 		output_block_close ();
-		if (stmt->not_ex_handler) {
+		if (stmt->not_ex_handler || cov_normal >= 0) {
 			output_line ("else");
 		}
 	}
-	if (stmt->not_ex_handler) {
+	if (stmt->not_ex_handler || cov_normal >= 0) {
 		if (stmt->ex_handler == NULL) {
 			output_line ("if (!cob_glob_ptr->cob_exception_code)");
 		}
 		output_block_open ();
-		output_stmt (stmt->not_ex_handler);
+		if (cov_normal >= 0)
+			output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+				     cov_normal);
+		if (stmt->not_ex_handler)
+			output_stmt (stmt->not_ex_handler);
 		output_block_close ();
+		if (!stmt->ex_handler && cov_exception >= 0) {
+			output_line ("else");
+			output_block_open ();
+			output_line ("cob_cov_hit (\"%s\", %d);", cov_build_id,
+				     cov_exception);
+			output_block_close ();
+		}
 	}
 }
 
@@ -14012,11 +14411,18 @@ output_cob_prof_data ( struct cb_program * program )
 }
 
 void
-codegen (struct cb_program *prog, const char *translate_name)
+codegen (struct cb_program *prog, const char *translate_name,
+	 const char *preprocessed_source)
 {
 	const int set_xref = cb_listing_xref;
 	int subsequent_call = 0;
 	int has_global_file_level = 0 ;
+	cov_first = cov_last = NULL;
+	cov_outcome_count = 0;
+	cov_decision_count = 0;
+	cov_decisions = NULL;
+	if (cb_cobol_branch_coverage_enabled)
+		cov_make_build_id (preprocessed_source);
 	codegen_init (prog, translate_name);
 
 	/* Temporarily disable cross-reference during C generation */
@@ -14049,6 +14455,7 @@ codegen (struct cb_program *prog, const char *translate_name)
 	cb_listing_xref = set_xref;
 
 	codegen_finalize ();
+	cov_write_map ();
 }
 
 void

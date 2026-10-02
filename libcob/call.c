@@ -2338,9 +2338,20 @@ cob_put_field_str (const cob_field *dst, const char *str)
 		const cob_charset	*cs = COB_CS;
 		unsigned char	*data_str = NULL;
 		if (cs->from_host && wrk.size > 0) {
-			data_str = cob_fast_malloc (wrk.size);
-			memcpy (data_str, str, wrk.size);
-			cob_charset_from_host (cs, data_str, wrk.size);
+			if (COB_FIELD_IS_ALNUM (dst)) {
+				size_t data_size;
+				data_str = cob_charset_text_from_host (cs,
+					(const unsigned char *)str, wrk.size, &data_size);
+				wrk.size = data_size;
+				if (data_size > dst->size) {
+					cob_free (data_str);
+					return ERANGE;
+				}
+			} else {
+				data_str = cob_fast_malloc (wrk.size);
+				memcpy (data_str, str, wrk.size);
+				cob_charset_from_host (cs, data_str, wrk.size);
+			}
 			wrk.data = data_str;
 		}
 		if (COB_FIELD_IS_NUMERIC (dst)) {

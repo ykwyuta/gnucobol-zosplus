@@ -3093,6 +3093,10 @@ struct cob_prof_procedure {
 	enum cob_prof_procedure_kind	kind;
 };
 
+/* COBOL source branch coverage, independent of C/gcov coverage. */
+COB_EXPIMP void cob_cov_hit (const char *build_id, unsigned int outcome_id);
+COB_EXPIMP void cob_cov_flush (void);
+
 /* Structure storing profiling information about each COBOL module */
 struct cob_prof_module {
 	/* Array of execution times */

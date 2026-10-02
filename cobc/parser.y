@@ -580,6 +580,7 @@ copy_pos (cb_tree item, cb_tree source)
 {
 	item->source_file = source->source_file;
 	item->source_line = source->source_line;
+	item->source_column = source->source_column;
 }
 
 static COB_INLINE int
@@ -14191,6 +14192,7 @@ evaluate_statement:
   EVALUATE
   {
 	begin_statement (STMT_EVALUATE, TERM_EVALUATE);
+	$$ = CB_TREE (current_statement);
 	eval_level++;
 	if (eval_level >= EVAL_DEPTH) {
 		cb_error (_("maximum evaluate depth exceeded (%d)"),
@@ -14218,7 +14220,7 @@ evaluate_body:
   evaluate_subject_list evaluate_condition_list
   {
 	if (!skip_statements) {
-		cb_emit_evaluate ($1, $2);
+		cb_emit_evaluate ($1, $2, $0);
 	}
 	eval_level--;
   }
@@ -14341,6 +14343,7 @@ evaluate_other:
   statement_list
   {
 	$$ = CB_BUILD_CHAIN ($2, NULL);
+	copy_pos ($$, $1);
 	if (!is_valid_statement_tree ($2)) {
 		cb_error_x ($1,	_("%s without imperative statement"), "WHEN OTHER");
 	}
@@ -14389,8 +14392,9 @@ evaluate_when_list:
   when
   evaluate_object_list
   {
-	$$ = cb_list_add ($1, $3);
-	copy_pos ($$, $2);
+	cb_tree choice = CB_LIST_INIT ($3);
+	copy_pos (choice, $2);
+	$$ = cb_list_append ($1, choice);
 	eval_inc2 = 0;
   }
 ;
@@ -14868,6 +14872,7 @@ if_statement:
   IF
   {
 	begin_statement (STMT_IF, TERM_IF);
+	$$ = CB_TREE (current_statement);
   }
   condition _if_then if_else_statements
   _end_if
@@ -14884,7 +14889,7 @@ if_else_statements:
   if_true statement_list else if_false statement_list
   {
 	if (is_valid_statement_tree ($5)) {
-		cb_emit_if ($-1, $2, $5);
+		cb_emit_if ($-1, $2, $5, $-2);
 	} else {
 		cb_error_x ($3, _("%s without imperative statement"), "ELSE");
 	}
@@ -14895,7 +14900,7 @@ if_else_statements:
 		cb_missing_statement,
 		_("IF without imperative statement"));
 	if (is_valid_statement_tree ($3)) {
-		cb_emit_if ($-1, NULL, $3);
+		cb_emit_if ($-1, NULL, $3, $-2);
 	} else {
 		cb_error_x ($1, _("%s without imperative statement"), "ELSE");
 	}
@@ -14903,7 +14908,7 @@ if_else_statements:
 | if_true statement_list %prec SHIFT_PREFER
   {
 	if (is_valid_statement_tree ($2)) {
-		cb_emit_if ($-1, $2, NULL);
+		cb_emit_if ($-1, $2, NULL, $-2);
 	} else {
 		cb_error_x (CB_TREE (current_statement),
 			_("%s without imperative statement"), "IF");
@@ -16398,10 +16403,11 @@ search_body:
 
 search_all_body:
   table_name _search_at_end
-  WHEN expr
+  WHEN { $$ = cb_build_comment ("WHEN"); } expr
   statement_list
   {
-	$$ = cb_emit_search_all ($1, $2, $4, $5);
+	$$ = cb_emit_search_all ($1, $2, $5, $6);
+	if ($$) copy_pos (CB_SEARCH ($$)->whens, $4);
   }
 ;
 
@@ -16440,10 +16446,11 @@ search_whens:
 ;
 
 search_when:
-  WHEN condition
+  WHEN { $$ = cb_build_comment ("WHEN"); } condition
   statement_list
   {
-	$$ = cb_build_if_maybe_insert_break ($2, $3);
+	$$ = cb_build_if_maybe_insert_break ($3, $4);
+	copy_pos ($$, $2);
   }
 ;
 

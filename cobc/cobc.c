@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include <string.h>
+#include <errno.h>
 #ifdef	HAVE_STRINGS_H
 #include <strings.h>
 #endif
@@ -50,6 +51,9 @@
 #include <windows.h>
 #undef MOUSE_MOVED
 #include <io.h>
+#include <process.h>
+#else
+#include <sys/wait.h>
 #endif
 
 #ifdef	HAVE_LOCALE_H
@@ -120,6 +124,7 @@ enum compile_level {
 #define CB_FLAG_GETOPT_DATA_CODESET         28
 #define CB_FLAG_GETOPT_SOURCE_CODESET       29
 #define CB_FLAG_GETOPT_NSYMBOL              30
+#define CB_FLAG_GETOPT_CICS_MAP             31
 
 /* Info display limits */
 #define	CB_IMSG_SIZE		24
@@ -478,10 +483,13 @@ static int		cobc_flag_library = 0;
 static int		cobc_flag_run = 0;
 static char		*cobc_run_args = NULL;
 static int		save_temps = 0;
+static int		cb_flag_db2_sql = 0;
+static const char	*cb_cics_map = NULL;
 static int		save_all_src = 0;
 static signed int	save_c_src = 0;
 static signed int	verbose_output = 0;
 static int		cb_coverage_enabled = 0;
+int			cb_cobol_branch_coverage_enabled = 0;
 static int		cob_optimize = 0;
 
 
@@ -631,6 +639,8 @@ static const struct option long_options[] = {
 	{"O3",			CB_NO_ARG, NULL, '3'},
 	{"Os",			CB_NO_ARG, NULL, 's'},
 	{"save-temps",		CB_OP_ARG, NULL, '_'},
+	{"db2-sql",		CB_NO_ARG, &cb_flag_db2_sql, 1},
+	{"cics-map",		CB_RQ_ARG, NULL, CB_FLAG_GETOPT_CICS_MAP},
 	{"std",			CB_RQ_ARG, NULL, '$'},
 	{"conf",		CB_RQ_ARG, NULL, '&'},
 	{"copy",                CB_RQ_ARG, NULL, CB_FLAG_GETOPT_COPY_FILE},
@@ -657,6 +667,8 @@ static const struct option long_options[] = {
 #endif
 	{"gentable",		CB_RQ_ARG, NULL, CB_FLAG_GETOPT_GENTABLE},
 	{"coverage",	CB_NO_ARG, &cb_coverage_enabled, 1},
+	{"cobol-branch-coverage", CB_NO_ARG,
+		&cb_cobol_branch_coverage_enabled, 1},
 	{"P",			CB_OP_ARG, NULL, 'P'},
 	{"Xref",		CB_NO_ARG, NULL, 'X'},
 	{"use-extfh",		CB_RQ_ARG, NULL, 9},	/* this is used by COBOL-IT; Same is -fcallfh= */
@@ -4136,6 +4148,10 @@ process_command_line (const int argc, char **argv)
 			cb_flag_c_decl_for_static_call = 0;
 			break;
 
+		case CB_FLAG_GETOPT_CICS_MAP:
+			cb_cics_map = cob_optarg;
+			break;
+
 		case 'A':
 			/* -A <xx> : Add options to C compile phase */
 			COBC_ADD_STR (cobc_cflags, " ", cob_optarg, NULL);
@@ -5438,12 +5454,197 @@ force_new_page_for_next_line (void)
 	cb_listing_linecount = cb_lines_per_page;
 }
 
+/* Optional source translators. Pass arguments to Python without a shell. */
+static const char *
+find_translation_script (const char *script)
+{
+	const char *path = getenv ("PATH");
+	const char *part, *end;
+	char *candidate;
+	size_t length, script_length = strlen (script);
+
+	if (!path || strchr (script, '/') || strchr (script, '\\'))
+		return script;
+	candidate = cobc_main_malloc (strlen (path) + script_length + 2);
+	for (part = path; ; part = end + 1) {
+		end = strchr (part, PATHSEP_CHAR);
+		if (!end)
+			end = part + strlen (part);
+		length = (size_t)(end - part);
+		if (length) {
+			memcpy (candidate, part, length);
+			candidate[length] = SLASH_CHAR;
+		}
+		memcpy (candidate + (length ? length + 1 : 0),
+		        script, script_length + 1);
+		if (!access (candidate, R_OK))
+			return candidate;
+		if (!*end)
+			break;
+	}
+	cobc_main_free (candidate);
+	return script;
+}
+
+static int
+run_python_translation (const char *python, char **args)
+{
+	int status;
+#ifdef _WIN32
+	status = (int)_spawnvp (_P_WAIT, python, (const char * const *)args);
+#else
+	{
+		pid_t child = fork ();
+		if (child == 0) {
+			execvp (python, args);
+			fprintf (stderr, "cobc: cannot start %s: %s\n",
+			         python, strerror (errno));
+			_exit (127);
+		}
+		if (child < 0) {
+			status = -1;
+		} else {
+			pid_t waited;
+			do {
+				waited = waitpid (child, &status, 0);
+			} while (waited < 0 && errno == EINTR);
+			if (waited < 0 || !WIFEXITED (status) ||
+			    WEXITSTATUS (status) != 0)
+				status = 1;
+			else
+				status = 0;
+		}
+	}
+#endif
+	return status != 0;
+}
+
+static int
+cics_transform (struct filename *fn, const char **translated)
+{
+	const char *python = getenv ("COB_CICS_PYTHON");
+	const char *script = getenv ("COB_CICS_PREPROCESSOR");
+	char *target;
+	char *args[6];
+	size_t length;
+
+	if (fn->file_is_stdin || CB_SF_FREE (cobc_get_source_format ())) {
+		cobc_err_msg (_("--cics-map requires a fixed-format source file"));
+		return 1;
+	}
+	if (!python || !*python) python = "python3";
+	if (!script || !*script) script = "cics-preprocess.py";
+	script = find_translation_script (script);
+	if (save_temps) {
+		const char *base = file_basename (fn->source, NULL);
+		length = strlen (base) + 11;
+		if (save_temps_dir) length += strlen (save_temps_dir) + 1;
+		target = cobc_main_malloc (length);
+		if (save_temps_dir)
+			snprintf (target, length, "%s%c%s.cics.cbl",
+			          save_temps_dir, SLASH_CHAR, base);
+		else
+			snprintf (target, length, "%s.cics.cbl", base);
+	} else {
+		target = cobc_main_malloc (COB_FILE_MAX);
+		cob_temp_name (target, ".cbl");
+	}
+	args[0] = (char *)python;
+	args[1] = (char *)script;
+	args[2] = (char *)fn->source;
+	args[3] = (char *)cb_cics_map;
+	args[4] = target;
+	args[5] = NULL;
+	if (verbose_output)
+		fprintf (stderr, "CICS translation: %s -> %s\n", fn->source, target);
+	if (run_python_translation (python, args)) {
+		if (!save_temps) (void)unlink (target);
+		cobc_err_msg (_("CICS translation failed for %s"), fn->source);
+		return 1;
+	}
+	*translated = target;
+	return 0;
+}
+
+static int
+db2_sql_transform (struct filename *fn, const char *source, const char **translated)
+{
+	const char *python = getenv ("COB_DB2_SQL_PYTHON");
+	const char *script = getenv ("COB_DB2_SQL_PREPROCESSOR");
+	struct cb_text_list *include;
+	char *target;
+	char *origin_dir = NULL;
+	char **args;
+	size_t count = 0, index = 0;
+
+	if (fn->file_is_stdin || CB_SF_FREE (cobc_get_source_format ())) {
+		cobc_err_msg (_("--db2-sql requires a fixed-format source file"));
+		return 1;
+	}
+	if (!python || !*python) python = "python3";
+	if (!script || !*script) script = "db2sql-preprocess.py";
+	script = find_translation_script (script);
+	if (save_temps) {
+		const char *base = file_basename (fn->source, NULL);
+		size_t length = strlen (base) + 10;
+		if (save_temps_dir) length += strlen (save_temps_dir) + 1;
+		target = cobc_main_malloc (length);
+		if (save_temps_dir)
+			snprintf (target, length, "%s%c%s.db2.cbl",
+			          save_temps_dir, SLASH_CHAR, base);
+		else
+			snprintf (target, length, "%s.db2.cbl", base);
+	} else {
+		target = cobc_main_malloc (COB_FILE_MAX);
+		cob_temp_name (target, ".cbl");
+	}
+	for (include = cb_include_list; include; include = include->next)
+		++count;
+	if (source != fn->source) {
+		const char *slash = strrchr (fn->source, '/');
+		const char *backslash = strrchr (fn->source, '\\');
+		if (backslash && (!slash || backslash > slash)) slash = backslash;
+		if (slash) {
+			size_t dirlen = (size_t)(slash - fn->source);
+			origin_dir = cobc_main_malloc (dirlen + 1);
+			memcpy (origin_dir, fn->source, dirlen);
+			origin_dir[dirlen] = '\0';
+		}
+	}
+	args = cobc_main_malloc ((count * 2 + 7) * sizeof (*args));
+	args[index++] = (char *)python;
+	args[index++] = (char *)script;
+	if (origin_dir) {
+		args[index++] = (char *)"-I";
+		args[index++] = origin_dir;
+	}
+	for (include = cb_include_list; include; include = include->next) {
+		args[index++] = (char *)"-I";
+		args[index++] = include->text;
+	}
+	args[index++] = (char *)source;
+	args[index++] = target;
+	args[index] = NULL;
+	if (verbose_output)
+		fprintf (stderr, "Db2 SQL translation: %s -> %s\n",
+		         source, target);
+	if (run_python_translation (python, args)) {
+		if (!save_temps) (void)unlink (target);
+		cobc_err_msg (_("Db2 SQL translation failed for %s"), fn->source);
+		return 1;
+	}
+	*translated = target;
+	return 0;
+}
+
 /* Preprocess source */
 
 static int
 preprocess (struct filename *fn)
 {
 	const char		*sourcename;
+	const char		*cics_source = NULL;
+	const char		*db2_source = NULL;
 	struct cb_exception	save_exception_table[COB_EC_MAX];
 	const size_t exception_table_size = sizeof (struct cb_exception) * COB_EC_MAX;
 	int			save_source_format, save_fold_copy, save_fold_call,
@@ -5457,6 +5658,14 @@ preprocess (struct filename *fn)
 #endif
 	int			ret;
 #endif
+
+	if (cb_cics_map && cics_transform (fn, &cics_source))
+		return 1;
+	if (cb_flag_db2_sql && db2_sql_transform (fn,
+		cics_source ? cics_source : fn->source, &db2_source)) {
+		if (cics_source && !save_temps) (void)unlink (cics_source);
+		return 1;
+	}
 
 	if (output_name
 	 || cb_compile_level > CB_LEVEL_PREPROCESS
@@ -5476,7 +5685,8 @@ preprocess (struct filename *fn)
 	if (fn->file_is_stdin) {
 		sourcename = COB_DASH;
 	} else {
-		sourcename = fn->source;
+		sourcename = db2_source ? db2_source :
+		             cics_source ? cics_source : fn->source;
 	}
 	save_source_format = cobc_get_source_format ();
 	if (ppopen (sourcename, NULL) != 0) {
@@ -5535,6 +5745,10 @@ preprocess (struct filename *fn)
 
 	/* Release flex buffers - After file close */
 	plex_call_destroy ();
+	if (db2_source && !save_temps)
+		(void)unlink (db2_source);
+	if (cics_source && !save_temps)
+		(void)unlink (cics_source);
 
 	if (cobc_gen_listing && !cobc_list_file) {
 		if (unlikely (fclose (cb_listing_file) != 0)) {
@@ -8495,7 +8709,7 @@ process_translate (struct filename *fn)
 	}
 
 	/* Translate to C */
-	codegen (current_program, fn->translate);
+	codegen (current_program, fn->translate, fn->preprocess);
 
 	/* Close files */
 	if (unlikely(fclose (cb_storage_file) != 0)) {

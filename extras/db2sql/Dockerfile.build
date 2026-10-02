@@ -1,0 +1,10 @@
+FROM icr.io/db2_community/db2:12.1.5.0
+
+RUN dnf -y install autoconf271 automake libtool flex bison gmp-devel help2man texinfo \
+        gcc make python3 && dnf clean all
+
+# The IBM wheel carries the standalone Db2 CLI driver. The Db2 server image's
+# libdb2 requires a configured local instance and is unsuitable for a client.
+RUN python3 -m pip install --no-cache-dir --only-binary=:all: ibm_db==3.3.0
+
+ENV PATH="/opt/rh/autoconf271/bin:${PATH}"

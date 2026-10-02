@@ -10012,12 +10012,29 @@ evaluate_test (cb_tree s, cb_tree o)
                cases    (1..n WHEN + statements),
 			   internal exit label */
 static void
-build_evaluate (cb_tree subject_list, cb_tree case_list, cb_tree goto_end_label)
+build_evaluate (cb_tree subject_list, cb_tree case_list, cb_tree goto_end_label,
+		cb_tree origin, unsigned int *when_number)
 {
 	cb_tree		whens, stmt;
 	cb_tree		c1, c2, c3;
+	struct cb_cov_choice *choices = NULL, *last_choice = NULL;
+	struct cb_if *branch;
 
 	if (case_list == NULL) {
+		if (cb_cobol_branch_coverage_enabled) {
+			cb_tree fallback = cb_build_if (cb_true, cb_build_continue (),
+						NULL, STMT_WHEN);
+			struct cb_cov_choice *choice =
+				cobc_parse_malloc (sizeof (*choice));
+			choice->next = NULL;
+			choice->condition = cb_true;
+			choice->location = origin;
+			choice->result = "unmatched";
+			branch = CB_IF (fallback);
+			branch->cov_choices = choice;
+			branch->cov_origin = origin;
+			cb_emit (fallback);
+		}
 		return;
 	}
 
@@ -10029,6 +10046,7 @@ build_evaluate (cb_tree subject_list, cb_tree case_list, cb_tree goto_end_label)
 	/* For each WHEN sequence */
 	for (; whens; whens = CB_CHAIN (whens)) {
 		cb_tree		subjs, objs;
+		cb_tree		when_location = whens;
 		c2 = NULL;
 		/* Single WHEN test -> combine all "ALSO" with operator "&&" */
 		for (subjs = subject_list, objs = CB_VALUE (whens);
@@ -10051,6 +10069,19 @@ build_evaluate (cb_tree subject_list, cb_tree case_list, cb_tree goto_end_label)
 		if (subjs || objs) {
 			cb_error_x (whens, _("wrong number of WHEN parameters"));
 		}
+		if (cb_cobol_branch_coverage_enabled) {
+			char result[32];
+			struct cb_cov_choice *choice =
+				cobc_parse_malloc (sizeof (*choice));
+			snprintf (result, sizeof (result), "WHEN %u", ++*when_number);
+			choice->next = NULL;
+			choice->condition = cb_build_cond (c2);
+			choice->location = when_location;
+			choice->result = cobc_parse_strdup (result);
+			if (last_choice) last_choice->next = choice;
+			else choices = choice;
+			last_choice = choice;
+		}
 		/* Combine multiple WHEN's that share a list of statements
 		   with operator "||" */
 		if (c1 == NULL) {
@@ -10071,7 +10102,21 @@ build_evaluate (cb_tree subject_list, cb_tree case_list, cb_tree goto_end_label)
 		cb_source_file = stmt->source_file;
 
 		cb_emit (cb_build_comment ("WHEN OTHER"));
-		cb_emit (stmt);
+		if (cb_cobol_branch_coverage_enabled) {
+			cb_tree other = cb_build_if (cb_true, stmt, NULL, STMT_WHEN);
+			struct cb_cov_choice *choice =
+				cobc_parse_malloc (sizeof (*choice));
+			choice->next = NULL;
+			choice->condition = cb_true;
+			choice->location = CB_VALUE (case_list);
+			choice->result = "WHEN OTHER";
+			branch = CB_IF (other);
+			branch->cov_choices = choice;
+			branch->cov_origin = origin;
+			cb_emit (other);
+		} else {
+			cb_emit (stmt);
+		}
 
 		cb_source_file = old_file;
 		cb_source_line = old_line;
@@ -10082,16 +10127,27 @@ build_evaluate (cb_tree subject_list, cb_tree case_list, cb_tree goto_end_label)
 			/* Append the jump */
 			c2 = cb_list_add (stmt, goto_end_label);
 		}
-		cb_emit (cb_build_if (cb_build_cond (c1), c2, NULL, STMT_WHEN));
-		build_evaluate (subject_list, CB_CHAIN (case_list), goto_end_label);
+		{
+			cb_tree candidate = cb_build_if (cb_build_cond (c1), c2,
+							NULL, STMT_WHEN);
+			if (cb_cobol_branch_coverage_enabled) {
+				branch = CB_IF (candidate);
+				branch->cov_choices = choices;
+				branch->cov_origin = origin;
+			}
+			cb_emit (candidate);
+		}
+		build_evaluate (subject_list, CB_CHAIN (case_list), goto_end_label,
+				origin, when_number);
 	}
 }
 
 void
-cb_emit_evaluate (cb_tree subject_list, cb_tree case_list)
+cb_emit_evaluate (cb_tree subject_list, cb_tree case_list, cb_tree origin)
 {
 	cb_tree	x;
 	char	sbuf[16];
+	unsigned int when_number = 0;
 
 #if 0	/* TODO: check for "simple" EVALUATE and use a different codegen
 	         --> if we have a _single_ selection-object and it is either
@@ -10132,7 +10188,7 @@ cb_emit_evaluate (cb_tree subject_list, cb_tree case_list)
 		and if there _is_ a runtime error it is raised at the first WHEN, while
 		it should be raised at the EVALUATE.
 	*/
-	build_evaluate (subject_list, case_list, x);
+	build_evaluate (subject_list, case_list, x, origin, &when_number);
 
 	/* internal label for END-EVALUATE */
 	cb_emit (cb_build_comment ("End EVALUATE"));
@@ -10223,9 +10279,15 @@ cb_emit_exit (const unsigned int goback)
 /* IF statement */
 
 void
-cb_emit_if (cb_tree cond, cb_tree stmt1, cb_tree stmt2)
+cb_emit_if (cb_tree cond, cb_tree stmt1, cb_tree stmt2, cb_tree source)
 {
-	cb_emit (cb_build_if (cond, stmt1, stmt2, STMT_IF));
+	cb_tree branch = cb_build_if (cond, stmt1, stmt2, STMT_IF);
+	if (source) {
+		branch->source_file = source->source_file;
+		branch->source_line = source->source_line;
+		branch->source_column = source->source_column;
+	}
+	cb_emit (branch);
 }
 
 /* SEARCH .. WHEN clause (internal IF statement) */

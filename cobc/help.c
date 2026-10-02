@@ -122,6 +122,8 @@ cobc_print_usage_common_options (void)
 	puts (_("  -X, --Xref            specify cross reference in listing"));
 #endif
 	puts (_("  -I <directory>        add <directory> to copy/include search path"));
+	puts (_("  --db2-sql             translate fixed-format EXEC SQL before compilation"));
+	puts (_("  --cics-map=<copybook> translate fixed-format EXEC CICS using a BMS symbolic map"));
 	puts (_("  --copy <copybook>     include <copybook> at beginning of file,\n"
                 "                        as would COPY copybook."));
 	puts (_("  -L <directory>        add <directory> to library search path"));
@@ -133,6 +135,7 @@ cobc_print_usage_common_options (void)
 	puts (_("  -A <options>          add <options> to the C compile phase"));
 	puts (_("  -Q <options>          add <options> to the C link phase"));
 	puts (_("  --coverage            instrument generated binaries for coverage"));
+	puts (_("  --cobol-branch-coverage  count COBOL source branch outcomes"));
 	puts (_("  --conf=<file>         user-defined dialect configuration; see -std"));
 	puts (_("  --list-reserved       display reserved words"));
 	puts (_("  --list-intrinsics     display intrinsic functions"));

@@ -10,7 +10,7 @@
               05  SQLDATA         USAGE POINTER.
               05  SQLIND          USAGE POINTER.
               05  SQLNAME.
-                 07  SQLNAMEL     PIC USAGE BINARY-SHORT.
+                 07  SQLNAMEL     USAGE BINARY-SHORT.
                  07  SQLNAMEC     PIC X(30).
 
       *> SQLTYPE

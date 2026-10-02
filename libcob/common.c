@@ -3271,6 +3271,7 @@ call_exit_handlers_and_terminate (void)
 			h = h->next;
 		}
 	}
+	cob_cov_flush ();
 	cob_terminate_routines ();
 }
 

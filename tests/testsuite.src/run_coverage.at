@@ -1,0 +1,807 @@
+AT_SETUP([COBOL IF branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([prog.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PROG.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC 9 VALUE 0.
+       PROCEDURE DIVISION.
+           IF X = 0 DISPLAY 'TRUE' END-IF.
+           IF X = 1
+               DISPLAY 'BAD'
+           ELSE
+               DISPLAY 'FALSE'
+           END-IF.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage prog.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./prog], [0], [TRUE
+FALSE
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL IF branches: 2/4 (50.0%), 1 counter file(s)
+prog.cob:8:0 PROG IF #0 true: 1
+prog.cob:8:0 PROG IF #0 false: 0
+prog.cob:9:0 PROG IF #1 true: 0
+prog.cob:9:0 PROG IF #1 false: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL JSON exception branch coverage])
+AT_KEYWORDS([coverage cobc JSON-CODE])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+AT_SKIP_IF([test "$COB_HAS_JSON" = "no"])
+
+AT_DATA([json-exception.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. JSONCOV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 SHORT-STR PIC X(5).
+       01 LONG-STR PIC X(200).
+       01 VALID-REC.
+          03 A PIC XX VALUE 'aa'.
+          03 B PIC XX VALUE 'bb'.
+       PROCEDURE DIVISION.
+           JSON GENERATE SHORT-STR FROM VALID-REC
+             ON EXCEPTION DISPLAY 'EXCEPTION'
+             NOT ON EXCEPTION DISPLAY 'BAD'
+           END-JSON.
+           JSON GENERATE LONG-STR FROM VALID-REC
+             ON EXCEPTION DISPLAY 'BAD'
+             NOT ON EXCEPTION DISPLAY 'NORMAL'
+           END-JSON.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage json-exception.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./json-exception], [0], [EXCEPTION
+NORMAL
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL JSON EXCEPTION branches: 2/4 (50.0%), 1 counter file(s)
+json-exception.cob:11:0 JSONCOV JSON EXCEPTION #0 exception: 1
+json-exception.cob:11:0 JSONCOV JSON EXCEPTION #0 normal: 0
+json-exception.cob:15:0 JSONCOV JSON EXCEPTION #1 exception: 0
+json-exception.cob:15:0 JSONCOV JSON EXCEPTION #1 normal: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL XML exception branch coverage])
+AT_KEYWORDS([coverage cobc XML-CODE])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+AT_SKIP_IF([test "$COB_HAS_XML2" = "no"])
+
+AT_DATA([xml-exception.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. XMLCOV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 XML-INPUT PIC X(8) VALUE '<empty/>'.
+       PROCEDURE DIVISION.
+           PERFORM PARSE-INPUT.
+           MOVE '</>' TO XML-INPUT.
+           PERFORM PARSE-INPUT.
+           STOP RUN.
+       PARSE-INPUT.
+           XML PARSE XML-INPUT
+             PROCESSING PROCEDURE PROCESS-XML
+             ON EXCEPTION DISPLAY 'EXCEPTION'
+             NOT ON EXCEPTION DISPLAY 'NORMAL'
+           END-XML.
+       PROCESS-XML.
+           CONTINUE.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage xml-exception.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./xml-exception], [0], [NORMAL
+EXCEPTION
+], [ignore])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL XML EXCEPTION branches: 2/2 (100.0%), 1 counter file(s)
+xml-exception.cob:12:0 XMLCOV XML EXCEPTION #0 exception: 1
+xml-exception.cob:12:0 XMLCOV XML EXCEPTION #0 normal: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL file AT EOP branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([file-eop.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. EOPCOV.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT PRINT-FILE ASSIGN TO 'print.dat'.
+       DATA DIVISION.
+       FILE SECTION.
+       FD PRINT-FILE LINAGE IS 2 LINES.
+       01 PRINT-RECORD PIC X.
+       PROCEDURE DIVISION.
+           OPEN OUTPUT PRINT-FILE.
+           MOVE 'A' TO PRINT-RECORD.
+           PERFORM WRITE-ONE 4 TIMES.
+           CLOSE PRINT-FILE.
+           STOP RUN.
+       WRITE-ONE.
+           WRITE PRINT-RECORD AFTER ADVANCING 1 LINE
+             END-OF-PAGE DISPLAY 'EOP'
+           END-WRITE.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage file-eop.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./file-eop], [0], [EOP
+EOP
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL AT EOP, PERFORM TIMES branches: 3/4 (75.0%), 1 counter file(s)
+file-eop.cob:15:0 EOPCOV PERFORM TIMES #0 zero: 0
+file-eop.cob:15:0 EOPCOV PERFORM TIMES #0 one-or-more: 1
+file-eop.cob:19:0 EOPCOV AT EOP #1 handler: 2
+file-eop.cob:19:0 EOPCOV AT EOP #1 normal: 2
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL file handler excludes unrelated errors])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([input.dat], [A
+])
+AT_DATA([file-other-error.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. OTHERERR.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT INPUT-FILE ASSIGN TO 'input.dat'
+             ORGANIZATION LINE SEQUENTIAL
+             FILE STATUS IS FILE-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD INPUT-FILE.
+       01 INPUT-RECORD PIC X.
+       WORKING-STORAGE SECTION.
+       01 FILE-STATUS PIC XX.
+       PROCEDURE DIVISION.
+           OPEN INPUT INPUT-FILE.
+           PERFORM READ-INPUT.
+           CLOSE INPUT-FILE.
+           PERFORM READ-INPUT.
+           DISPLAY FILE-STATUS.
+           STOP RUN.
+       READ-INPUT.
+           READ INPUT-FILE
+             AT END DISPLAY 'BAD'
+           END-READ.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage file-other-error.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./file-other-error], [0], [47
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL AT END branches: 1/2 (50.0%), 1 counter file(s)
+file-other-error.cob:24:0 OTHERERR AT END #0 handler: 0
+file-other-error.cob:24:0 OTHERERR AT END #0 normal: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL one-sided SIZE ERROR branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([size-one-sided.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SIZEONE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 DEN PIC 9 VALUE 2.
+       01 RESULT-VALUE PIC 9.
+       PROCEDURE DIVISION.
+           DIVIDE 4 BY DEN GIVING RESULT-VALUE
+             ON SIZE ERROR DISPLAY 'BAD'
+           END-DIVIDE.
+           MOVE 0 TO DEN.
+           DIVIDE 4 BY DEN GIVING RESULT-VALUE
+             NOT ON SIZE ERROR DISPLAY 'BAD'
+           END-DIVIDE.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage size-one-sided.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./size-one-sided], [0], [], [])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL SIZE ERROR branches: 2/4 (50.0%), 1 counter file(s)
+size-one-sided.cob:9:0 SIZEONE SIZE ERROR #0 exception: 0
+size-one-sided.cob:9:0 SIZEONE SIZE ERROR #0 normal: 1
+size-one-sided.cob:13:0 SIZEONE SIZE ERROR #1 exception: 1
+size-one-sided.cob:13:0 SIZEONE SIZE ERROR #1 normal: 0
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL ON OVERFLOW branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([overflow.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. OVERCOV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 DEST PIC X(2).
+       PROCEDURE DIVISION.
+           STRING 'ABCDE' DELIMITED BY SIZE INTO DEST
+             ON OVERFLOW DISPLAY 'OVER'
+           END-STRING.
+           MOVE SPACE TO DEST.
+           STRING 'A' DELIMITED BY SIZE INTO DEST
+             ON OVERFLOW DISPLAY 'BAD'
+           END-STRING.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage overflow.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./overflow], [0], [OVER
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL OVERFLOW branches: 2/4 (50.0%), 1 counter file(s)
+overflow.cob:8:0 OVERCOV OVERFLOW #0 exception: 1
+overflow.cob:8:0 OVERCOV OVERFLOW #0 normal: 0
+overflow.cob:12:0 OVERCOV OVERFLOW #1 exception: 0
+overflow.cob:12:0 OVERCOV OVERFLOW #1 normal: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL file INVALID KEY branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([file-invalid-key.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. KEYCOV.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT REL-FILE ASSIGN TO 'rel.dat'
+             ORGANIZATION RELATIVE ACCESS DYNAMIC
+             RELATIVE KEY REL-KEY.
+       DATA DIVISION.
+       FILE SECTION.
+       FD REL-FILE.
+       01 REL-RECORD PIC X.
+       WORKING-STORAGE SECTION.
+       01 REL-KEY PIC 9(2).
+       PROCEDURE DIVISION.
+           OPEN OUTPUT REL-FILE.
+           MOVE 1 TO REL-KEY.
+           MOVE 'A' TO REL-RECORD.
+           WRITE REL-RECORD.
+           CLOSE REL-FILE.
+           OPEN INPUT REL-FILE.
+           MOVE 1 TO REL-KEY.
+           PERFORM READ-KEY.
+           MOVE 9 TO REL-KEY.
+           PERFORM READ-KEY.
+           CLOSE REL-FILE.
+           STOP RUN.
+       READ-KEY.
+           READ REL-FILE
+             INVALID KEY DISPLAY 'MISSING'
+             NOT INVALID KEY DISPLAY 'FOUND'
+           END-READ.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage file-invalid-key.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./file-invalid-key], [0], [FOUND
+MISSING
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL INVALID KEY branches: 2/2 (100.0%), 1 counter file(s)
+file-invalid-key.cob:30:0 KEYCOV INVALID KEY #0 handler: 1
+file-invalid-key.cob:30:0 KEYCOV INVALID KEY #0 normal: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL file AT END branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([input.dat], [A
+])
+AT_DATA([file-at-end.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. FILECOV.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT INPUT-FILE ASSIGN TO 'input.dat'
+               ORGANIZATION LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD INPUT-FILE.
+       01 INPUT-RECORD PIC X.
+       PROCEDURE DIVISION.
+           OPEN INPUT INPUT-FILE.
+           PERFORM READ-INPUT.
+           PERFORM READ-INPUT.
+           CLOSE INPUT-FILE.
+           STOP RUN.
+       READ-INPUT.
+           READ INPUT-FILE
+             AT END DISPLAY 'END'
+             NOT AT END DISPLAY 'FOUND'
+           END-READ.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage file-at-end.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./file-at-end], [0], [FOUND
+END
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL AT END branches: 2/2 (100.0%), 1 counter file(s)
+file-at-end.cob:20:0 FILECOV AT END #0 handler: 1
+file-at-end.cob:20:0 FILECOV AT END #0 normal: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL CALL ON EXCEPTION branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([caller.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLCOV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 TARGET-NAME PIC X(20).
+       PROCEDURE DIVISION.
+           ACCEPT TARGET-NAME FROM ENVIRONMENT 'TARGET'.
+           CALL TARGET-NAME
+             ON EXCEPTION PERFORM CALL-MISSING
+             NOT ON EXCEPTION PERFORM CALL-OK
+           END-CALL.
+           STOP RUN.
+       CALL-MISSING.
+           DISPLAY 'MISSING'.
+       CALL-OK.
+           DISPLAY 'OK'.
+])
+AT_DATA([callee.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. callee.
+       PROCEDURE DIVISION.
+           GOBACK.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage caller.cob])
+AT_CHECK([$COMPILE_MODULE callee.cob])
+AT_CHECK([TARGET=missing COB_COVERAGE_DIR=. COB_LIBRARY_PATH=. $COBCRUN_DIRECT ./caller], [0], [MISSING
+])
+AT_CHECK([TARGET=callee COB_COVERAGE_DIR=. COB_LIBRARY_PATH=. $COBCRUN_DIRECT ./caller], [0], [OK
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL CALL ON EXCEPTION branches: 2/2 (100.0%), 2 counter file(s)
+caller.cob:9:0 CALLCOV CALL ON EXCEPTION #0 exception: 1
+caller.cob:9:0 CALLCOV CALL ON EXCEPTION #0 normal: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL SIZE ERROR branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([size-error.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SIZECOV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 DEN PIC 9 VALUE 0.
+       01 RESULT-VALUE PIC 9.
+       PROCEDURE DIVISION.
+           PERFORM CALCULATE-VALUE.
+           MOVE 2 TO DEN.
+           PERFORM CALCULATE-VALUE.
+           STOP RUN.
+       CALCULATE-VALUE.
+           DIVIDE 4 BY DEN GIVING RESULT-VALUE
+             ON SIZE ERROR DISPLAY 'ERROR'
+             NOT ON SIZE ERROR DISPLAY 'OK'
+           END-DIVIDE.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage size-error.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./size-error], [0], [ERROR
+OK
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL SIZE ERROR branches: 2/2 (100.0%), 1 counter file(s)
+size-error.cob:14:0 SIZECOV SIZE ERROR #0 exception: 1
+size-error.cob:14:0 SIZECOV SIZE ERROR #0 normal: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL GO TO DEPENDING branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([go-depending.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. GOTOCOV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 C PIC 9.
+       PROCEDURE DIVISION.
+           ACCEPT C FROM ENVIRONMENT 'CHOICE'.
+           GO TO PARA-ONE PARA-TWO DEPENDING ON C.
+           DISPLAY 'FALL'.
+           STOP RUN.
+       PARA-ONE.
+           DISPLAY 'ONE'.
+           STOP RUN.
+       PARA-TWO.
+           DISPLAY 'TWO'.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage go-depending.cob])
+AT_CHECK([CHOICE=1 COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./go-depending], [0], [ONE
+])
+AT_CHECK([CHOICE=2 COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./go-depending], [0], [TWO
+])
+AT_CHECK([CHOICE=9 COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./go-depending], [0], [FALL
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL GO TO DEPENDING branches: 3/3 (100.0%), 3 counter file(s)
+go-depending.cob:9:0 GOTOCOV GO TO DEPENDING #0 target 1: 1
+go-depending.cob:9:0 GOTOCOV GO TO DEPENDING #0 target 2: 1
+go-depending.cob:9:0 GOTOCOV GO TO DEPENDING #0 fallthrough: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL SEARCH ALL branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([search-all.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEARCHALL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 T.
+          02 E OCCURS 3 ASCENDING KEY V INDEXED BY I.
+             03 V PIC 9.
+       PROCEDURE DIVISION.
+           MOVE 1 TO V(1).
+           MOVE 2 TO V(2).
+           MOVE 3 TO V(3).
+           SEARCH ALL E
+             AT END DISPLAY 'BAD'
+             WHEN V(I) = 2 DISPLAY 'FOUND'
+           END-SEARCH.
+           SEARCH ALL E
+             AT END DISPLAY 'MISSING'
+             WHEN V(I) = 9 DISPLAY 'BAD'
+           END-SEARCH.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage search-all.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./search-all], [0], [FOUND
+MISSING
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL SEARCH ALL branches: 2/4 (50.0%), 1 counter file(s)
+search-all.cob:15:0 SEARCHALL SEARCH ALL #0 WHEN 1: 1
+search-all.cob:14:0 SEARCHALL SEARCH ALL #0 AT END: 0
+search-all.cob:19:0 SEARCHALL SEARCH ALL #1 WHEN 1: 0
+search-all.cob:18:0 SEARCHALL SEARCH ALL #1 AT END: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL SEARCH branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([search.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEARCHCOV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 T.
+          02 E OCCURS 3 INDEXED BY I.
+             03 V PIC 9.
+       PROCEDURE DIVISION.
+           MOVE 1 TO V(1).
+           MOVE 2 TO V(2).
+           MOVE 3 TO V(3).
+           SET I TO 1.
+           PERFORM FIND-IT.
+           SET I TO 3.
+           PERFORM FIND-IT.
+           SET I TO 4.
+           PERFORM FIND-IT.
+           SEARCH E
+             WHEN V(I) = 9 DISPLAY 'BAD'
+           END-SEARCH.
+           STOP RUN.
+       FIND-IT.
+           SEARCH E
+             AT END DISPLAY 'END'
+             WHEN V(I) = 2 DISPLAY 'TWO'
+             WHEN V(I) = 3 DISPLAY 'THREE'
+           END-SEARCH.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage search.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./search], [0], [TWO
+THREE
+END
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL SEARCH branches: 4/5 (80.0%), 1 counter file(s)
+search.cob:20:0 SEARCHCOV SEARCH #0 WHEN 1: 0
+search.cob:21:0 SEARCHCOV SEARCH #0 unmatched: 1
+search.cob:26:0 SEARCHCOV SEARCH #1 WHEN 1: 1
+search.cob:27:0 SEARCHCOV SEARCH #1 WHEN 2: 1
+search.cob:25:0 SEARCHCOV SEARCH #1 AT END: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL PERFORM branch coverage multiple VARYING])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([perform-multi.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PERFMULT.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 I PIC 9 VALUE 0.
+       01 J PIC 9 VALUE 0.
+       PROCEDURE DIVISION.
+           PERFORM VARYING I FROM 1 BY 1 UNTIL I > 2
+             AFTER J FROM 1 BY 1 UNTIL J > 2
+               DISPLAY 'X'
+           END-PERFORM.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage perform-multi.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./perform-multi], [0], [X
+X
+X
+X
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL PERFORM UNTIL branches: 4/4 (100.0%), 1 counter file(s)
+perform-multi.cob:9:0 PERFMULT PERFORM UNTIL #0 continue: 2
+perform-multi.cob:9:0 PERFMULT PERFORM UNTIL #0 exit: 1
+perform-multi.cob:10:0 PERFMULT PERFORM UNTIL #1 continue: 4
+perform-multi.cob:10:0 PERFMULT PERFORM UNTIL #1 exit: 2
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL PERFORM branch coverage TEST AFTER and VARYING])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([perform-varying.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PERFVAR.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC 9 VALUE 0.
+       PROCEDURE DIVISION.
+           PERFORM WITH TEST AFTER UNTIL X = 2
+               ADD 1 TO X
+           END-PERFORM.
+           PERFORM VARYING X FROM 1 BY 1 UNTIL X > 2
+               DISPLAY 'V'
+           END-PERFORM.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage perform-varying.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./perform-varying], [0], [V
+V
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL PERFORM UNTIL branches: 4/4 (100.0%), 1 counter file(s)
+perform-varying.cob:8:0 PERFVAR PERFORM UNTIL #0 continue: 1
+perform-varying.cob:8:0 PERFVAR PERFORM UNTIL #0 exit: 1
+perform-varying.cob:11:0 PERFVAR PERFORM UNTIL #1 continue: 2
+perform-varying.cob:11:0 PERFVAR PERFORM UNTIL #1 exit: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL PERFORM branch coverage UNTIL and TIMES])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([perform.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PERFCOV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC 9 VALUE 0.
+       PROCEDURE DIVISION.
+           PERFORM UNTIL X = 2
+               ADD 1 TO X
+           END-PERFORM.
+           PERFORM 0 TIMES DISPLAY 'BAD' END-PERFORM.
+           PERFORM 2 TIMES DISPLAY 'T' END-PERFORM.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage perform.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./perform], [0], [T
+T
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL PERFORM TIMES, PERFORM UNTIL branches: 4/6 (66.7%), 1 counter file(s)
+perform.cob:8:0 PERFCOV PERFORM UNTIL #0 continue: 2
+perform.cob:8:0 PERFCOV PERFORM UNTIL #0 exit: 1
+perform.cob:11:0 PERFCOV PERFORM TIMES #1 zero: 1
+perform.cob:11:0 PERFCOV PERFORM TIMES #1 one-or-more: 0
+perform.cob:12:0 PERFCOV PERFORM TIMES #2 zero: 0
+perform.cob:12:0 PERFCOV PERFORM TIMES #2 one-or-more: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL mixed IF and EVALUATE branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([mixed.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. MIXED.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC 9 VALUE 1.
+       PROCEDURE DIVISION.
+           IF X = 1
+               EVALUATE X
+                 WHEN 1 DISPLAY 'HIT'
+                 WHEN OTHER DISPLAY 'BAD'
+               END-EVALUATE
+           END-IF.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage mixed.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./mixed], [0], [HIT
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL EVALUATE, IF branches: 2/4 (50.0%), 1 counter file(s)
+mixed.cob:8:0 MIXED IF #0 true: 1
+mixed.cob:8:0 MIXED IF #0 false: 0
+mixed.cob:10:0 MIXED EVALUATE #1 WHEN 1: 1
+mixed.cob:11:0 MIXED EVALUATE #1 WHEN OTHER: 0
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL EVALUATE branch coverage OTHER THRU and TRUE])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([evaluate-extra.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. EVALMORE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC 99 VALUE 9.
+       PROCEDURE DIVISION.
+           EVALUATE X
+             WHEN 1 THRU 3 DISPLAY 'BAD'
+             WHEN OTHER DISPLAY 'OTHER'
+           END-EVALUATE.
+           EVALUATE TRUE
+             WHEN X > 9 DISPLAY 'BAD'
+             WHEN X > 5 DISPLAY 'TRUE'
+           END-EVALUATE.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage evaluate-extra.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./evaluate-extra], [0], [OTHER
+TRUE
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL EVALUATE branches: 2/5 (40.0%), 1 counter file(s)
+evaluate-extra.cob:9:0 EVALMORE EVALUATE #0 WHEN 1: 0
+evaluate-extra.cob:10:0 EVALMORE EVALUATE #0 WHEN OTHER: 1
+evaluate-extra.cob:13:0 EVALMORE EVALUATE #1 WHEN 1: 0
+evaluate-extra.cob:14:0 EVALMORE EVALUATE #1 WHEN 2: 1
+evaluate-extra.cob:12:0 EVALMORE EVALUATE #1 unmatched: 0
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL EVALUATE branch coverage])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([evaluate.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. EVALCOV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC 9 VALUE 2.
+       01 Y PIC 9 VALUE 1.
+       PROCEDURE DIVISION.
+           EVALUATE X ALSO Y
+             WHEN 1 ALSO 1 DISPLAY 'BAD'
+             WHEN 2 ALSO 0
+             WHEN 2 ALSO 1 DISPLAY 'HIT'
+             WHEN OTHER DISPLAY 'BAD'
+           END-EVALUATE.
+           MOVE 9 TO X.
+           EVALUATE X
+             WHEN 1 DISPLAY 'BAD'
+             WHEN 2 DISPLAY 'BAD'
+           END-EVALUATE.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage evaluate.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./evaluate], [0], [HIT
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL EVALUATE branches: 2/7 (28.6%), 1 counter file(s)
+evaluate.cob:10:0 EVALCOV EVALUATE #0 WHEN 1: 0
+evaluate.cob:11:0 EVALCOV EVALUATE #0 WHEN 2: 0
+evaluate.cob:12:0 EVALCOV EVALUATE #0 WHEN 3: 1
+evaluate.cob:13:0 EVALCOV EVALUATE #0 WHEN OTHER: 0
+evaluate.cob:17:0 EVALCOV EVALUATE #1 WHEN 1: 0
+evaluate.cob:18:0 EVALCOV EVALUATE #1 WHEN 2: 0
+evaluate.cob:16:0 EVALCOV EVALUATE #1 unmatched: 1
+])
+AT_CLEANUP
+
+AT_SETUP([COBOL IF branch coverage nested and COPY])
+AT_KEYWORDS([coverage cobc])
+AT_SKIP_IF([! command -v python3 >/dev/null 2>&1])
+
+AT_DATA([branch.cpy], [
+           IF X = 1 DISPLAY 'BAD' END-IF.
+])
+AT_DATA([nested.cob], [
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. NESTED.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC 9 VALUE 0.
+       PROCEDURE DIVISION.
+           IF X = 0
+               IF X = 1 DISPLAY 'BAD' END-IF
+           ELSE
+               DISPLAY 'BAD'
+           END-IF.
+           COPY 'branch.cpy'.
+           IF X = 1 CONTINUE END-IF IF X = 0 CONTINUE END-IF.
+           DISPLAY 'OK'.
+           STOP RUN.
+])
+
+AT_CHECK([$COMPILE --cobol-branch-coverage nested.cob])
+AT_CHECK([COB_COVERAGE_DIR=. $COBCRUN_DIRECT ./nested], [0], [OK
+])
+AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
+[COBOL IF branches: 5/10 (50.0%), 1 counter file(s)
+nested.cob:8:0 NESTED IF #0 true: 1
+nested.cob:8:0 NESTED IF #0 false: 0
+nested.cob:9:0 NESTED IF #1 true: 0
+nested.cob:9:0 NESTED IF #1 false: 1
+branch.cpy:2:0 NESTED IF #2 true: 0
+branch.cpy:2:0 NESTED IF #2 false: 1
+nested.cob:14:0 NESTED IF #3 true: 0
+nested.cob:14:0 NESTED IF #3 false: 1
+nested.cob:14:0 NESTED IF #4 true: 1
+nested.cob:14:0 NESTED IF #4 false: 0
+])
+AT_CLEANUP

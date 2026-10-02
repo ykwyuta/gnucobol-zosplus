@@ -1,0 +1,7 @@
+.env
+.runtime.env
+.server.env
+*.so
+*.o
+*.i
+db2sql-demo

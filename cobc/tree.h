@@ -1455,12 +1455,22 @@ struct cb_goto {
 
 /* IF and WHEN and PRESENT WHEN */
 
+struct cb_cov_choice {
+	struct cb_cov_choice	*next;
+	cb_tree			condition;
+	cb_tree			location;
+	const char		*result;
+};
+
 struct cb_if {
 	struct cb_tree_common	common;		/* Common values */
 	cb_tree			test;		/* Condition */
 	cb_tree			stmt1;		/* Statement list */
 	cb_tree			stmt2;		/* ELSE/WHEN statement list */
 	enum cob_statement statement;	/* statement IF/WHEN/PRESENT WHEN */
+	struct cb_cov_choice	*cov_choices;	/* Original EVALUATE choices */
+	cb_tree			cov_origin;	/* EVALUATE statement location */
+	unsigned int		cov_search_id_plus_one; /* Selected SEARCH WHEN */
 };
 
 #define CB_IF(x)		(CB_TREE_CAST (CB_TAG_IF, struct cb_if, x))
@@ -2497,12 +2507,12 @@ extern void		cb_emit_command_line (cb_tree);
 extern void		cb_emit_divide (cb_tree, cb_tree,
 					cb_tree, cb_tree);
 
-extern void		cb_emit_evaluate (cb_tree, cb_tree);
+extern void		cb_emit_evaluate (cb_tree, cb_tree, cb_tree);
 
 extern void		cb_emit_goto (cb_tree, cb_tree, int);
 extern void		cb_emit_exit (const unsigned int);
 
-extern void		cb_emit_if (cb_tree, cb_tree, cb_tree);
+extern void		cb_emit_if (cb_tree, cb_tree, cb_tree, cb_tree);
 extern cb_tree		cb_build_if_maybe_insert_break (cb_tree, cb_tree);
 
 extern void		cb_emit_initialize (cb_tree, cb_tree,
@@ -2643,7 +2653,7 @@ cb_set_print_replace_list	(struct cb_replace_list *);
 extern void		cob_gen_optim (const enum cb_optim);
 
 /* codegen.c */
-extern void		codegen (struct cb_program *, const char *);
+extern void		codegen (struct cb_program *, const char *, const char *);
 extern void		clear_local_codegen_vars (void);
 extern int		cb_wants_dump_comments;	/* likely to be removed later */
 

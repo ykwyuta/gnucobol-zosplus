@@ -1,0 +1,26 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SYNCTEST.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 TEST-ID PIC X(8).
+       PROCEDURE DIVISION.
+           IF EIBCALEN NOT = 8
+               EXEC CICS ABEND ABCODE('TST0') NODUMP
+               END-EXEC
+           END-IF.
+           MOVE COBCICS-COMMAREA(1:8) TO TEST-ID.
+           EXEC CICS LINK PROGRAM('SYNCSUB')
+               COMMAREA(TEST-ID) LENGTH(8) SYNCONRETURN
+           END-EXEC.
+           IF EIBAID = X'F3'
+               EXEC CICS ABEND ABCODE('TST1') NODUMP
+               END-EXEC
+           END-IF.
+           IF EIBAID = X'7D'
+               EXEC CICS SYNCPOINT ROLLBACK END-EXEC
+           END-IF.
+           IF EIBAID = X'F1'
+               EXEC CICS SYNCPOINT END-EXEC
+               EXEC CICS ABEND ABCODE('TST3') NODUMP END-EXEC
+           END-IF.
+           EXEC CICS RETURN END-EXEC.

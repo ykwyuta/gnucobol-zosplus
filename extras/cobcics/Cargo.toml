@@ -1,0 +1,18 @@
+[package]
+name = "cobcics"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental TN3270 host for GnuCOBOL CICS compatibility"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "cobcics"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cobcicsd"
+path = "src/main.rs"
+
+[[bin]]
+name = "cobcics-mapgen"
+path = "src/mapgen.rs"
