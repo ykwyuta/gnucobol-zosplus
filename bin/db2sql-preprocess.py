@@ -32,6 +32,8 @@ def host_list(tokens):
     current = []
     for token in tokens + [","]:
         if token == ",":
+            if len(current) == 3 and current[1].upper() == "INDICATOR":
+                current = [current[0], current[2]]
             if len(current) not in (1, 2) or \
                     any(not HOST.fullmatch(part) for part in current):
                 raise SqlError("INTO のホスト変数一覧が不正です")
@@ -50,7 +52,11 @@ def sql_parameters(tokens):
         token = tokens[index]
         if HOST.fullmatch(token):
             pair = [token[1:]]
-            if index + 1 < len(tokens) and HOST.fullmatch(tokens[index + 1]):
+            if index + 2 < len(tokens) and tokens[index + 1].upper() == "INDICATOR" \
+                    and HOST.fullmatch(tokens[index + 2]):
+                pair.append(tokens[index + 2][1:])
+                index += 2
+            elif index + 1 < len(tokens) and HOST.fullmatch(tokens[index + 1]):
                 pair.append(tokens[index + 1][1:])
                 index += 1
             inputs.append(tuple(pair))
@@ -168,6 +174,12 @@ def convert_sql(body, period, cursors=None, include_loader=None):
     if not tokens:
         raise SqlError("空の EXEC SQL")
     head = tokens[0].upper()
+    if head == "SET" and len(tokens) == 6 and HOST.fullmatch(tokens[1]) and \
+            tokens[2] == "=" and [token.upper() for token in tokens[3:]] == \
+            ["IDENTITY_VAL_LOCAL", "(", ")"]:
+        return convert_sql("SELECT IDENTITY_VAL_LOCAL() INTO " + tokens[1] +
+                           " FROM SYSIBM.SYSDUMMY1", period, cursors,
+                           include_loader)
     if head == "INCLUDE":
         if len(tokens) != 2 or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*",
                                                  tokens[1]):
@@ -181,15 +193,28 @@ def convert_sql(body, period, cursors=None, include_loader=None):
                                  for token in tokens[2:6]):
         return ["      * Db2 DECLARE TABLE: runtime code is not required\n"]
     if head == "DECLARE" and len(tokens) >= 5 and \
-            [token.upper() for token in tokens[2:4]] == ["CURSOR", "FOR"]:
+            re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", tokens[1]):
+        index = 2
+        if [token.upper() for token in tokens[index:index + 2]] == \
+                ["INSENSITIVE", "SCROLL"]:
+            index += 2
+        if tokens[index].upper() != "CURSOR":
+            raise SqlError("未対応の DECLARE CURSOR オプション")
+        index += 1
+        if [token.upper() for token in tokens[index:index + 2]] == \
+                ["WITH", "HOLD"]:
+            index += 2
+        if len(tokens) <= index + 1 or tokens[index].upper() != "FOR":
+            raise SqlError("DECLARE CURSOR には FOR SELECT が必要です")
+        index += 1
         if cursors is None:
             raise SqlError("カーソル定義にはプログラム全体の変換が必要です")
         name = tokens[1].upper()
         if name in cursors:
             raise SqlError("カーソル名が重複しています: " + name)
-        if tokens[4].upper() != "SELECT":
+        if tokens[index].upper() != "SELECT":
             raise SqlError("カーソルには SELECT が必要です")
-        cursors[name] = sql_parameters(tokens[4:])
+        cursors[name] = sql_parameters(tokens[index:])
         return ["      * Db2 cursor " + name + " declared\n"]
     if head in ("COMMIT", "ROLLBACK"):
         if [t.upper() for t in tokens] not in ([head], [head, "WORK"]):

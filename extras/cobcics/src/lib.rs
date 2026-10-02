@@ -1,5 +1,6 @@
 pub mod bms;
 pub mod codec;
+pub mod schedule;
 pub mod server;
 pub mod symbolic;
 pub mod tn3270;

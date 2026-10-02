@@ -410,7 +410,17 @@ pub fn parse_input(map: &Map, record: &[u8]) -> Result<Input, String> {
         if fields.iter().any(|(seen, _)| seen == &name) {
             return Err(format!("duplicate input field: {name}"));
         }
-        fields.push((name, record[index..end].to_vec()));
+        let mut data = record[index..end].to_vec();
+        if field.justify_right {
+            let text = codec::decode(&data)?;
+            let text = text.trim();
+            let fill = if field.justify_zero { b'0' } else { b' ' };
+            let mut justified = vec![fill; field.length - text.len()];
+            justified.extend_from_slice(text.as_bytes());
+            data = codec::encode(std::str::from_utf8(&justified)
+                .expect("BMS input is decoded to ASCII"))?;
+        }
+        fields.push((name, data));
         index = end;
     }
     Ok(Input {
@@ -464,6 +474,24 @@ mod tests {
         assert_eq!(input.aid, 0x7d);
         assert_eq!(parse_input(&map, &[0xf3, 0x40, 0x40]).unwrap().aid, 0xf3); // PF3
         assert!(parse_input(&map, &[0x6d]).unwrap().fields.is_empty()); // Clear
+    }
+
+    #[test]
+    fn genapp_right_zero_input_is_padded_to_field_width() {
+        let source = include_str!(
+            "../../../reference/cics-genapp/base/src/ssmap.bms"
+        ).replace("INITIAL='Fund Name '    '", "INITIAL='Fund Name '");
+        let maps = bms::parse(&source).unwrap();
+        let map = &maps[0];
+        let field = map.fields.iter()
+            .find(|field| field.name.as_deref() == Some("ENT1CNO"))
+            .unwrap();
+        let address = address_bytes(field.data_address(map.columns)).unwrap();
+        let mut record = vec![0x7d, 0x40, 0x40, 0x11, address[0], address[1]];
+        record.extend_from_slice(&codec::encode("42").unwrap());
+        let input = parse_input(map, &record).unwrap();
+        assert_eq!(input.field_text("ENT1CNO").unwrap().as_deref(),
+                   Some("0000000042"));
     }
 
     #[test]

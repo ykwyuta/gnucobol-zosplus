@@ -40,7 +40,7 @@ static int
 supported_field(const cob_field *field)
 {
     unsigned char type = COB_FIELD_TYPE(field);
-    if (type == COB_TYPE_ALPHANUMERIC) return 1;
+    if (type == COB_TYPE_ALPHANUMERIC || type == COB_TYPE_GROUP) return 1;
     return type == COB_TYPE_NUMERIC_DISPLAY ||
            type == COB_TYPE_NUMERIC_BINARY ||
            type == COB_TYPE_NUMERIC_PACKED ||
@@ -269,6 +269,14 @@ failure:
     return -1;
 }
 
+/* CICS file control shares this handle with embedded SQL so that a task's
+ * normal return, SYNCPOINT, and ABEND cover both kinds of update. */
+SQLHDBC
+DB2SQL_CONNECTION(void)
+{
+    return connect_db2() == 0 ? db2_connection : SQL_NULL_HDBC;
+}
+
 static int
 bind_inputs(SQLHSTMT statement, int count, const int *value_params,
             const int *indicator_params, char **buffers, SQLLEN *indicators)
@@ -277,6 +285,7 @@ bind_inputs(SQLHSTMT statement, int count, const int *value_params,
     for (index = 0; index < count; ++index) {
         int parameter = value_params[index];
         cob_field *field = cob_get_param_field(parameter, "DB2SQL");
+        int varying = COB_FIELD_TYPE(field) == COB_TYPE_GROUP;
         size_t capacity = (size_t)cob_get_field_size(field) * 3 + 64;
         int numeric = COB_FIELD_IS_NUMERIC(field);
         SQLRETURN result;
@@ -307,13 +316,52 @@ bind_inputs(SQLHSTMT statement, int count, const int *value_params,
         } else {
             indicators[index] = SQL_NTS;
         }
-        if (indicators[index] != SQL_NULL_DATA)
-            cob_get_param_str(parameter, buffers[index], capacity);
+        if (indicators[index] != SQL_NULL_DATA) {
+            if (varying) {
+                /* Db2 COBOL VARCHAR: two-byte big-endian length followed by
+                 * character data (typically 49-level children). */
+                const unsigned char *data = cob_get_param_data(parameter);
+                size_t size = (size_t)cob_get_field_size(field);
+                size_t length;
+                if (size < 3) {
+                    status(-99990, "07006");
+                    return -1;
+                }
+                length = ((size_t)data[0] << 8) | data[1];
+                if (length > size - 2) {
+                    status(-99996, "22001");
+                    return -1;
+                }
+                memcpy(buffers[index], data + 2, length);
+                indicators[index] = (SQLLEN)length;
+            } else {
+                const unsigned char *raw = cob_get_param_data(parameter);
+                size_t size = (size_t)cob_get_field_size(field);
+                const unsigned char *low = numeric ? NULL : memchr(raw, 0, size);
+                if (low) {
+                    /* A BMS field omitted from Read Modified can contain
+                       low values. Match the native-data SQL_NTS behavior:
+                       only characters before the first low value are data. */
+                    cob_field prefix = *field;
+                    prefix.size = (size_t)(low - raw);
+                    if (prefix.size)
+                        cob_get_field_str(&prefix, buffers[index], capacity);
+                } else {
+                    cob_get_param_str(parameter, buffers[index], capacity);
+                }
+            }
+        }
+        if (getenv("DB2_SQL_TRACE"))
+            fprintf(stderr, "Db2 bind %d: field=%d text=%zu numeric=%d\n",
+                    index + 1, cob_get_field_size(field),
+                    indicators[index] == SQL_NULL_DATA ? 0 : strlen(buffers[index]),
+                    numeric);
         result = SQLBindParameter(statement, (SQLUSMALLINT)(index + 1),
                                   SQL_PARAM_INPUT, SQL_C_CHAR,
                                   numeric ? SQL_DECIMAL : SQL_VARCHAR,
                                   numeric ? (SQLULEN)cob_get_field_digits(field)
-                                          : (SQLULEN)cob_get_field_size(field),
+                                          : (SQLULEN)(cob_get_field_size(field) -
+                                                       (varying ? 2 : 0)),
                                   numeric ? (SQLSMALLINT)cob_get_field_scale(field) : 0,
                                   buffers[index], (SQLLEN)capacity,
                                   &indicators[index]);
@@ -361,6 +409,19 @@ read_outputs(SQLHSTMT statement, int count, const int *value_params,
         if (!supported_field(field)) {
             status(-99990, "07006");
             return -1;
+        }
+        if (COB_FIELD_TYPE(field) == COB_TYPE_GROUP) {
+            unsigned char *data = cob_get_param_data(value_params[index]);
+            size_t size = (size_t)cob_get_field_size(field);
+            if (size < 3 || length > (SQLLEN)(size - 2) || length > 32767) {
+                status(-99992, "22001");
+                return -1;
+            }
+            data[0] = (unsigned char)((unsigned int)length >> 8);
+            data[1] = (unsigned char)((unsigned int)length & 0xff);
+            memset(data + 2, ' ', size - 2);
+            memcpy(data + 2, value, (size_t)length);
+            continue;
         }
         if (COB_FIELD_IS_NUMERIC(field) && !number_fits(field, value)) {
             status(-99989, "22003");
@@ -569,6 +630,10 @@ DB2SQL_OPEN(void)
         diagnostic(SQL_HANDLE_DBC, db2_connection);
         goto failure;
     }
+    /* A positioned UPDATE/DELETE refers to the declared COBOL cursor name.
+       CLI otherwise assigns an internal name that SQL cannot address. */
+    result = SQLSetCursorName(slot->statement, (SQLCHAR *)name, SQL_NTS);
+    if (!success(result)) goto sql_error;
     result = SQLPrepare(slot->statement, (SQLCHAR *)sql, SQL_NTS);
     if (!success(result)) goto sql_error;
     if (bind_inputs(slot->statement, input_count,

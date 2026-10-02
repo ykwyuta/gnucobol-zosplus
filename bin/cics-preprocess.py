@@ -25,7 +25,9 @@ OPTION = re.compile(
 DFHRESP = re.compile(r"DFHRESP\(([A-Z][A-Z0-9-]*)\)", re.I)
 DFHVALUE = re.compile(r"DFHVALUE\(([A-Z][A-Z0-9-]*)\)", re.I)
 RESP_CODES = {"NORMAL": 0, "MAPFAIL": 36, "NOTFND": 13,
-              "INVREQ": 16, "NOTFINISHED": 113}
+              "INVREQ": 16, "NOTFINISHED": 113, "QIDERR": 44,
+              "ITEMERR": 26, "LENGERR": 22, "NOSPACE": 18,
+              "DUPREC": 14, "IOERR": 17}
 VALUE_CODES = {"UCTRAN": 450, "NOUCTRAN": 451, "TRANIDONLY": 452,
                "NORMAL": 1016, "ABEND": 900, "SECERROR": 1214}
 
@@ -164,8 +166,30 @@ def response_targets(options):
 
 
 def statement(body, maps, period, expected_mapset=None, program_id=None,
-              abend_label=None):
+              abend_label=None, mapfail_label=None):
     body = body.strip()
+    aid_handler = re.fullmatch(r"HANDLE\s+AID\b(.*)", body, re.I | re.S)
+    if aid_handler:
+        options = parse_options(aid_handler.group(1))
+        if not options or set(options) - {"CLEAR", "PF3"}:
+            raise CicsError("HANDLE AID supports CLEAR and PF3")
+        lines = []
+        for aid, code in (("CLEAR", "6D"), ("PF3", "F3")):
+            if aid in options:
+                label = identifier(options[aid], aid)
+                lines += [f"           IF EIBAID = X'{code}'\n",
+                          f"             GO TO {label}\n",
+                          "           END-IF\n"]
+        if period:
+            lines[-1] = lines[-1].rstrip() + ".\n"
+        return lines
+    condition_handler = re.fullmatch(r"HANDLE\s+CONDITION\b(.*)", body, re.I | re.S)
+    if condition_handler:
+        options = parse_options(condition_handler.group(1))
+        if set(options) != {"MAPFAIL"}:
+            raise CicsError("HANDLE CONDITION supports MAPFAIL only")
+        identifier(options["MAPFAIL"], "MAPFAIL")
+        return ["           CONTINUE" + (".\n" if period else "\n")]
     if not body:
         raise CicsError("empty EXEC CICS")
     handling = re.fullmatch(r"HANDLE\s+ABEND\b(.*)", body, re.I | re.S)
@@ -274,11 +298,14 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
     formattime = re.fullmatch(r"FORMATTIME\b(.*)", body, re.I | re.S)
     if formattime:
         options = parse_options(formattime.group(1))
-        unsupported = set(options) - {"ABSTIME", "DDMMYYYY", "TIME", "DATESEP", "RESP", "RESP2"}
+        unsupported = set(options) - {"ABSTIME", "DDMMYYYY", "MMDDYYYY", "TIME", "DATESEP", "RESP", "RESP2"}
         if unsupported:
             raise CicsError(f"unsupported FORMATTIME option: {sorted(unsupported)[0]}")
+        if ("DDMMYYYY" in options) == ("MMDDYYYY" in options):
+            raise CicsError("FORMATTIME requires exactly one date format")
         abstime = identifier(options.get("ABSTIME"), "ABSTIME")
-        date = identifier(options.get("DDMMYYYY"), "DDMMYYYY")
+        date_format = "MMDDYYYY" if "MMDDYYYY" in options else "DDMMYYYY"
+        date = identifier(options.get(date_format), date_format)
         clock = identifier(options.get("TIME"), "TIME")
         separator = "X'00'"
         if "DATESEP" in options:
@@ -295,7 +322,7 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                  "             TO COBCICS-DATE-CAPACITY\n",
                  f"           MOVE LENGTH OF {clock}\n",
                  "             TO COBCICS-TIME-CAPACITY\n",
-                 '           CALL STATIC "COBCICS_FORMATTIME"\n',
+                 f'           CALL STATIC "COBCICS_FORMATTIME{("_MMDD" if date_format == "MMDDYYYY" else "")}"\n',
                  f"             USING {abstime} COBCICS-LENGTH\n",
                  f"                   {date}\n",
                  "                   COBCICS-DATE-CAPACITY\n",
@@ -404,11 +431,17 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         if unsupported:
             raise CicsError(f"unsupported {verb} CONTAINER option: {sorted(unsupported)[0]}")
         name = identifier(options.get("CONTAINER"), "CONTAINER")
-        channel = identifier(options.get("CHANNEL"), "CHANNEL")
+        channel = (identifier(options["CHANNEL"], "CHANNEL")
+                   if "CHANNEL" in options else "COBCICS-CURRENT-CHANNEL")
         data = identifier(options.get(data_option), data_option)
-        length = identifier(options.get("FLENGTH"), "FLENGTH")
+        length = (identifier(options["FLENGTH"], "FLENGTH")
+                  if "FLENGTH" in options else "COBCICS-DATA-LENGTH")
         lines = [f"           MOVE LENGTH OF {data}\n",
-                 "             TO COBCICS-DATA-CAPACITY\n",
+                 "             TO COBCICS-DATA-CAPACITY\n"]
+        if "FLENGTH" not in options:
+            lines += ["           MOVE COBCICS-DATA-CAPACITY\n",
+                      "             TO COBCICS-DATA-LENGTH\n"]
+        lines += [
                  f'           CALL STATIC "COBCICS_{verb}_CONTAINER"\n',
                  f"             USING {name}\n",
                  f"                   {data} {length}\n",
@@ -475,16 +508,20 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
     assign = re.fullmatch(r"ASSIGN\b(.*)", body, re.I | re.S)
     if assign:
         options = parse_options(assign.group(1))
-        unsupported = set(options) - {"APPLID", "PROGRAM", "ABCODE", "RESP", "RESP2"}
+        unsupported = set(options) - {"APPLID", "PROGRAM", "ABCODE",
+                                      "SYSID", "STARTCODE", "INVOKINGPROG",
+                                      "RESP", "RESP2"}
         if unsupported:
             raise CicsError(f"unsupported ASSIGN option: {sorted(unsupported)[0]}")
-        if not {"APPLID", "PROGRAM", "ABCODE"} & set(options):
-            raise CicsError("ASSIGN requires APPLID, PROGRAM or ABCODE")
+        if not {"APPLID", "PROGRAM", "ABCODE", "SYSID", "STARTCODE",
+                "INVOKINGPROG"} & set(options):
+            raise CicsError("ASSIGN requires an output option")
         lines = ["           MOVE ZERO TO EIBRESP EIBRESP2\n"]
         if "ABCODE" in options:
             target = identifier(options["ABCODE"], "ABCODE")
             lines.append(f"           MOVE COBCICS-ABEND-CODE TO {target}\n")
-        for option in ("APPLID", "PROGRAM"):
+        for option in ("APPLID", "PROGRAM", "SYSID", "STARTCODE",
+                       "INVOKINGPROG"):
             if option not in options:
                 continue
             target = identifier(options[option], option)
@@ -499,7 +536,7 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
             else:
                 lines += [f"           MOVE LENGTH OF {target}\n",
                           "             TO COBCICS-LENGTH\n",
-                          '           CALL STATIC "COBCICS_ASSIGN_APPLID"\n',
+                          f'           CALL STATIC "COBCICS_ASSIGN_{option}"\n',
                           f"             USING {target} COBCICS-LENGTH\n"]
         lines += response_targets(options)
         if period:
@@ -507,6 +544,228 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         if any(len(line.rstrip("\n")) > 72 for line in lines):
             raise CicsError("generated ASSIGN line exceeds column 72")
         return lines
+    counter = re.fullmatch(r"(DEFINE|DELETE|GET|QUERY)\s+COUNTER\b(.*)",
+                           body, re.I | re.S)
+    if counter:
+        verb = counter.group(1).upper()
+        options = parse_options("COUNTER" + counter.group(2))
+        allowed = {"COUNTER", "POOL", "RESP", "RESP2"}
+        if verb != "DELETE":
+            allowed.add("VALUE")
+        unsupported = set(options) - allowed
+        if unsupported:
+            raise CicsError(f"unsupported {verb} COUNTER option: {sorted(unsupported)[0]}")
+        name = identifier(options.get("COUNTER"), "COUNTER")
+        pool = identifier(options.get("POOL"), "POOL")
+        lines = [f"           MOVE {name} TO COBCICS-COUNTER-NAME\n",
+                 f"           MOVE {pool} TO COBCICS-COUNTER-POOL\n"]
+        if verb == "DELETE":
+            value = "COBCICS-COUNTER-VALUE"
+        elif verb == "DEFINE" and options.get("VALUE", "").isdigit():
+            lines.append(f"           MOVE {options['VALUE']}\n")
+            lines.append("             TO COBCICS-COUNTER-VALUE\n")
+            value = "COBCICS-COUNTER-VALUE"
+        else:
+            value = identifier(options.get("VALUE"), "VALUE")
+        lines += [f'           CALL STATIC "COBCICS_COUNTER_{verb}"\n',
+                  "             USING COBCICS-COUNTER-NAME\n",
+                  "                   COBCICS-COUNTER-POOL\n",
+                  f"                   {value} EIBRESP EIBRESP2\n"]
+        if "RESP" not in options and "RESP2" not in options:
+            lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
+                      '             USING EIBRESP\n']
+        lines += response_targets(options)
+        if period:
+            lines[-1] = lines[-1].rstrip() + ".\n"
+        if any(len(line.rstrip("\n")) > 72 for line in lines):
+            raise CicsError(f"generated {verb} COUNTER line exceeds column 72")
+        return lines
+    queue = re.fullmatch(r"(READQ|WRITEQ|DELETEQ)\s+(TS|TD)\b(.*)",
+                         body, re.I | re.S)
+    if queue:
+        verb, kind = queue.group(1).upper(), queue.group(2).upper()
+        options = parse_options(queue.group(3))
+        if kind == "TD" and verb != "WRITEQ":
+            raise CicsError(f"unsupported {verb} TD")
+        allowed = {"QUEUE", "RESP", "RESP2"}
+        if verb == "READQ":
+            allowed |= {"INTO", "LENGTH", "ITEM", "NEXT"}
+        elif verb == "WRITEQ":
+            allowed |= {"FROM", "LENGTH"}
+            if kind == "TS":
+                allowed |= {"ITEM", "REWRITE", "NOSUSPEND"}
+        unsupported = set(options) - allowed
+        if unsupported:
+            raise CicsError(f"unsupported {verb} {kind} option: {sorted(unsupported)[0]}")
+        name = identifier(options.get("QUEUE"), "QUEUE")
+        lines = [f"           MOVE {name} TO COBCICS-QUEUE-NAME\n"]
+        if verb == "DELETEQ":
+            lines += ['           CALL STATIC "COBCICS_TSQ_DELETE"\n',
+                      "             USING COBCICS-QUEUE-NAME\n",
+                      "                   EIBRESP EIBRESP2\n"]
+        else:
+            direction = "INTO" if verb == "READQ" else "FROM"
+            area = identifier(options.get(direction), direction)
+            lines += [f"           MOVE LENGTH OF {area}\n",
+                      "             TO COBCICS-QUEUE-CAPACITY\n"]
+            raw_length = options.get("LENGTH")
+            if raw_length is None:
+                lines += ["           MOVE COBCICS-QUEUE-CAPACITY\n",
+                          "             TO COBCICS-QUEUE-LENGTH\n"]
+            elif raw_length.isdigit() or re.fullmatch(
+                    r"LENGTH\s+OF\s+[A-Z][A-Z0-9-]*", raw_length, re.I):
+                lines += [f"           MOVE {raw_length}\n",
+                          "             TO COBCICS-QUEUE-LENGTH\n"]
+            else:
+                raw_length = identifier(raw_length, "LENGTH")
+                lines += [f"           MOVE {raw_length}\n",
+                          "             TO COBCICS-QUEUE-LENGTH\n"]
+            length = "COBCICS-QUEUE-LENGTH"
+            if verb == "READQ" and "ITEM" in options and "NEXT" in options:
+                raise CicsError("READQ TS cannot use ITEM and NEXT together")
+            for flag in ("NEXT", "REWRITE", "NOSUSPEND"):
+                if flag in options and options[flag] is not None:
+                    raise CicsError(f"{flag} does not take a value")
+            raw_item = options.get("ITEM", "0")
+            if raw_item is None or not re.fullmatch(r"[0-9]+|[A-Z][A-Z0-9-]*", raw_item, re.I):
+                raise CicsError("ITEM requires a number or data name")
+            if kind == "TS":
+                lines += [f"           MOVE {raw_item} TO COBCICS-QUEUE-ITEM\n"]
+                if verb == "READQ":
+                    mode = "01" if "NEXT" in options else "00"
+                    lines += ['           CALL STATIC "COBCICS_TSQ_READ"\n',
+                              f"             USING COBCICS-QUEUE-NAME {area}\n",
+                              f"                   {length}\n",
+                              "                   COBCICS-QUEUE-CAPACITY\n",
+                              "                   COBCICS-QUEUE-ITEM\n",
+                              f"                   X'{mode}' EIBRESP EIBRESP2\n"]
+                else:
+                    mode = "01" if "REWRITE" in options else "00"
+                    lines += ['           CALL STATIC "COBCICS_TSQ_WRITE"\n',
+                              f"             USING COBCICS-QUEUE-NAME {area}\n",
+                              f"                   {length}\n",
+                              "                   COBCICS-QUEUE-CAPACITY\n",
+                              "                   COBCICS-QUEUE-ITEM\n",
+                              f"                   X'{mode}' EIBRESP EIBRESP2\n"]
+            else:
+                lines += ['           CALL STATIC "COBCICS_TDQ_WRITE"\n',
+                          f"             USING COBCICS-QUEUE-NAME {area}\n",
+                          f"                   {length}\n",
+                          "                   COBCICS-QUEUE-CAPACITY\n",
+                          "                   EIBRESP EIBRESP2\n"]
+            if verb == "READQ" and raw_length and not raw_length.isdigit() and not re.fullmatch(
+                    r"LENGTH\s+OF\s+[A-Z][A-Z0-9-]*", raw_length, re.I):
+                lines += ["           MOVE COBCICS-QUEUE-LENGTH\n",
+                          f"             TO {raw_length}\n"]
+        if "RESP" not in options and "RESP2" not in options:
+            lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
+                      '             USING EIBRESP\n']
+        lines += response_targets(options)
+        if period:
+            lines[-1] = lines[-1].rstrip() + ".\n"
+        if any(len(line.rstrip("\n")) > 72 for line in lines):
+            raise CicsError(f"generated {verb} {kind} line exceeds column 72")
+        return lines
+    keyed_file = re.fullmatch(r"(READ|WRITE|REWRITE|DELETE)\b(.*)",
+                              body, re.I | re.S)
+    if keyed_file:
+        verb = keyed_file.group(1).upper()
+        options = parse_options(keyed_file.group(2))
+        if not (verb == "WRITE" and
+                options.get("FILE", "").upper() == "'ABNDFILE'"):
+            allowed = {"FILE", "LENGTH", "RESP", "RESP2"}
+            if verb == "READ":
+                allowed |= {"INTO", "RIDFLD", "KEYLENGTH", "GTEQ",
+                            "GENERIC", "UPDATE"}
+            elif verb == "WRITE":
+                allowed |= {"FROM", "RIDFLD", "KEYLENGTH"}
+            elif verb == "REWRITE":
+                allowed.add("FROM")
+            else:
+                allowed = {"FILE", "RIDFLD", "KEYLENGTH", "RESP", "RESP2"}
+            unsupported = set(options) - allowed
+            if unsupported:
+                raise CicsError(f"unsupported {verb} FILE option: {sorted(unsupported)[0]}")
+            file_name = options.get("FILE", "").upper()
+            if file_name not in ("'KSDSCUST'", "'KSDSPOLY'"):
+                raise CicsError(f"unsupported {verb} FILE name: {file_name}")
+            lines = [f'           MOVE "{file_name[1:-1]}"\n',
+                     "             TO COBCICS-FILE-NAME\n"]
+            if verb != "DELETE":
+                direction = "INTO" if verb == "READ" else "FROM"
+                area = identifier(options.get(direction), direction)
+                raw_length = options.get("LENGTH")
+                if raw_length is None or not re.fullmatch(
+                        r"[0-9]+|[A-Z][A-Z0-9-]*(?:\s+OF\s+[A-Z][A-Z0-9-]*)*"
+                        r"|LENGTH\s+OF\s+[A-Z][A-Z0-9-]*", raw_length, re.I):
+                    raise CicsError(f"{verb} FILE requires valid LENGTH")
+                lines += [f"           MOVE {raw_length}\n",
+                          "             TO COBCICS-FILE-LENGTH\n",
+                          f"           MOVE LENGTH OF {area}\n",
+                          "             TO COBCICS-FILE-CAPACITY\n"]
+            if verb != "REWRITE":
+                key = identifier(options.get("RIDFLD"), "RIDFLD")
+                raw_key_length = options.get("KEYLENGTH")
+                if raw_key_length is None or not re.fullmatch(
+                        r"[0-9]+|[A-Z][A-Z0-9-]*", raw_key_length, re.I):
+                    raise CicsError(f"{verb} FILE requires KEYLENGTH")
+                lines += [f"           MOVE {raw_key_length}\n",
+                          "             TO COBCICS-FILE-KEY-LENGTH\n",
+                          f"           MOVE LENGTH OF {key}\n",
+                          "             TO COBCICS-FILE-KEY-CAPACITY\n"]
+            if verb == "READ":
+                for flag in ("GTEQ", "GENERIC", "UPDATE"):
+                    if flag in options and options[flag] is not None:
+                        raise CicsError(f"{flag} does not take a value")
+                if "GENERIC" in options and "GTEQ" not in options:
+                    raise CicsError("READ FILE GENERIC requires GTEQ")
+                if "UPDATE" in options and "GTEQ" in options:
+                    raise CicsError("READ FILE UPDATE cannot use GTEQ")
+                mode = ((1 if "GTEQ" in options else 0) |
+                        (2 if "GENERIC" in options else 0) |
+                        (4 if "UPDATE" in options else 0))
+                lines += ['           CALL STATIC "COBCICS_FILE_READ"\n',
+                          "             USING COBCICS-FILE-NAME\n",
+                          f"                   {area} COBCICS-FILE-LENGTH\n",
+                          "                   COBCICS-FILE-CAPACITY\n",
+                          f"                   {key}\n",
+                          "                   COBCICS-FILE-KEY-LENGTH\n",
+                          "                   COBCICS-FILE-KEY-CAPACITY\n",
+                          f"                   X'{mode:02X}' EIBRESP EIBRESP2\n"]
+                if not raw_length.isdigit() and not raw_length.upper().startswith("LENGTH OF "):
+                    lines += ["           MOVE COBCICS-FILE-LENGTH\n",
+                              f"             TO {raw_length}\n"]
+            elif verb == "WRITE":
+                lines += ['           CALL STATIC "COBCICS_FILE_WRITE"\n',
+                          "             USING COBCICS-FILE-NAME\n",
+                          f"                   {area} COBCICS-FILE-LENGTH\n",
+                          "                   COBCICS-FILE-CAPACITY\n",
+                          f"                   {key}\n",
+                          "                   COBCICS-FILE-KEY-LENGTH\n",
+                          "                   COBCICS-FILE-KEY-CAPACITY\n",
+                          "                   EIBRESP EIBRESP2\n"]
+            elif verb == "REWRITE":
+                lines += ['           CALL STATIC "COBCICS_FILE_REWRITE"\n',
+                          "             USING COBCICS-FILE-NAME\n",
+                          f"                   {area} COBCICS-FILE-LENGTH\n",
+                          "                   COBCICS-FILE-CAPACITY\n",
+                          "                   EIBRESP EIBRESP2\n"]
+            else:
+                lines += ['           CALL STATIC "COBCICS_FILE_DELETE"\n',
+                          "             USING COBCICS-FILE-NAME\n",
+                          f"                   {key}\n",
+                          "                   COBCICS-FILE-KEY-LENGTH\n",
+                          "                   COBCICS-FILE-KEY-CAPACITY\n",
+                          "                   EIBRESP EIBRESP2\n"]
+            if "RESP" not in options and "RESP2" not in options:
+                lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
+                          '             USING EIBRESP\n']
+            lines += response_targets(options)
+            if period:
+                lines[-1] = lines[-1].rstrip() + ".\n"
+            if any(len(line.rstrip("\n")) > 72 for line in lines):
+                raise CicsError(f"generated {verb} FILE line exceeds column 72")
+            return lines
     writing = re.fullmatch(r"WRITE\b(.*)", body, re.I | re.S)
     if writing:
         options = parse_options(writing.group(1))
@@ -577,6 +836,32 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         if period:
             lines[-1] = lines[-1].rstrip() + ".\n"
         return lines
+    starting = re.fullmatch(r"START\s+TRANSID\b(.*)", body, re.I | re.S)
+    if starting:
+        options = parse_options("TRANSID" + starting.group(1))
+        unsupported = set(options) - {"TRANSID", "AFTER", "MINUTES",
+                                      "RESP", "RESP2"}
+        if unsupported:
+            raise CicsError(f"unsupported START option: {sorted(unsupported)[0]}")
+        transid = options.get("TRANSID", "").upper()
+        minutes = options.get("MINUTES")
+        if (not re.fullmatch(r"'[A-Z0-9]{1,4}'", transid) or
+                options.get("AFTER", "bad") is not None or
+                minutes is None or not re.fullmatch(
+                    r"[0-9]+|[A-Z][A-Z0-9-]*", minutes, re.I)):
+            raise CicsError("START requires TRANSID AFTER MINUTES")
+        lines = [f"           MOVE {minutes} TO COBCICS-START-MINUTES\n",
+                 '           CALL STATIC "COBCICS_START_AFTER"\n',
+                 f'             USING "{transid[1:-1]:<4}"\n',
+                 "                   COBCICS-START-MINUTES\n",
+                 "                   EIBRESP EIBRESP2\n"]
+        if "RESP" not in options and "RESP2" not in options:
+            lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
+                      '             USING EIBRESP\n']
+        lines += response_targets(options)
+        if period:
+            lines[-1] = lines[-1].rstrip() + ".\n"
+        return lines
     delay = re.fullmatch(r"DELAY\b(.*)", body, re.I | re.S)
     if delay:
         options = parse_options(delay.group(1))
@@ -621,7 +906,7 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         area = identifier(options["COMMAREA"], "COMMAREA")
         length = options.get("LENGTH")
         if length is not None:
-            if not re.fullmatch(r"[A-Z][A-Z0-9-]*|[0-9]+", length, re.I):
+            if not re.fullmatch(r"(?:LENGTH\s+OF\s+)?[A-Z][A-Z0-9-]*(?:\s+OF\s+[A-Z][A-Z0-9-]*)*|[0-9]+", length, re.I):
                 raise CicsError("invalid LINK LENGTH")
             if length.isdigit() and int(length) > 32767:
                 raise CicsError("LINK COMMAREA exceeds 32767 bytes")
@@ -635,6 +920,8 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         lines += ['           CALL STATIC "COBCICS_LINK_ENTER"\n',
                   '             USING COBCICS-LENGTH\n',
                   '                   COBCICS-LINK-CAPACITY\n',
+                  '           CALL STATIC "COBCICS_LINK_CALLER"\n',
+                  f'             USING "{(program_id or ""):<8}"\n',
                   f"           CALL {program} USING {area}\n",
                   '           CALL STATIC "COBCICS_LINK_EXIT"\n',
                   "           MOVE ZERO TO EIBRESP EIBRESP2\n"]
@@ -662,7 +949,8 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
     send_text = re.fullmatch(r"SEND\s+TEXT\b(.*)", body, re.I | re.S)
     if send_text:
         options = parse_options("TEXT" + send_text.group(1))
-        unsupported = set(options) - {"TEXT", "FROM", "LENGTH", "ERASE", "FREEKB", "RESP", "RESP2"}
+        unsupported = set(options) - {"TEXT", "FROM", "LENGTH", "ERASE",
+                                      "FREEKB", "WAIT", "RESP", "RESP2"}
         if unsupported:
             raise CicsError(f"unsupported SEND TEXT option: {sorted(unsupported)[0]}")
         if options.get("TEXT") is not None:
@@ -674,9 +962,11 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
             raise CicsError("SEND TEXT currently requires ERASE FREEKB")
         if options["ERASE"] is not None or options["FREEKB"] is not None:
             raise CicsError("ERASE and FREEKB do not take values")
+        if "WAIT" in options and options["WAIT"] is not None:
+            raise CicsError("WAIT does not take a value")
         length = options.get("LENGTH")
         if "LENGTH" in options and (length is None or not re.fullmatch(
-                r"[A-Z][A-Z0-9-]*|[0-9]+", length, re.I)):
+                r"(?:LENGTH\s+OF\s+)?[A-Z][A-Z0-9-]*(?:\s+OF\s+[A-Z][A-Z0-9-]*)*|[0-9]+", length, re.I)):
             raise CicsError("invalid SEND TEXT LENGTH")
         if length and length.isdigit() and int(length) > 1919:
             raise CicsError("SEND TEXT exceeds 1919 bytes")
@@ -695,6 +985,30 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                   (".\n" if period else "\n")]
         if any(len(line.rstrip("\n")) > 72 for line in lines):
             raise CicsError("generated SEND TEXT line exceeds column 72")
+        return lines
+    receive_data = re.fullmatch(r"RECEIVE\b(?!\s+MAP)(.*)",
+                                body, re.I | re.S)
+    if receive_data:
+        options = parse_options(receive_data.group(1))
+        unsupported = set(options) - {"INTO", "LENGTH", "RESP", "RESP2"}
+        if unsupported:
+            raise CicsError(f"unsupported RECEIVE option: {sorted(unsupported)[0]}")
+        area = identifier(options.get("INTO"), "INTO")
+        length = identifier(options.get("LENGTH"), "LENGTH")
+        lines = [f"           MOVE LENGTH OF {area}\n",
+                 "             TO COBCICS-LINK-CAPACITY\n",
+                 '           CALL STATIC "COBCICS_RECEIVE_INTO"\n',
+                 f"             USING {area} {length}\n",
+                 "                   COBCICS-LINK-CAPACITY\n",
+                 "                   EIBRESP EIBRESP2\n"]
+        if "RESP" not in options and "RESP2" not in options:
+            lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
+                      '             USING EIBRESP\n']
+        lines += response_targets(options)
+        if period:
+            lines[-1] = lines[-1].rstrip() + ".\n"
+        if any(len(line.rstrip("\n")) > 72 for line in lines):
+            raise CicsError("generated RECEIVE INTO line exceeds column 72")
         return lines
     match = re.match(r"(SEND|RECEIVE)\s+MAP\b(.*)\Z", body, re.I | re.S)
     if not match:
@@ -747,6 +1061,10 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                   f"             USING X'{mode}'\n",
                   '           CALL STATIC "COBCICS_RECEIVE_STATUS"\n',
                   '             USING EIBRESP EIBRESP2\n']
+        if mapfail_label:
+            lines += ["           IF EIBRESP = 36\n",
+                      f"             GO TO {mapfail_label}\n",
+                      "           END-IF\n"]
         if "RESP" not in options and "RESP2" not in options:
             lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
                       '             USING EIBRESP\n']
@@ -832,6 +1150,7 @@ def transform(source, maps, expected_mapset=None):
     in_cics = False
     body = []
     start_line = 0
+    mapfail_label = None
     for number, line in enumerate(lines, 1):
         if len(line) >= 7 and line[6] in "*/Dd":
             if not in_cics:
@@ -854,6 +1173,25 @@ def transform(source, maps, expected_mapset=None):
                 result.append("       01 COBCICS-TIME-CAPACITY\n")
                 result.append("          PIC S9(4) COMP.\n")
                 result.append("       01 COBCICS-DATA-CAPACITY PIC S9(8) COMP.\n")
+                result.append("       01 COBCICS-DATA-LENGTH PIC S9(8) COMP.\n")
+                result.append('       01 COBCICS-CURRENT-CHANNEL PIC X(16)\n')
+                result.append('          VALUE "DFHEP.EVENT".\n')
+                result.append("       01 COBCICS-QUEUE-CAPACITY PIC S9(8) COMP.\n")
+                result.append("       01 COBCICS-QUEUE-LENGTH PIC S9(8) COMP.\n")
+                result.append("       01 COBCICS-QUEUE-ITEM PIC S9(8) COMP.\n")
+                result.append("       01 COBCICS-QUEUE-NAME PIC X(8).\n")
+                result.append("       01 COBCICS-COUNTER-NAME PIC X(16).\n")
+                result.append("       01 COBCICS-COUNTER-POOL PIC X(8).\n")
+                result.append("       01 COBCICS-COUNTER-VALUE PIC S9(8) COMP.\n")
+                result.append("       01 COBCICS-FILE-NAME PIC X(8).\n")
+                result.append("       01 COBCICS-FILE-LENGTH PIC S9(8) COMP.\n")
+                result.append("       01 COBCICS-FILE-CAPACITY PIC S9(8) COMP.\n")
+                result.append("       01 COBCICS-FILE-KEY-LENGTH\n")
+                result.append("          PIC S9(8) COMP.\n")
+                result.append("       01 COBCICS-FILE-KEY-CAPACITY\n")
+                result.append("          PIC S9(8) COMP.\n")
+                result.append("       01 COBCICS-START-MINUTES\n")
+                result.append("          PIC S9(8) COMP.\n")
                 result.append("       01 COBCICS-CHILD-PROGRAM PIC X(8).\n")
                 result.append("       01 COBCICS-COMMAREA PIC X(2048).\n")
                 result.append("       01 COBCICS-HANDLE-ABEND PIC 9 VALUE ZERO.\n")
@@ -913,9 +1251,16 @@ def transform(source, maps, expected_mapset=None):
             if tail not in ("", "."):
                 raise CicsError(f"{number}: text after END-EXEC")
             try:
-                result.extend(statement(" ".join(body), maps, tail == ".",
+                command = " ".join(body)
+                handler = re.fullmatch(r"\s*HANDLE\s+CONDITION\b(.*)",
+                                       command, re.I | re.S)
+                if handler:
+                    options = parse_options(handler.group(1))
+                    if set(options) == {"MAPFAIL"}:
+                        mapfail_label = identifier(options["MAPFAIL"], "MAPFAIL")
+                result.extend(statement(command, maps, tail == ".",
                                         expected_mapset, program_id,
-                                        abend_label))
+                                        abend_label, mapfail_label))
             except CicsError as error:
                 raise CicsError(f"{start_line}: {error}") from error
             in_cics = False

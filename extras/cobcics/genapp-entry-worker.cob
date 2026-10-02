@@ -1,0 +1,44 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. GENAPP-ENTRY-WORKER.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 EIBAID PIC X.
+       01 EIBCALEN PIC S9(4) COMP.
+       01 EIBTRNID PIC X(4).
+       01 INPUT-CAPACITY PIC S9(4) COMP.
+       01 DFHCOMMAREA PIC X(2048).
+       PROCEDURE DIVISION.
+           CALL STATIC "COBCICS_START"
+             USING EIBAID EIBCALEN EIBTRNID
+           MOVE LENGTH OF DFHCOMMAREA TO INPUT-CAPACITY
+           CALL STATIC "COBCICS_GET_COMMAREA"
+             USING DFHCOMMAREA INPUT-CAPACITY
+           EVALUATE EIBTRNID
+             WHEN "LGSE"
+               CALL STATIC "LGSETUP" USING DFHCOMMAREA
+             WHEN "LGST"
+               CALL STATIC "LGSTSQ" USING DFHCOMMAREA
+             WHEN "LGAS"
+               CALL STATIC "LGASTAT1" USING DFHCOMMAREA
+             WHEN "LGCF"
+               CALL STATIC "LGICVS01" USING DFHCOMMAREA
+             WHEN "LGPF"
+               CALL STATIC "LGIPVS01" USING DFHCOMMAREA
+             WHEN "SSST"
+               CALL STATIC "LGWEBST5" USING DFHCOMMAREA
+             WHEN "SSC1"
+               CALL STATIC "LGTESTC1"
+             WHEN "SSP1"
+               CALL STATIC "LGTESTP1"
+             WHEN "SSP2"
+               CALL STATIC "LGTESTP2"
+             WHEN "SSP3"
+               CALL STATIC "LGTESTP3"
+             WHEN "SSP4"
+               CALL STATIC "LGTESTP4"
+             WHEN OTHER
+               DISPLAY "unsupported GenApp transaction"
+                 UPON STDERR
+               MOVE 1 TO RETURN-CODE
+           END-EVALUATE
+           GOBACK.

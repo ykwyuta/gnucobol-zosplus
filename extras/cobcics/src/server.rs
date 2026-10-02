@@ -29,7 +29,7 @@ impl Default for WorkerRouting {
 }
 
 impl WorkerRouting {
-    fn worker_for(&self, transid: &[u8; 4]) -> Result<Option<&Path>, String> {
+    pub(crate) fn worker_for(&self, transid: &[u8; 4]) -> Result<Option<&Path>, String> {
         if let Some(path) = self.routes.get(transid) {
             return Ok(Some(path));
         }

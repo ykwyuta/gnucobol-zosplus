@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <libcob.h>
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -21,7 +22,7 @@
 
 #define MAX_FIELDS 64
 #define MAX_DATA 256
-#define MAX_COMMAREA 2048
+#define MAX_COMMAREA 32500
 #define MAX_TEXT 1919
 #define MAX_LINK_DEPTH 8
 #define MAX_LOCKS 16
@@ -54,6 +55,8 @@ static char input_transid[4];
 static char input_applid[8];
 static uint16_t link_lengths[MAX_LINK_DEPTH];
 static unsigned link_depth;
+static char link_callers[MAX_LINK_DEPTH][8];
+static void set_cobol_response(unsigned char *value, uint32_t response);
 static unsigned screen_root_depth;
 static unsigned char output_commarea[MAX_COMMAREA];
 static uint16_t output_commarea_length;
@@ -107,13 +110,23 @@ static char saved_transid[4];
 static uint16_t saved_commarea_length;
 static unsigned saved_input_count;
 static unsigned saved_scope;
+static struct channel *make_channel(const char *name, unsigned scope);
+static struct container *find_container(struct channel *channel,
+                                         const char *name);
 
 #ifdef COBCICS_DB2SQL
 extern int DB2SQL_END_TASK(int commit);
 #endif
+#ifdef COBCICS_GENAPP
+extern int COBCICS_START_FLUSH(void);
+extern void COBCICS_START_CANCEL(void);
+#endif
 
 static void failure(const char *message) {
     fprintf(stderr, "cobcics bridge: %s\n", message);
+#ifdef COBCICS_GENAPP
+    COBCICS_START_CANCEL();
+#endif
 #ifdef COBCICS_DB2SQL
     if (DB2SQL_END_TASK(0) != 0)
         fprintf(stderr, "cobcics bridge: Db2 rollback failed\n");
@@ -147,6 +160,19 @@ static uint16_t cobol_length(const unsigned char *value) {
     return (uint16_t)((unsigned)value[0] << 8 | value[1]);
 }
 
+static const cob_charset *current_data_charset(void) {
+    cob_global *global = cob_get_global_ptr();
+    cob_module *module = global ? global->cob_current_module : NULL;
+    return module && module->charset ? module->charset : &cob_charset_native;
+}
+
+static void text_to_host(unsigned char *data, size_t length) {
+    const unsigned char *table = current_data_charset()->to_host;
+    if (table)
+        for (size_t index = 0; index < length; ++index)
+            data[index] = table[data[index]];
+}
+
 static void set_cobol_length(unsigned char *value, uint16_t length) {
     value[0] = (unsigned char)(length >> 8);
     value[1] = (unsigned char)length;
@@ -171,10 +197,15 @@ void COBCICS_DEEDIT(unsigned char *field, const unsigned char *length,
 void COBCICS_START(unsigned char *aid, unsigned char *calen,
                    unsigned char *transid) {
     unsigned char header[5];
+    int has_containers;
     if (active_child >= 0) {
+        char host_transid[5];
         *aid = 0;
         set_cobol_length(calen, 0);
-        memcpy(transid, input_transid, 4);
+        memcpy(host_transid, input_transid, 4);
+        host_transid[4] = 0;
+        if (cob_put_param_str(3, host_transid) != 0)
+            failure("cannot convert child TRANSID to COBOL data");
         return;
     }
     if (started)
@@ -201,16 +232,23 @@ void COBCICS_START(unsigned char *aid, unsigned char *calen,
     if (!protocol_stdout)
         failure("failed to open worker protocol output");
     read_bytes(header, sizeof header);
-    if (memcmp(header, "CCI3", 4) != 0)
+    has_containers = memcmp(header, "CCI4", 4) == 0;
+    if (!has_containers && memcmp(header, "CCI3", 4) != 0)
         failure("unsupported worker request version");
     *aid = header[4];
     input_aid = header[4];
-    read_bytes(transid, 4);
-    memcpy(input_transid, transid, 4);
+    read_bytes(input_transid, 4);
+    {
+        char host_transid[5];
+        memcpy(host_transid, input_transid, 4);
+        host_transid[4] = 0;
+        if (cob_put_param_str(3, host_transid) != 0)
+            failure("cannot convert TRANSID to COBOL data");
+    }
     read_bytes(input_applid, 8);
     input_commarea_length = read_u16();
     if (input_commarea_length > MAX_COMMAREA)
-        failure("input COMMAREA exceeds 2048 bytes");
+        failure("input COMMAREA exceeds 32500 bytes");
     read_bytes(input_commarea, input_commarea_length);
     set_cobol_length(calen, input_commarea_length);
     input_count = read_u16();
@@ -224,6 +262,27 @@ void COBCICS_START(unsigned char *aid, unsigned char *calen,
             failure("input field exceeds 256 bytes");
         read_bytes(field->data, field->length);
     }
+    if (has_containers) {
+        unsigned count = read_u16();
+        if (count > MAX_CHANNELS * MAX_CONTAINERS)
+            failure("too many input containers");
+        for (unsigned index = 0; index < count; ++index) {
+            char channel_name[16], container_name[16];
+            read_bytes(channel_name, sizeof channel_name);
+            read_bytes(container_name, sizeof container_name);
+            unsigned length = read_u16();
+            if (length > MAX_CONTAINER_DATA)
+                failure("input container exceeds 2048 bytes");
+            struct channel *channel = make_channel(channel_name, current_scope);
+            if (!channel || find_container(channel, container_name) ||
+                channel->count >= MAX_CONTAINERS)
+                failure("duplicate input container or channel limit");
+            struct container *container = &channel->containers[channel->count++];
+            memcpy(container->name, container_name, 16);
+            container->length = length;
+            read_bytes(container->data, length);
+        }
+    }
     started = 1;
 }
 
@@ -235,6 +294,17 @@ void COBCICS_LINK_ENTER(const unsigned char *length,
         count > 32767 || count > available)
         failure("invalid LINK COMMAREA length or nesting depth");
     link_lengths[link_depth++] = count;
+    memset(link_callers[link_depth - 1], ' ', 8);
+}
+
+void COBCICS_LINK_CALLER(const char *program) {
+    char host_program[9];
+    if (!started || link_depth == 0)
+        failure("LINK_CALLER outside LINK");
+    (void)program;
+    if (!cob_get_param_str(1, host_program, sizeof host_program))
+        failure("cannot convert LINK caller name");
+    memcpy(link_callers[link_depth - 1], host_program, 8);
 }
 
 void COBCICS_SCREEN_ENTER(const unsigned char *length,
@@ -247,11 +317,17 @@ void COBCICS_SCREEN_ENTER(const unsigned char *length,
 
 void COBCICS_LINK_START(unsigned char *aid, unsigned char *calen,
                         unsigned char *transid) {
-    if (!started || link_depth == 0)
-        failure("LINK_START outside linked program");
+    char host_transid[5];
+    if (!started)
+        failure("LINK_START before worker request");
     *aid = input_aid;
-    set_cobol_length(calen, link_lengths[link_depth - 1]);
-    memcpy(transid, input_transid, 4);
+    set_cobol_length(calen, link_depth ? link_lengths[link_depth - 1]
+                                       : input_commarea_length);
+    memcpy(host_transid, input_transid, 4);
+    host_transid[4] = 0;
+    (void)transid;
+    if (cob_put_param_str(3, host_transid) != 0)
+        failure("cannot convert LINK TRANSID to COBOL data");
 }
 
 void COBCICS_LINK_EXIT(void) {
@@ -289,39 +365,127 @@ void COBCICS_GET_COMMAREA(unsigned char *destination,
     set_cobol_length(capacity_and_length, input_commarea_length);
 }
 
+void COBCICS_RECEIVE_INTO(unsigned char *destination,
+                          unsigned char *length,
+                          const unsigned char *capacity,
+                          unsigned char *resp, unsigned char *resp2) {
+    uint16_t available = cobol_length(length);
+    uint16_t size = cobol_length(capacity);
+    if (!started)
+        failure("RECEIVE INTO before worker request");
+    if (available > size)
+        available = size;
+    uint16_t count = 5;
+    if (input_count)
+        count += input_fields[0].length;
+    set_cobol_length(length, count);
+    if (count > available) {
+        set_cobol_response(resp, 22); /* LENGERR */
+        set_cobol_response(resp2, 0);
+        return;
+    }
+    {
+        char host_text[MAX_DATA + 6];
+        memset(host_text, ' ', count);
+        memcpy(host_text, input_transid, 4);
+        if (input_count)
+            memcpy(host_text + 5, input_fields[0].data,
+                   input_fields[0].length);
+        host_text[count] = 0;
+        (void)destination;
+        if (cob_put_param_str(1, host_text) != 0)
+            failure("cannot convert RECEIVE INTO data");
+    }
+    set_cobol_response(resp, 0);
+    set_cobol_response(resp2, 0);
+}
+
 void COBCICS_ASSIGN_APPLID(unsigned char *destination,
                            const unsigned char *length) {
     if (!started || cobol_length(length) != 8)
         failure("ASSIGN APPLID requires an 8-byte area");
-    memcpy(destination, input_applid, 8);
+    char host_applid[9];
+    memcpy(host_applid, input_applid, 8);
+    host_applid[8] = 0;
+    (void)destination;
+    if (cob_put_param_str(1, host_applid) != 0)
+        failure("cannot convert ASSIGN APPLID");
 }
 
 void COBCICS_ASSIGN_PROGRAM(unsigned char *destination,
                             const unsigned char *length, const char *program) {
     if (!started || cobol_length(length) != 8)
         failure("ASSIGN PROGRAM requires an 8-byte area");
-    memcpy(destination, program, 8);
+    (void)destination;
+    (void)program;
+    char host_program[9];
+    if (!cob_get_param_str(3, host_program, sizeof host_program) ||
+        cob_put_param_str(1, host_program) != 0)
+        failure("cannot convert ASSIGN PROGRAM");
+}
+
+void COBCICS_ASSIGN_SYSID(unsigned char *destination,
+                          const unsigned char *length) {
+    if (!started || cobol_length(length) != 4)
+        failure("ASSIGN SYSID requires a 4-byte area");
+    (void)destination;
+    if (cob_put_param_str(1, "L001") != 0)
+        failure("cannot convert ASSIGN SYSID");
+}
+
+void COBCICS_ASSIGN_STARTCODE(unsigned char *destination,
+                              const unsigned char *length) {
+    if (!started || cobol_length(length) != 2)
+        failure("ASSIGN STARTCODE requires a 2-byte area");
+    (void)destination;
+    if (cob_put_param_str(1, link_depth ? "DL" : "TO") != 0)
+        failure("cannot convert ASSIGN STARTCODE");
+}
+
+void COBCICS_ASSIGN_INVOKINGPROG(unsigned char *destination,
+                                 const unsigned char *length) {
+    if (!started || cobol_length(length) != 8)
+        failure("ASSIGN INVOKINGPROG requires an 8-byte area");
+    char host_program[9];
+    if (link_depth)
+        memcpy(host_program, link_callers[link_depth - 1], 8);
+    else
+        memset(host_program, ' ', 8);
+    host_program[8] = 0;
+    (void)destination;
+    if (cob_put_param_str(1, host_program) != 0)
+        failure("cannot convert ASSIGN INVOKINGPROG");
 }
 
 void COBCICS_GET_FIELD(const char *name, unsigned char *destination,
                        unsigned char *capacity_and_length, unsigned char *flag) {
     uint16_t capacity = cobol_length(capacity_and_length);
+    char host_name[9];
     if (!started || capacity > MAX_DATA)
         failure("invalid GET_FIELD call");
+    (void)name;
+    if (!cob_get_param_str(1, host_name, sizeof host_name))
+        failure("cannot convert input field name");
     memset(destination, 0, (size_t)capacity);
     set_cobol_length(capacity_and_length, 0);
     *flag = 0;
     for (unsigned index = 0; index < input_count; ++index) {
         const struct field *field = &input_fields[index];
-        if (memcmp(field->name, name, 8) != 0)
+        if (memcmp(field->name, host_name, 8) != 0)
             continue;
         if (field->length > (unsigned)capacity)
             failure("input field exceeds COBOL data item");
-        memcpy(destination, field->data, field->length);
-        if (terminal_uctranst == 450 && !receive_asis)
-            for (unsigned offset = 0; offset < field->length; ++offset)
-                if (destination[offset] >= 'a' && destination[offset] <= 'z')
-                    destination[offset] = (unsigned char)(destination[offset] - 'a' + 'A');
+        {
+            char host_data[MAX_DATA + 1];
+            memcpy(host_data, field->data, field->length);
+            host_data[field->length] = 0;
+            if (terminal_uctranst == 450 && !receive_asis)
+                for (unsigned offset = 0; offset < field->length; ++offset)
+                    if (host_data[offset] >= 'a' && host_data[offset] <= 'z')
+                        host_data[offset] = (char)(host_data[offset] - 'a' + 'A');
+            if (cob_put_param_str(2, host_data) != 0)
+                failure("cannot convert input field data");
+        }
         set_cobol_length(capacity_and_length, field->length);
         *flag = field->length == 0 ? 0x80 : 0;
         return;
@@ -711,6 +875,14 @@ void COBCICS_SYNCPOINT(const unsigned char *mode, unsigned char *resp,
     if (DB2SQL_END_TASK(*mode == 0) != 0)
         failure("Db2 SYNCPOINT failed");
 #endif
+#ifdef COBCICS_GENAPP
+    if (*mode == 0) {
+        if (COBCICS_START_FLUSH() != 0)
+            failure("CICS START scheduling failed");
+    } else {
+        COBCICS_START_CANCEL();
+    }
+#endif
     set_cobol_response(resp, 0);
     set_cobol_response(resp2, 0);
 }
@@ -852,12 +1024,13 @@ void COBCICS_ASKTIME(unsigned char *abstime, const unsigned char *capacity) {
     pack_abstime(abstime, milliseconds);
 }
 
-void COBCICS_FORMATTIME(const unsigned char *abstime,
+static void format_time(const unsigned char *abstime,
                          const unsigned char *abstime_capacity,
                          unsigned char *date, const unsigned char *date_capacity,
                          unsigned char *clock, const unsigned char *clock_capacity,
                          const unsigned char *separator,
-                         unsigned char *resp, unsigned char *resp2) {
+                         unsigned char *resp, unsigned char *resp2,
+                         int month_first) {
     if (!started || cobol_length(abstime_capacity) != 8 ||
         cobol_length(date_capacity) < 10 || cobol_length(clock_capacity) < 6)
         failure("invalid FORMATTIME data area length");
@@ -881,10 +1054,17 @@ void COBCICS_FORMATTIME(const unsigned char *abstime,
     char formatted_date[11];
     char formatted_time[7];
     int date_size;
-    if (*separator)
+    if (*separator && month_first)
+        date_size = snprintf(formatted_date, sizeof formatted_date,
+                             "%02u%c%02u%c%04d", month, *separator,
+                             day, *separator, year);
+    else if (*separator)
         date_size = snprintf(formatted_date, sizeof formatted_date,
                              "%02u%c%02u%c%04d", day, *separator,
                              month, *separator, year);
+    else if (month_first)
+        date_size = snprintf(formatted_date, sizeof formatted_date,
+                             "%02u%02u%04d", month, day, year);
     else
         date_size = snprintf(formatted_date, sizeof formatted_date,
                              "%02u%02u%04d", day, month, year);
@@ -903,6 +1083,26 @@ void COBCICS_FORMATTIME(const unsigned char *abstime,
     set_cobol_response(resp2, 0);
 }
 
+void COBCICS_FORMATTIME(const unsigned char *abstime,
+                         const unsigned char *abstime_capacity,
+                         unsigned char *date, const unsigned char *date_capacity,
+                         unsigned char *clock, const unsigned char *clock_capacity,
+                         const unsigned char *separator,
+                         unsigned char *resp, unsigned char *resp2) {
+    format_time(abstime, abstime_capacity, date, date_capacity,
+                clock, clock_capacity, separator, resp, resp2, 0);
+}
+
+void COBCICS_FORMATTIME_MMDD(const unsigned char *abstime,
+                              const unsigned char *abstime_capacity,
+                              unsigned char *date, const unsigned char *date_capacity,
+                              unsigned char *clock, const unsigned char *clock_capacity,
+                              const unsigned char *separator,
+                              unsigned char *resp, unsigned char *resp2) {
+    format_time(abstime, abstime_capacity, date, date_capacity,
+                clock, clock_capacity, separator, resp, resp2, 1);
+}
+
 void COBCICS_ABEND(const char *abcode, const unsigned char *length) {
     uint16_t count = cobol_length(length);
     if (!started || count == 0 || count > 4)
@@ -915,6 +1115,9 @@ void COBCICS_ABEND(const char *abcode, const unsigned char *length) {
               code[index] == ' '))
             failure("invalid ABEND code");
     fprintf(stderr, "cobcics abend: %.4s\n", code);
+#ifdef COBCICS_GENAPP
+    COBCICS_START_CANCEL();
+#endif
 #ifdef COBCICS_DB2SQL
     if (DB2SQL_END_TASK(0) != 0)
         fprintf(stderr, "cobcics bridge: Db2 rollback failed\n");
@@ -946,6 +1149,7 @@ void COBCICS_RECEIVE_STATUS(unsigned char *resp, unsigned char *resp2) {
 void COBCICS_SEND_FIELD(const char *name, const unsigned char *source,
                         const unsigned char *length) {
     uint16_t count = cobol_length(length);
+    char host_name[9], host_data[MAX_DATA + 1];
     if (!started || count > MAX_DATA || output_count >= MAX_FIELDS)
         failure("invalid SEND_FIELD call");
     unsigned nonzero = 0;
@@ -953,28 +1157,37 @@ void COBCICS_SEND_FIELD(const char *name, const unsigned char *source,
         nonzero |= source[index];
     if (!nonzero)
         return; /* BMS low-values leave the physical map's default data. */
+    (void)name;
+    if (!cob_get_param_str(1, host_name, sizeof host_name) ||
+        !cob_get_param_str(2, host_data, sizeof host_data))
+        failure("cannot convert output field");
     if (screen_action == 4)
         screen_action = 0;
     for (unsigned index = 0; index < output_count; ++index)
-        if (memcmp(output_fields[index].name, name, 8) == 0)
+        if (memcmp(output_fields[index].name, host_name, 8) == 0)
             failure("duplicate output field");
     struct field *field = &output_fields[output_count++];
-    memcpy(field->name, name, 8);
+    memcpy(field->name, host_name, 8);
     field->length = count;
-    memcpy(field->data, source, field->length);
+    memcpy(field->data, host_data, field->length);
 }
 
 void COBCICS_SEND_ATTRIBUTE(const char *name, const unsigned char *value) {
+    char host_name[9];
     if (!started)
         failure("SEND_ATTRIBUTE before START");
-    if (*value == 0 || *value == 0xff || *value == 0x80)
+    if (*value == 0 || *value == 0xff || *value == 0x80 ||
+        *value == ' ' || *value == 0x40)
         return; /* Low/high values or input erased flags do not set attributes. */
+    (void)name;
+    if (!cob_get_param_str(1, host_name, sizeof host_name))
+        failure("cannot convert output attribute name");
     if (output_attribute_count >= MAX_FIELDS)
         failure("too many output attributes");
     for (unsigned index = 0; index < output_attribute_count; ++index)
-        if (memcmp(output_attributes[index].name, name, 8) == 0)
+        if (memcmp(output_attributes[index].name, host_name, 8) == 0)
             failure("duplicate output attribute");
-    memcpy(output_attributes[output_attribute_count].name, name, 8);
+    memcpy(output_attributes[output_attribute_count].name, host_name, 8);
     output_attributes[output_attribute_count++].value = *value;
 }
 
@@ -999,11 +1212,16 @@ void COBCICS_SEND_CONTROL(void) {
 void COBCICS_SEND_TEXT(const unsigned char *source, const unsigned char *length,
                        const unsigned char *capacity) {
     uint16_t count = cobol_length(length);
-    if (!started || count > MAX_TEXT || count > cobol_length(capacity))
+    /* CICS FROM points into contiguous COBOL storage.  GenApp passes the
+       first elementary item of a group and includes following items in
+       LENGTH, so LENGTH can exceed that item's declared size. */
+    (void)capacity;
+    if (!started || count > MAX_TEXT)
         failure("invalid SEND TEXT length");
     output_count = 0;
     output_attribute_count = 0;
     memcpy(output_text, source, count);
+    text_to_host(output_text, count);
     output_text_length = count;
     screen_action = 5; /* Erase/Write text and restore keyboard. */
 }
@@ -1011,20 +1229,24 @@ void COBCICS_SEND_TEXT(const unsigned char *source, const unsigned char *length,
 void COBCICS_SET_RETURN(const char *transid, const unsigned char *commarea,
                         const unsigned char *length) {
     uint16_t count = cobol_length(length);
+    char host_transid[5];
     int seen_space = 0;
     if (!started || link_depth != screen_root_depth || count > MAX_COMMAREA)
         failure("invalid SET_RETURN call");
+    (void)transid;
+    if (!cob_get_param_str(1, host_transid, sizeof host_transid))
+        failure("cannot convert RETURN TRANSID from COBOL data");
     for (unsigned index = 0; index < 4; ++index) {
-        if (transid[index] == ' ') {
+        if (host_transid[index] == ' ') {
             if (index == 0)
                 failure("invalid TRANSID");
             seen_space = 1;
         } else if (seen_space ||
-                   !((transid[index] >= 'A' && transid[index] <= 'Z') ||
-                     (transid[index] >= '0' && transid[index] <= '9')))
+                   !((host_transid[index] >= 'A' && host_transid[index] <= 'Z') ||
+                     (host_transid[index] >= '0' && host_transid[index] <= '9')))
             failure("invalid TRANSID");
     }
-    memcpy(output_transid, transid, 4);
+    memcpy(output_transid, host_transid, 4);
     output_commarea_length = count;
     memcpy(output_commarea, commarea, count);
 }
@@ -1041,6 +1263,10 @@ void COBCICS_FINISH(void) {
 #ifdef COBCICS_DB2SQL
     if (DB2SQL_END_TASK(1) != 0)
         failure("Db2 task commit failed");
+#endif
+#ifdef COBCICS_GENAPP
+    if (COBCICS_START_FLUSH() != 0)
+        failure("CICS START scheduling failed");
 #endif
     write_bytes("CCO6", 4);
     write_u16((uint16_t)output_count);

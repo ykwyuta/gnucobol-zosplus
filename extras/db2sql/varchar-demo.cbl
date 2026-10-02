@@ -1,0 +1,27 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DB2VARCHARDEMO.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 HV-IN.
+          49 HV-IN-LEN PIC S9(4) COMP VALUE 5.
+          49 HV-IN-CHARS PIC X(16) VALUE 'HELLO'.
+       01 HV-OUT.
+          49 HV-OUT-LEN PIC S9(4) COMP VALUE 0.
+          49 HV-OUT-CHARS PIC X(16) VALUE SPACES.
+           EXEC SQL INCLUDE SQLCA END-EXEC.
+       PROCEDURE DIVISION.
+           EXEC SQL
+             SELECT CAST(:HV-IN AS VARCHAR(16))
+               INTO :HV-OUT FROM SYSIBM.SYSDUMMY1
+           END-EXEC.
+           IF SQLCODE NOT = 0 OR HV-OUT-LEN NOT = 5
+               OR HV-OUT-CHARS(1:5) NOT = 'HELLO'
+               PERFORM FAILED
+           END-IF.
+           DISPLAY 'DB2 VARCHAR group input/output OK'.
+           MOVE 0 TO RETURN-CODE.
+           STOP RUN.
+       FAILED.
+           DISPLAY 'DB2 VARCHAR FAILED ' SQLCODE ' ' SQLSTATE.
+           MOVE 1 TO RETURN-CODE.
+           STOP RUN.

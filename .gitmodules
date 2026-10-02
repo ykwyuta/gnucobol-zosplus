@@ -1,0 +1,3 @@
+[submodule "reference/cics-genapp"]
+	path = reference/cics-genapp
+	url = https://github.com/cicsdev/cics-genapp.git

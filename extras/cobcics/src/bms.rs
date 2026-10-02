@@ -18,6 +18,7 @@ pub struct Field {
     pub initial_cursor: bool,
     pub fset: bool,
     pub justify_right: bool,
+    pub justify_zero: bool,
 }
 
 impl Field {
@@ -84,7 +85,7 @@ fn statements(source: &str) -> Result<Vec<(usize, String)>, String> {
             pending.push(' ');
         }
         pending.push_str(body);
-        let continuation = raw.as_bytes().get(71) == Some(&b'*')
+        let continuation = raw.as_bytes().get(71).is_some_and(|byte| *byte != b' ')
             || (raw.len() < 72 && raw.trim_end().ends_with('*'));
         if continuation && pending.ends_with('*') {
             pending.pop();
@@ -280,7 +281,7 @@ pub fn parse(source: &str) -> Result<Vec<Map>, String> {
                     &opts,
                     &[
                         "POS", "LENGTH", "INITIAL", "ATTRB", "COLOR", "HILIGHT", "OUTLINE", "PS",
-                        "SOSI", "PICOUT", "OCCURS", "JUSTIFY",
+                        "SOSI", "PICOUT", "OCCURS", "JUSTIFY", "XINIT", "VALIDN",
                     ],
                     line,
                 )?;
@@ -301,15 +302,39 @@ pub fn parse(source: &str) -> Result<Vec<Map>, String> {
                     .map_err(|_| format!("line {line}: invalid OCCURS"))?
                     .unwrap_or(1);
                 let picout = value(&opts, "PICOUT").map(quoted).transpose()?;
-                let initial = value(&opts, "INITIAL")
-                    .map(quoted)
-                    .transpose()?
-                    .unwrap_or_default();
-                let justify_right = match value(&opts, "JUSTIFY") {
-                    None | Some("LEFT") => false,
-                    Some("RIGHT") => true,
+                if value(&opts, "INITIAL").is_some() && value(&opts, "XINIT").is_some() {
+                    return Err(format!("line {line}: INITIAL and XINIT are mutually exclusive"));
+                }
+                let initial = if let Some(hex) = value(&opts, "XINIT") {
+                    let hex = quoted(hex)?;
+                    if hex.len() != length * 2 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                        return Err(format!("line {line}: XINIT must contain LENGTH hexadecimal bytes"));
+                    }
+                    let mut decoded = String::with_capacity(length);
+                    for pair in hex.as_bytes().chunks_exact(2) {
+                        let digits = std::str::from_utf8(pair).expect("validated ASCII hex");
+                        let byte = u8::from_str_radix(digits, 16).expect("validated hex digits");
+                        if byte != 0 {
+                            return Err(format!("line {line}: nonzero XINIT bytes are not yet supported"));
+                        }
+                        decoded.push('\0');
+                    }
+                    decoded
+                } else {
+                    value(&opts, "INITIAL")
+                        .map(quoted)
+                        .transpose()?
+                        .unwrap_or_default()
+                };
+                let (justify_right, justify_zero) = match value(&opts, "JUSTIFY") {
+                    None | Some("LEFT") | Some("(BLANK)") => (false, false),
+                    Some("RIGHT") | Some("(RIGHT,BLANK)") => (true, false),
+                    Some("(RIGHT,ZERO)") => (true, true),
                     Some(_) => return Err(format!("line {line}: invalid JUSTIFY")),
                 };
+                if value(&opts, "VALIDN").is_some_and(|rule| rule != "(MUSTENTER)") {
+                    return Err(format!("line {line}: unsupported VALIDN rule"));
+                }
                 let attr = value(&opts, "ATTRB")
                     .map(|v| v.trim_matches(['(', ')']))
                     .unwrap_or("")
@@ -356,6 +381,7 @@ pub fn parse(source: &str) -> Result<Vec<Map>, String> {
                     initial_cursor: attributes.contains("IC"),
                     fset: attributes.contains("FSET"),
                     justify_right,
+                    justify_zero,
                 });
             }
             _ => unreachable!(),
@@ -444,5 +470,21 @@ mod tests {
         let source = "M DFHMSD TYPE=MAP\nP DFHMDI SIZE=(24,80)\nA DFHMDF POS=(1,1),LENGTH=15,INITIAL='Transfer fund*\n               s.'\n";
         let map = parse(source).unwrap().remove(0);
         assert_eq!(map.fields[0].initial, "Transfer funds.");
+    }
+
+    #[test]
+    fn genapp_mapset_and_zero_initialized_fields() {
+        let source = include_str!("../../../reference/cics-genapp/base/src/ssmap.bms");
+        assert_eq!(source.matches("INITIAL='Fund Name '    '").count(), 1);
+        let source = source.replace("INITIAL='Fund Name '    '", "INITIAL='Fund Name '");
+        let maps = parse(&source).unwrap();
+        assert_eq!(maps.len(), 6);
+        assert_eq!(maps[0].name, "SSMAPC1");
+        assert_eq!(maps[5].name, "SSMAPP5");
+        let paid = maps[5].fields.iter()
+            .find(|field| field.name.as_deref() == Some("ENP5PAD"))
+            .unwrap();
+        assert!(paid.justify_right && paid.justify_zero);
+        assert_eq!(paid.initial, "\0".repeat(10));
     }
 }

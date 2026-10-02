@@ -6,7 +6,17 @@ use std::path::PathBuf;
 use cobcics::server::WorkerRouting;
 
 fn usage() -> &'static str {
-    "usage: cobcicsd --bms FILE [--map NAME] [--listen 127.0.0.1:3270] [--applid ID] [--worker COBOL-EXE] [--transid ID --route ID=COBOL-EXE --map-route ID=BMS-FILE ...]"
+    "usage: cobcicsd --bms FILE [--map NAME] [--listen 127.0.0.1:3270] [--applid ID] [--worker COBOL-EXE] [--transid ID --route ID=COBOL-EXE --map-route ID=BMS-FILE#MAP ...]"
+}
+
+fn select_map(source: &str, name: Option<&str>) -> Result<cobcics::bms::Map, String> {
+    let maps = cobcics::bms::parse(source)?;
+    match name {
+        Some(name) => maps.into_iter().find(|map| map.name == name)
+            .ok_or_else(|| format!("BMS map not found: {name}")),
+        None if maps.len() == 1 => Ok(maps.into_iter().next().unwrap()),
+        None => Err("BMS source has multiple maps; specify a map name".to_owned()),
+    }
 }
 
 fn run() -> Result<(), String> {
@@ -50,17 +60,20 @@ fn run() -> Result<(), String> {
                 let value = args.next().ok_or_else(|| usage().to_owned())?;
                 let (name, path) = value
                     .split_once('=')
-                    .ok_or_else(|| "--map-route requires ID=BMS-FILE".to_owned())?;
+                    .ok_or_else(|| "--map-route requires ID=BMS-FILE#MAP".to_owned())?;
                 if path.is_empty() {
                     return Err("--map-route requires a BMS file".to_owned());
                 }
+                let (path, map_name) = match path.split_once('#') {
+                    Some((path, name)) if !path.is_empty() && !name.is_empty() =>
+                        (path, Some(name)),
+                    Some(_) => return Err("--map-route requires BMS-FILE#MAP".to_owned()),
+                    None => (path, None),
+                };
                 let source = fs::read_to_string(path).map_err(|err| format!("{path}: {err}"))?;
-                let mut maps = cobcics::bms::parse(&source)?;
-                if maps.len() != 1 {
-                    return Err(format!("--map-route BMS file must contain one map: {path}"));
-                }
+                let map = select_map(&source, map_name)?;
                 let name = cobcics::worker::transid(name)?;
-                if routing.maps.insert(name, maps.remove(0)).is_some() {
+                if routing.maps.insert(name, map).is_some() {
                     return Err(format!("duplicate map route for TRANSID {name:?}"));
                 }
             }
@@ -79,15 +92,7 @@ fn run() -> Result<(), String> {
     }
     let bms = bms.ok_or_else(|| usage().to_owned())?;
     let source = fs::read_to_string(&bms).map_err(|err| format!("{bms}: {err}"))?;
-    let maps = cobcics::bms::parse(&source)?;
-    let map = match map_name {
-        Some(name) => maps
-            .into_iter()
-            .find(|map| map.name == name)
-            .ok_or_else(|| format!("BMS map not found: {name}"))?,
-        None if maps.len() == 1 => maps.into_iter().next().unwrap(),
-        None => return Err("BMS source has multiple maps; specify --map".to_owned()),
-    };
+    let map = select_map(&source, map_name.as_deref())?;
     routing
         .maps
         .entry(routing.initial_transid)
@@ -99,6 +104,7 @@ fn run() -> Result<(), String> {
         map.name,
         listener.local_addr().unwrap()
     );
+    cobcics::schedule::start(routing.clone(), map.clone());
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
@@ -125,5 +131,22 @@ fn main() {
     if let Err(err) = run() {
         eprintln!("cobcicsd: {err}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selects_one_map_from_a_mapset() {
+        let source = "SSMAP DFHMSD TYPE=MAP,MODE=INOUT\n\
+SSMAPC1 DFHMDI SIZE=(24,80)\n\
+CUST DFHMDF POS=(1,1),LENGTH=4\n\
+SSMAPP1 DFHMDI SIZE=(24,80)\n\
+POLICY DFHMDF POS=(1,1),LENGTH=4\n";
+        assert_eq!(select_map(source, Some("SSMAPP1")).unwrap().name, "SSMAPP1");
+        assert!(select_map(source, None).is_err());
+        assert!(select_map(source, Some("MISSING")).is_err());
     }
 }

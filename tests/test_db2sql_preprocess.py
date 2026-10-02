@@ -43,6 +43,31 @@ class Db2SqlPreprocessTests(unittest.TestCase):
         )
         self.assertIn("Db2 DECLARE TABLE", "".join(declaration))
 
+    def test_genapp_indicator_cursor_and_identity_assignment(self):
+        cursors = {}
+        declared = MODULE.convert_sql(
+            "DECLARE C INSENSITIVE SCROLL CURSOR FOR "
+            "SELECT ID FROM T WHERE K = :KEY INDICATOR :KEY-IND",
+            False, cursors,
+        )
+        self.assertIn("cursor C declared", "".join(declared))
+        self.assertEqual(cursors["C"][1], [("KEY", "KEY-IND")])
+        held = MODULE.convert_sql(
+            "DECLARE H CURSOR WITH HOLD FOR SELECT ID FROM T",
+            False, cursors,
+        )
+        self.assertIn("cursor H declared", "".join(held))
+        selected = MODULE.convert_sql(
+            "SELECT ID INTO :VALUE INDICATOR :VALUE-IND FROM T "
+            "WHERE K = :KEY INDICATOR :KEY-IND", False,
+        )
+        self.assertIn("MOVE '01,0111' TO DB2-SQL-META", "".join(selected))
+        identity = MODULE.convert_sql(
+            "SET :NEW-ID = IDENTITY_VAL_LOCAL()", False,
+        )
+        self.assertIn("SYSDUMMY1", "".join(identity))
+        self.assertIn("NEW-ID", "".join(identity))
+
     def test_unsupported_sql_is_an_error(self):
         with self.assertRaises(MODULE.SqlError):
             MODULE.convert_sql("MERGE INTO T", True)
