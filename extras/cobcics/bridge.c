@@ -22,6 +22,7 @@
 
 #define MAX_FIELDS 64
 #define MAX_DATA 256
+#define MAX_WIRE_DATA 1024
 #define MAX_COMMAREA 32500
 #define MAX_TEXT 1919
 #define MAX_LINK_DEPTH 8
@@ -34,7 +35,7 @@
 struct field {
     char name[8];
     uint16_t length;
-    unsigned char data[MAX_DATA];
+    unsigned char data[MAX_WIRE_DATA];
 };
 
 static struct field input_fields[MAX_FIELDS];
@@ -63,7 +64,7 @@ static uint16_t output_commarea_length;
 static char output_transid[4] = {' ', ' ', ' ', ' '};
 static unsigned char screen_action = 4; /* 0: map, 1: erase, 2: data, 3: data+alarm, 4: unchanged. */
 static unsigned char return_immediate;
-static unsigned char output_text[MAX_TEXT];
+static unsigned char output_text[MAX_TEXT * 4 + 1];
 static uint16_t output_text_length;
 static uint32_t terminal_uctranst = 451; /* NOUCTRAN */
 static unsigned char receive_asis;
@@ -160,17 +161,32 @@ static uint16_t cobol_length(const unsigned char *value) {
     return (uint16_t)((unsigned)value[0] << 8 | value[1]);
 }
 
-static const cob_charset *current_data_charset(void) {
-    cob_global *global = cob_get_global_ptr();
-    cob_module *module = global ? global->cob_current_module : NULL;
-    return module && module->charset ? module->charset : &cob_charset_native;
-}
-
-static void text_to_host(unsigned char *data, size_t length) {
-    const unsigned char *table = current_data_charset()->to_host;
-    if (table)
-        for (size_t index = 0; index < length; ++index)
-            data[index] = table[data[index]];
+/* Count encoded COBOL bytes for a UTF-8 worker field. SO/SI delimit a
+   two-byte run but do not themselves consume a Unicode character. */
+static size_t data_length_for_host(const unsigned char *data, size_t capacity,
+                                   const char *host_text) {
+    size_t characters = 0, offset = 0;
+    int dbcs = 0;
+    for (const unsigned char *p = (const unsigned char *)host_text; *p; ++p)
+        if ((*p & 0xc0) != 0x80)
+            ++characters;
+    while (characters && offset < capacity) {
+        if (data[offset] == 0x0e) {
+            dbcs = 1;
+            ++offset;
+        } else if (data[offset] == 0x0f) {
+            dbcs = 0;
+            ++offset;
+        } else {
+            offset += dbcs ? 2 : 1;
+            --characters;
+        }
+    }
+    if (dbcs && offset < capacity && data[offset] == 0x0f)
+        ++offset;
+    if (characters || offset > capacity)
+        failure("cannot determine converted field length");
+    return offset;
 }
 
 static void set_cobol_length(unsigned char *value, uint16_t length) {
@@ -258,8 +274,8 @@ void COBCICS_START(unsigned char *aid, unsigned char *calen,
         struct field *field = &input_fields[index];
         read_bytes(field->name, 8);
         field->length = read_u16();
-        if (field->length > MAX_DATA)
-            failure("input field exceeds 256 bytes");
+        if (field->length > MAX_WIRE_DATA)
+            failure("input field exceeds UTF-8 worker limit");
         read_bytes(field->data, field->length);
     }
     if (has_containers) {
@@ -375,26 +391,30 @@ void COBCICS_RECEIVE_INTO(unsigned char *destination,
         failure("RECEIVE INTO before worker request");
     if (available > size)
         available = size;
-    uint16_t count = 5;
+    uint16_t host_count = 5;
     if (input_count)
-        count += input_fields[0].length;
-    set_cobol_length(length, count);
-    if (count > available) {
-        set_cobol_response(resp, 22); /* LENGERR */
-        set_cobol_response(resp2, 0);
-        return;
-    }
+        host_count += input_fields[0].length;
     {
-        char host_text[MAX_DATA + 6];
-        memset(host_text, ' ', count);
+        char host_text[MAX_WIRE_DATA + 6];
+        memset(host_text, ' ', host_count);
         memcpy(host_text, input_transid, 4);
         if (input_count)
             memcpy(host_text + 5, input_fields[0].data,
                    input_fields[0].length);
-        host_text[count] = 0;
+        host_text[host_count] = 0;
         (void)destination;
-        if (cob_put_param_str(1, host_text) != 0)
-            failure("cannot convert RECEIVE INTO data");
+        if (cob_put_param_str(1, host_text) != 0) {
+            set_cobol_response(resp, 22); /* LENGERR */
+            set_cobol_response(resp2, 0);
+            return;
+        }
+        size_t count = data_length_for_host(destination, size, host_text);
+        set_cobol_length(length, (uint16_t)count);
+        if (count > available) {
+            set_cobol_response(resp, 22);
+            set_cobol_response(resp2, 0);
+            return;
+        }
     }
     set_cobol_response(resp, 0);
     set_cobol_response(resp2, 0);
@@ -473,10 +493,9 @@ void COBCICS_GET_FIELD(const char *name, unsigned char *destination,
         const struct field *field = &input_fields[index];
         if (memcmp(field->name, host_name, 8) != 0)
             continue;
-        if (field->length > (unsigned)capacity)
-            failure("input field exceeds COBOL data item");
+        size_t data_length;
         {
-            char host_data[MAX_DATA + 1];
+            char host_data[MAX_WIRE_DATA + 1];
             memcpy(host_data, field->data, field->length);
             host_data[field->length] = 0;
             if (terminal_uctranst == 450 && !receive_asis)
@@ -485,9 +504,10 @@ void COBCICS_GET_FIELD(const char *name, unsigned char *destination,
                         host_data[offset] = (char)(host_data[offset] - 'a' + 'A');
             if (cob_put_param_str(2, host_data) != 0)
                 failure("cannot convert input field data");
+            data_length = data_length_for_host(destination, capacity, host_data);
         }
-        set_cobol_length(capacity_and_length, field->length);
-        *flag = field->length == 0 ? 0x80 : 0;
+        set_cobol_length(capacity_and_length, (uint16_t)data_length);
+        *flag = data_length == 0 ? 0x80 : 0;
         return;
     }
 }
@@ -1149,7 +1169,7 @@ void COBCICS_RECEIVE_STATUS(unsigned char *resp, unsigned char *resp2) {
 void COBCICS_SEND_FIELD(const char *name, const unsigned char *source,
                         const unsigned char *length) {
     uint16_t count = cobol_length(length);
-    char host_name[9], host_data[MAX_DATA + 1];
+    char host_name[9], host_data[MAX_WIRE_DATA + 1];
     if (!started || count > MAX_DATA || output_count >= MAX_FIELDS)
         failure("invalid SEND_FIELD call");
     unsigned nonzero = 0;
@@ -1168,7 +1188,9 @@ void COBCICS_SEND_FIELD(const char *name, const unsigned char *source,
             failure("duplicate output field");
     struct field *field = &output_fields[output_count++];
     memcpy(field->name, host_name, 8);
-    field->length = count;
+    field->length = (uint16_t)strlen(host_data);
+    if (field->length > MAX_WIRE_DATA)
+        failure("converted output field exceeds worker limit");
     memcpy(field->data, host_data, field->length);
 }
 
@@ -1220,9 +1242,12 @@ void COBCICS_SEND_TEXT(const unsigned char *source, const unsigned char *length,
         failure("invalid SEND TEXT length");
     output_count = 0;
     output_attribute_count = 0;
-    memcpy(output_text, source, count);
-    text_to_host(output_text, count);
-    output_text_length = count;
+    cob_field area = *cob_get_param_field(1, "COBCICS_SEND_TEXT");
+    area.data = (unsigned char *)source;
+    area.size = count;
+    if (!cob_get_field_str(&area, (char *)output_text, sizeof output_text))
+        failure("cannot convert SEND TEXT data");
+    output_text_length = (uint16_t)strlen((char *)output_text);
     screen_action = 5; /* Erase/Write text and restore keyboard. */
 }
 

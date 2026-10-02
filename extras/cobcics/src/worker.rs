@@ -5,11 +5,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::bms::Map;
+use crate::codec::HostCodec;
 use crate::tn3270::Input;
 
 const MAX_FIELDS: usize = 64;
 const MAX_COMMAREA: usize = 2048;
-const MAX_TEXT: usize = 1919;
+const MAX_TEXT: usize = 8192; // UTF-8 may use more bytes than terminal EBCDIC.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScreenAction {
@@ -90,6 +91,11 @@ fn name_bytes(name: &str) -> Result<[u8; 8], String> {
 }
 
 pub fn request(input: &Input, session: &Session, applid: &[u8; 8]) -> Result<Vec<u8>, String> {
+    request_with_codec(input, session, applid, HostCodec::Cp037)
+}
+
+pub fn request_with_codec(input: &Input, session: &Session, applid: &[u8; 8],
+                          codec: HostCodec) -> Result<Vec<u8>, String> {
     if input.fields.len() > MAX_FIELDS {
         return Err("too many modified fields".to_owned());
     }
@@ -105,9 +111,9 @@ pub fn request(input: &Input, session: &Session, applid: &[u8; 8]) -> Result<Vec
     bytes.extend_from_slice(&session.commarea);
     bytes.extend_from_slice(&(input.fields.len() as u16).to_be_bytes());
     for (name, raw) in &input.fields {
-        let text = crate::codec::decode(raw)?;
-        if text.len() > 256 {
-            return Err(format!("input field {name} exceeds 256 bytes"));
+        let text = codec.decode(raw)?;
+        if text.len() > 1024 {
+            return Err(format!("input field {name} exceeds 1024 UTF-8 bytes"));
         }
         bytes.extend_from_slice(&name_bytes(name)?);
         bytes.extend_from_slice(&(text.len() as u16).to_be_bytes());
@@ -116,7 +122,13 @@ pub fn request(input: &Input, session: &Session, applid: &[u8; 8]) -> Result<Vec
     Ok(bytes)
 }
 
+#[cfg(test)]
 fn response(map: &Map, bytes: &[u8]) -> Result<(Vec<(usize, usize, String)>, Outcome), String> {
+    response_with_codec(map, bytes, HostCodec::Cp037)
+}
+
+fn response_with_codec(map: &Map, bytes: &[u8], codec: HostCodec)
+    -> Result<(Vec<(usize, usize, String)>, Outcome), String> {
     if bytes.len() < 16 || !matches!(&bytes[..4], b"CCO5" | b"CCO6") {
         return Err("worker response has no CCO5/CCO6 header".to_owned());
     }
@@ -135,7 +147,7 @@ fn response(map: &Map, bytes: &[u8]) -> Result<(Vec<(usize, usize, String)>, Out
             .trim_end();
         let length = u16::from_be_bytes([bytes[index + 8], bytes[index + 9]]) as usize;
         index += 10;
-        if length > 256 || bytes.len() - index < length {
+        if length > 1024 || bytes.len() - index < length {
             return Err(format!("invalid worker field length: {name}"));
         }
         let (field_index, occurrence) = map
@@ -148,19 +160,16 @@ fn response(map: &Map, bytes: &[u8]) -> Result<(Vec<(usize, usize, String)>, Out
                     .map(|occurrence| (field_index, occurrence))
             })
             .ok_or_else(|| format!("worker returned unknown field: {name}"))?;
-        if length > map.fields[field_index].length
-            || fields
+        if fields
                 .iter()
                 .any(|(seen, item, _)| *seen == field_index && *item == occurrence)
         {
-            return Err(format!(
-                "worker returned oversized or duplicate field: {name}"
-            ));
+            return Err(format!("worker returned duplicate field: {name}"));
         }
         let text = std::str::from_utf8(&bytes[index..index + length])
             .map_err(|_| format!("worker field {name} is not UTF-8"))?;
-        if !text.is_ascii() {
-            return Err(format!("worker field {name} must be ASCII for CP037"));
+        if codec.encode(text)?.len() > map.fields[field_index].length {
+            return Err(format!("worker field {name} exceeds BMS EBCDIC length"));
         }
         fields.push((field_index, occurrence, text.to_owned()));
         index += length;
@@ -236,8 +245,8 @@ fn response(map: &Map, bytes: &[u8]) -> Result<(Vec<(usize, usize, String)>, Out
     let text = if screen == ScreenAction::Text {
         let value = std::str::from_utf8(&bytes[index..])
             .map_err(|_| "worker text is not UTF-8".to_owned())?;
-        if !value.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) {
-            return Err("worker text must be printable ASCII for CP037".to_owned());
+        if value.chars().any(char::is_control) || codec.encode(value)?.len() > 1919 {
+            return Err("worker text is not printable or exceeds terminal length".to_owned());
         }
         Some(value.to_owned())
     } else {
@@ -295,7 +304,18 @@ pub fn run(
     session: &Session,
     applid: &[u8; 8],
 ) -> Result<Outcome, String> {
-    let request = request(input, session, applid)?;
+    run_with_codec(worker, map, input, session, applid, HostCodec::Cp037)
+}
+
+pub fn run_with_codec(
+    worker: &Path,
+    map: &mut Map,
+    input: &Input,
+    session: &Session,
+    applid: &[u8; 8],
+    codec: HostCodec,
+) -> Result<Outcome, String> {
+    let request = request_with_codec(input, session, applid, codec)?;
     let mut child = Command::new(worker)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -322,7 +342,7 @@ pub fn run(
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    let (fields, outcome) = response(map, &output.stdout)?;
+    let (fields, outcome) = response_with_codec(map, &output.stdout, codec)?;
     for &(index, protected, hidden, fset) in &outcome.attribute_updates {
         map.fields[index].protected = protected;
         map.fields[index].hidden = hidden;
@@ -400,6 +420,23 @@ mod tests {
         assert!(response(&map, &output)
             .unwrap_err()
             .contains("unknown field"));
+    }
+
+    #[test]
+    fn japanese_worker_pipe_uses_utf8_and_bms_byte_capacity() {
+        let codec = HostCodec::Japanese(1399);
+        let map = crate::bms::parse("JPMAP DFHMSD TYPE=MAP\nJPSCR DFHMDI SIZE=(24,80)\nNAME DFHMDF POS=(2,1),LENGTH=8,ATTRB=UNPROT\n")
+            .unwrap().remove(0);
+        let input = Input { aid: 0x7d, cursor: None,
+            fields: vec![("NAME".to_owned(), codec.encode("日本語").unwrap())] };
+        let request = request_with_codec(&input, &Session::default(), b"COBCICS ", codec).unwrap();
+        assert!(request.windows("日本語".len()).any(|part| part == "日本語".as_bytes()));
+        let mut output = b"CCO5\0\x01NAME    ".to_vec();
+        output.extend_from_slice(&("日本語".len() as u16).to_be_bytes());
+        output.extend_from_slice("日本語".as_bytes());
+        output.extend_from_slice(b"\0\0    \0\0\0\0");
+        assert_eq!(response_with_codec(&map, &output, codec).unwrap().0[0].2, "日本語");
+        assert!(response_with_codec(&map, &output, HostCodec::Cp037).is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Minimal, strict TN3270 (RFC 1576) transport and 3270 model-2 data stream.
 
-use crate::{bms::Map, codec};
+use crate::{bms::Map, codec::HostCodec};
 
 const IAC: u8 = 0xff;
 const DO: u8 = 0xfd;
@@ -225,6 +225,10 @@ pub fn frame_record(record: &[u8]) -> Vec<u8> {
 }
 
 pub fn render_map(map: &Map) -> Result<Vec<u8>, String> {
+    render_map_with_codec(map, HostCodec::Cp037)
+}
+
+pub fn render_map_with_codec(map: &Map, codec: HostCodec) -> Result<Vec<u8>, String> {
     if map.rows != 24 || map.columns != 80 {
         return Err("only 24x80 BMS maps are supported".to_owned());
     }
@@ -232,11 +236,15 @@ pub fn render_map(map: &Map) -> Result<Vec<u8>, String> {
     for field in &map.fields {
         for index in 0..field.occurs {
             let value = field.value_at(index);
+            let encoded = codec.encode(value)?;
+            if encoded.len() > field.length {
+                return Err(format!("BMS field {} exceeds {} EBCDIC bytes",
+                    field.name.as_deref().unwrap_or("<unnamed>"), field.length));
+            }
             record.push(0x11); // SBA
             record.extend_from_slice(&address_bytes(
                 field.attribute_address_at(map.columns, index),
             )?);
-            record.push(0x1d); // SF
             let mut attribute = if field.protected { 0xf0 } else { 0x40 };
             if field.intensified {
                 attribute |= 0x08;
@@ -247,13 +255,19 @@ pub fn render_map(map: &Map) -> Result<Vec<u8>, String> {
             if field.fset {
                 attribute |= 0x01;
             }
-            record.push(attribute);
-            if field.justify_right {
-                record.resize(record.len() + field.length - value.len(), 0x40);
+            if matches!(codec, HostCodec::Japanese(_)) && !field.protected {
+                // A mixed DBCS input field needs SO/SI creation enabled so
+                // the terminal can insert Japanese characters from its IME.
+                record.extend_from_slice(&[0x29, 0x02, 0xc0, attribute, 0xfe, 0x01]);
+            } else {
+                record.extend_from_slice(&[0x1d, attribute]); // SF
             }
-            record.extend_from_slice(&codec::encode(value)?);
+            if field.justify_right {
+                record.resize(record.len() + field.length - encoded.len(), 0x40);
+            }
+            record.extend_from_slice(&encoded);
             if !field.justify_right {
-                record.resize(record.len() + field.length - value.len(), 0);
+                record.resize(record.len() + field.length - encoded.len(), 0);
             }
             if field.initial_cursor {
                 record.push(0x11); // SBA to the first data cell.
@@ -268,11 +282,19 @@ pub fn render_map(map: &Map) -> Result<Vec<u8>, String> {
 }
 
 pub fn render_text(text: &str) -> Result<Vec<u8>, String> {
-    if text.len() > 1919 || !text.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) {
-        return Err("SEND TEXT requires at most 1919 printable ASCII bytes".to_owned());
+    render_text_with_codec(text, HostCodec::Cp037)
+}
+
+pub fn render_text_with_codec(text: &str, codec: HostCodec) -> Result<Vec<u8>, String> {
+    if text.chars().any(char::is_control) {
+        return Err("SEND TEXT contains a control character".to_owned());
+    }
+    let encoded = codec.encode(text)?;
+    if encoded.len() > 1919 {
+        return Err("SEND TEXT exceeds 1919 EBCDIC bytes".to_owned());
     }
     let mut record = vec![0xf5, 0xc2, 0x1d, 0xf0];
-    record.extend_from_slice(&codec::encode(text)?);
+    record.extend_from_slice(&encoded);
     Ok(record)
 }
 
@@ -281,6 +303,17 @@ pub fn render_dataonly(
     changed_fields: &[usize],
     changed_attributes: &[usize],
     alarm: bool,
+) -> Result<Vec<u8>, String> {
+    render_dataonly_with_codec(map, changed_fields, changed_attributes, alarm,
+                               HostCodec::Cp037)
+}
+
+pub fn render_dataonly_with_codec(
+    map: &Map,
+    changed_fields: &[usize],
+    changed_attributes: &[usize],
+    alarm: bool,
+    codec: HostCodec,
 ) -> Result<Vec<u8>, String> {
     if map.rows != 24 || map.columns != 80 {
         return Err("only 24x80 BMS maps are supported".to_owned());
@@ -309,14 +342,19 @@ pub fn render_dataonly(
             .ok_or_else(|| "data-only field index is out of range".to_owned())?;
         for occurrence in 0..field.occurs {
             let value = field.value_at(occurrence);
+            let encoded = codec.encode(value)?;
+            if encoded.len() > field.length {
+                return Err(format!("BMS field {} exceeds {} EBCDIC bytes",
+                    field.name.as_deref().unwrap_or("<unnamed>"), field.length));
+            }
             record.push(0x11); // SBA to the data cell, without field attributes.
             record.extend_from_slice(&address_bytes(
                 field.attribute_address_at(map.columns, occurrence) + 1,
             )?);
             if field.justify_right {
-                record.resize(record.len() + field.length - value.len(), 0x40);
+                record.resize(record.len() + field.length - encoded.len(), 0x40);
             }
-            record.extend_from_slice(&codec::encode(value)?);
+            record.extend_from_slice(&encoded);
         }
     }
     Ok(record)
@@ -331,15 +369,23 @@ pub struct Input {
 
 impl Input {
     pub fn field_text(&self, name: &str) -> Result<Option<String>, String> {
+        self.field_text_with_codec(name, HostCodec::Cp037)
+    }
+
+    pub fn field_text_with_codec(&self, name: &str, codec: HostCodec) -> Result<Option<String>, String> {
         self.fields
             .iter()
             .find(|(field, _)| field == name)
-            .map(|(_, bytes)| codec::decode(bytes))
+            .map(|(_, bytes)| codec.decode(bytes))
             .transpose()
     }
 }
 
 pub fn parse_input(map: &Map, record: &[u8]) -> Result<Input, String> {
+    parse_input_with_codec(map, record, HostCodec::Cp037)
+}
+
+pub fn parse_input_with_codec(map: &Map, record: &[u8], codec: HostCodec) -> Result<Input, String> {
     let aid = *record
         .first()
         .ok_or_else(|| "empty 3270 input".to_owned())?;
@@ -397,7 +443,7 @@ pub fn parse_input(map: &Map, record: &[u8]) -> Result<Input, String> {
                     "input address {address} is not an unprotected field"
                 ));
             }
-            let supplied = codec::decode(&record[index..end])?;
+            let supplied = codec.decode(&record[index..end])?;
             if supplied.trim_end() != field.value_at(occurrence).trim_end() {
                 return Err(format!("protected FSET field at {address} was modified"));
             }
@@ -411,14 +457,19 @@ pub fn parse_input(map: &Map, record: &[u8]) -> Result<Input, String> {
             return Err(format!("duplicate input field: {name}"));
         }
         let mut data = record[index..end].to_vec();
+        // Reject malformed SO/SI and unmappable terminal bytes at the input
+        // boundary, including fields which are not right-justified.
+        let decoded = codec.decode(&data)?;
         if field.justify_right {
-            let text = codec::decode(&data)?;
-            let text = text.trim();
-            let fill = if field.justify_zero { b'0' } else { b' ' };
-            let mut justified = vec![fill; field.length - text.len()];
-            justified.extend_from_slice(text.as_bytes());
-            data = codec::encode(std::str::from_utf8(&justified)
-                .expect("BMS input is decoded to ASCII"))?;
+            let text = decoded.trim();
+            let encoded = codec.encode(text)?;
+            if encoded.len() > field.length {
+                return Err("justified input exceeds BMS field".to_owned());
+            }
+            let fill = if field.justify_zero { codec.encode("0")?[0] } else { 0x40 };
+            let mut justified = vec![fill; field.length - encoded.len()];
+            justified.extend_from_slice(&encoded);
+            data = justified;
         }
         fields.push((name, data));
         index = end;
@@ -433,7 +484,7 @@ pub fn parse_input(map: &Map, record: &[u8]) -> Result<Input, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bms;
+    use crate::{bms, codec};
 
     fn menu() -> Map {
         bms::parse(include_str!(
@@ -492,6 +543,28 @@ mod tests {
         let input = parse_input(map, &record).unwrap();
         assert_eq!(input.field_text("ENT1CNO").unwrap().as_deref(),
                    Some("0000000042"));
+    }
+
+    #[test]
+    fn japanese_map_and_modified_field_use_mixed_ebcdic() {
+        let codec = HostCodec::parse("IBM-1399").unwrap();
+        let map = bms::parse("JPMAP DFHMSD TYPE=MAP\nJPSCR DFHMDI SIZE=(24,80)\nNAME DFHMDF POS=(2,1),LENGTH=12,ATTRB=UNPROT,INITIAL='日本語'\n")
+            .unwrap().remove(0);
+        let encoded = codec.encode("日本語").unwrap();
+        let screen = render_map_with_codec(&map, codec).unwrap();
+        assert!(screen.windows(encoded.len()).any(|part| part == encoded));
+        assert!(screen.windows(6).any(|part| part == [0x29, 0x02, 0xc0, 0x40, 0xfe, 0x01]));
+        let field = &map.fields[0];
+        let address = address_bytes(field.data_address(map.columns)).unwrap();
+        let mut record = vec![0x7d, 0x40, 0x40, 0x11, address[0], address[1]];
+        record.extend_from_slice(&codec.encode("A日本語B").unwrap());
+        let input = parse_input_with_codec(&map, &record, codec).unwrap();
+        assert_eq!(input.field_text_with_codec("NAME", codec).unwrap().as_deref(),
+                   Some("A日本語B"));
+        record.pop();
+        record.pop(); // omit SI and the trailing SBCS B
+        assert!(parse_input_with_codec(&map, &record, codec).is_err());
+        assert!(render_map(&map).is_err()); // CP037 cannot represent the text.
     }
 
     #[test]

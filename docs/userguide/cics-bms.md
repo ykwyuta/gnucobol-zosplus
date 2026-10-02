@@ -85,4 +85,24 @@ docker run --rm --env-file extras/db2sql/.runtime.env `
 
 `cobcics-mapgen` で BMS からシンボリックマップ `.cpy` を作る。固定形式の COBOL ソースでは `--cics-map=<生成した .cpy>` を指定する。Db2 の埋め込み SQL も使う場合は `--db2-sql` を同時に指定する。変換順は CICS、SQL、通常の COBOL コンパイルである。ソースチェックアウトからコンパイルするときは `COB_CICS_PREPROCESSOR` と `COB_DB2_SQL_PREPROCESSOR` に各 Python スクリプトの絶対パスを設定する。生成したマップ、`extras/cobcics/copy`、アプリケーションの COPY を `-I` で探索させ、ワーカーには `extras/cobcics/bridge.c` と呼び出す COBOL プログラムをリンクする。Db2 を使うワーカーには `libdb2sql` と CLI ドライバーも必要である。具体的なビルド例は `extras/cobcics/build-bank-screens.ps1` にある。
 
-TN3270 ホストには最初の BMS を `--bms` で渡し、トランザクションごとに `--route ID=ワーカー` と `--map-route ID=BMS` を設定する。現在の実装は 24×80 の基本画面、CP037 の ASCII 範囲のテキスト、Enter/Clear/PF キーと Read Modified を対象にする。TN3270E、IMS、すべての CICS コマンドと BMS 拡張属性には対応しない。未対応構文は変換時にソース行を示してエラーとなる。
+TN3270 ホストには最初の BMS を `--bms` で渡し、トランザクションごとに `--route ID=ワーカー` と `--map-route ID=BMS` を設定する。現在の実装は 24×80 の基本画面、Enter/Clear/PF キーと Read Modified を対象にする。TN3270E、IMS、すべての CICS コマンドと BMS 拡張属性には対応しない。日本語の入力欄には SO/SI 入力制御の拡張属性を付ける。未対応構文は変換時にソース行を示してエラーとなる。
+
+## 日本語 EBCDIC の画面入出力
+
+`cobcicsd --charset IBM-1399` を指定すると、画面の UTF-8 文字列を IBM-1399 の SBCS/DBCS 混合データへ変換し、端末からの SO/SI 付き入力を UTF-8 へ戻して COBOL ワーカーに渡す。`IBM-930`、`IBM-939`、`IBM-1390` も選べる。`--charset` の既定値は `IBM-037`。BMS の `INITIAL` は UTF-8 で記述でき、`LENGTH` は変換後の EBCDIC バイト数で検査される。COBOL を使うときはホストの `--charset` と `-fdata-codeset` を一致させ、ワーカーに `COB_HOST_CODESET=UTF-8` を設定する。
+
+次の試験は IBM-1399 の COBOL ワーカーと Rust ホストをビルドし、TN3270 で「日本語」を入力して COBOL が受信・返送した値を照合する。Db2 は使わない。
+
+```powershell
+& extras/cobcics/test-japanese-tn3270.ps1
+```
+
+成功時は `IBM-1399 Japanese TN3270 -> Rust -> COBOL -> Rust -> TN3270 OK` と表示される。
+
+Windows の `wc3270` を使う試験は IBM-939 を指定する。確認に用いた `wc3270` v4.0ga14 は `cp930` と `cp939` に対応するが `cp1399` は選べない。次のスクリプトは IBM-939 のワーカーと Rust ホストをビルドし、`wc3270` を `-codepage cp939 -utf8` で起動する。スクリプトポートから日本語を入力し、COBOL が返した値を画面で照合する。
+
+```powershell
+& extras/cobcics/test-japanese-wc3270.ps1
+```
+
+成功時は `wc3270 cp939 Japanese display, input and COBOL echo OK` と表示される。別の場所にインストールしたときは `-Wc3270Path` を指定する。入力欄には Rust ホストが 3270 の SO/SI 自動生成属性を付ける。

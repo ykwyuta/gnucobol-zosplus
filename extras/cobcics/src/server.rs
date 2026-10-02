@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::bms::Map;
+use crate::codec::HostCodec;
 use crate::tn3270::{self, Event, Input, Telnet};
 
 #[derive(Clone)]
 pub struct WorkerRouting {
+    pub codec: HostCodec,
     pub initial_transid: [u8; 4],
     pub applid: [u8; 8],
     pub default_worker: Option<PathBuf>,
@@ -19,6 +21,7 @@ pub struct WorkerRouting {
 impl Default for WorkerRouting {
     fn default() -> Self {
         Self {
+            codec: HostCodec::Cp037,
             initial_transid: *b"    ",
             applid: *b"COBCICS ",
             default_worker: None,
@@ -56,10 +59,10 @@ fn display_message(map: &mut Map, message: &str) {
     }
 }
 
-fn aid_message(input: &Input) -> Result<String, String> {
+fn aid_message(input: &Input, codec: HostCodec) -> Result<String, String> {
     match input.aid {
         0x7d => {
-            let action = input.field_text("ACTION")?.unwrap_or_default();
+            let action = input.field_text_with_codec("ACTION", codec)?.unwrap_or_default();
             Ok(format!("Enter: {}", action.trim()))
         }
         0x6d => Ok("Clear".to_owned()),
@@ -69,8 +72,8 @@ fn aid_message(input: &Input) -> Result<String, String> {
     }
 }
 
-fn send_map(stream: &mut TcpStream, map: &Map) -> Result<(), String> {
-    let record = tn3270::render_map(map)?;
+fn send_map(stream: &mut TcpStream, map: &Map, codec: HostCodec) -> Result<(), String> {
+    let record = tn3270::render_map_with_codec(map, codec)?;
     stream
         .write_all(&tn3270::frame_record(&record))
         .map_err(|err| format!("send map: {err}"))
@@ -83,26 +86,29 @@ fn send_screen(
     changed_fields: &[usize],
     changed_attributes: &[usize],
     text: Option<&str>,
+    codec: HostCodec,
 ) -> Result<(), String> {
     match action {
         crate::worker::ScreenAction::None => Ok(()),
-        crate::worker::ScreenAction::Map => send_map(stream, map),
+        crate::worker::ScreenAction::Map => send_map(stream, map, codec),
         crate::worker::ScreenAction::Erase => stream
             .write_all(&tn3270::frame_record(&[0xf5, 0xc2]))
             .map_err(|err| format!("erase screen: {err}")),
         crate::worker::ScreenAction::DataOnly | crate::worker::ScreenAction::DataOnlyAlarm => {
-            let record = tn3270::render_dataonly(
+            let record = tn3270::render_dataonly_with_codec(
                 map,
                 changed_fields,
                 changed_attributes,
                 action == crate::worker::ScreenAction::DataOnlyAlarm,
+                codec,
             )?;
             stream
                 .write_all(&tn3270::frame_record(&record))
                 .map_err(|err| format!("send data-only map: {err}"))
         }
         crate::worker::ScreenAction::Text => {
-            let record = tn3270::render_text(text.ok_or("SEND TEXT has no text")?)?;
+            let record = tn3270::render_text_with_codec(
+                text.ok_or("SEND TEXT has no text")?, codec)?;
             stream
                 .write_all(&tn3270::frame_record(&record))
                 .map_err(|err| format!("send text: {err}"))
@@ -128,7 +134,8 @@ fn run_worker_chain(
         let path = routing
             .worker_for(&session.transid)?
             .ok_or_else(|| "RETURN IMMEDIATE has no worker for its TRANSID".to_owned())?;
-        let outcome = crate::worker::run(path, map, &input, session, &routing.applid)?;
+        let outcome = crate::worker::run_with_codec(
+            path, map, &input, session, &routing.applid, routing.codec)?;
         send_screen(
             stream,
             map,
@@ -136,6 +143,7 @@ fn run_worker_chain(
             &outcome.changed_fields,
             &outcome.changed_attributes,
             outcome.text.as_deref(),
+            routing.codec,
         )?;
         let Some(next) = outcome.next else {
             return Ok(true);
@@ -207,12 +215,12 @@ pub fn serve_connection_with_routing(
                     if !shown {
                         return Err("terminal data arrived before TN3270 negotiation".to_owned());
                     }
-                    let input = tn3270::parse_input(map, &record)?;
+                    let input = tn3270::parse_input_with_codec(map, &record, routing.codec)?;
                     let done = match routing.worker_for(&session.transid)? {
                         Some(_) => run_worker_chain(stream, map, routing, &mut session, input)?,
                         None => {
-                            display_message(map, &aid_message(&input)?);
-                            send_map(stream, map)?;
+                            display_message(map, &aid_message(&input, routing.codec)?);
+                            send_map(stream, map, routing.codec)?;
                             matches!(input.aid, 0xf3 | 0x7c)
                         }
                     };
@@ -233,7 +241,7 @@ pub fn serve_connection_with_routing(
                     return Ok(());
                 }
             } else {
-                send_map(stream, map)?;
+                send_map(stream, map, routing.codec)?;
             }
             stream
                 .set_read_timeout(None)
@@ -251,6 +259,7 @@ mod tests {
     #[test]
     fn transid_routes_select_worker_before_default() {
         let routing = WorkerRouting {
+            codec: HostCodec::Cp037,
             initial_transid: *b"OMEN",
             applid: *b"BANKAPP ",
             default_worker: Some(PathBuf::from("fallback")),

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use cobcics::server::WorkerRouting;
 
 fn usage() -> &'static str {
-    "usage: cobcicsd --bms FILE [--map NAME] [--listen 127.0.0.1:3270] [--applid ID] [--worker COBOL-EXE] [--transid ID --route ID=COBOL-EXE --map-route ID=BMS-FILE#MAP ...]"
+    "usage: cobcicsd --bms FILE [--map NAME] [--charset IBM-037|IBM-930|IBM-939|IBM-1390|IBM-1399] [--listen 127.0.0.1:3270] [--applid ID] [--worker COBOL-EXE] [--transid ID --route ID=COBOL-EXE --map-route ID=BMS-FILE#MAP ...]"
 }
 
 fn select_map(source: &str, name: Option<&str>) -> Result<cobcics::bms::Map, String> {
@@ -30,6 +30,10 @@ fn run() -> Result<(), String> {
             "--bms" => bms = args.next(),
             "--map" => map_name = args.next(),
             "--listen" => listen = args.next().ok_or_else(|| usage().to_owned())?,
+            "--charset" => {
+                let name = args.next().ok_or_else(|| usage().to_owned())?;
+                routing.codec = cobcics::codec::HostCodec::parse(&name)?;
+            }
             "--applid" => {
                 let name = args.next().ok_or_else(|| usage().to_owned())?;
                 routing.applid = cobcics::worker::applid(&name)?;

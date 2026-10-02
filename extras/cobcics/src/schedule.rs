@@ -95,12 +95,13 @@ pub fn dispatch_due(directory: &Path, now: u64, routing: &WorkerRouting,
             let mut map = routing.maps.get(&transid)
                 .cloned()
                 .unwrap_or_else(|| default_map.clone());
-            let outcome = worker::run(
+            let outcome = worker::run_with_codec(
                 worker_path,
                 &mut map,
                 &Input { aid: 0, cursor: None, fields: Vec::new() },
                 &Session { transid, commarea: Vec::new() },
                 &routing.applid,
+                routing.codec,
             )?;
             if outcome.next.is_some() {
                 return Err("scheduled task returned a terminal TRANSID".to_owned());

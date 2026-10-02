@@ -151,7 +151,7 @@ and unlocks the keyboard.
 `SEND TEXT FROM(...) ERASE FREEKB` sends a protected text field on an erased
 screen and supports `RESP`/`RESP2`. The COBOL data item's length is used when
 `LENGTH` is omitted, as in the Bank of Z termination message. The current
-text subset accepts at most 1919 printable ASCII bytes and does not implement
+text subset accepts at most 1919 encoded EBCDIC bytes of printable text and does not implement
 BMS text pagination or word wrapping
 ([IBM SEND TEXT](https://www.ibm.com/docs/en/cics-ts/6.x?topic=output-send-text-command)).
 `ASKTIME ABSTIME(...)` returns the host's local time as milliseconds since
@@ -234,7 +234,7 @@ low-values retain BMS initial data.
 
 - Telnet BINARY, TERMINAL-TYPE, EOR negotiation and record framing;
   fragmented input and IAC escaping.
-- Basic 3270 Erase/Write and Write, SBA, SF, IC, CP037 text, Enter/Clear/PF and
+- Basic 3270 Erase/Write and Write, SBA, SF, IC, CP037 or Japanese EBCDIC text, Enter/Clear/PF and
   modified-field parsing.
 - BMS mapset, map, named/unnamed fields, attributes needed for basic
   input, continuation lines, `TIOAPFX`, `DSATTS`, `OCCURS`, and `PICOUT`.
@@ -243,9 +243,15 @@ low-values retain BMS initial data.
 - An unrecognized BMS option or unsupported `EXEC CICS` command is an error
   with its source line.
 
-Extended field colors, highlighting, outline, programmed symbols and SOSI
-appear in the symbolic copybook but are not yet encoded in the terminal
-stream. The current CP037 codec and worker pipe accept ASCII text only.
+Extended field colors, highlighting, outline and programmed symbols appear
+in the symbolic copybook but are not yet encoded as extended field attributes
+in the terminal stream. Japanese unprotected fields use SFE input control for
+automatic SO/SI creation. `--charset` selects CP037 (default),
+IBM-930, IBM-939, IBM-1390, or IBM-1399; Japanese text uses SO/SI in the
+terminal stream and UTF-8 in the worker pipe. Run
+`extras/cobcics/test-japanese-tn3270.ps1` for an IBM-1399 COBOL round trip
+or `extras/cobcics/test-japanese-wc3270.ps1` for an IBM-939 round trip using
+the installed Windows wc3270 emulator.
 The command ABI is an initial subset: EIB fields other than `EIBAID`,
 `EIBCALEN`, `EIBTRNID`, `EIBRESP`, and `EIBRESP2`, Db2 unit of work,
 broader CICS response codes and conditions,

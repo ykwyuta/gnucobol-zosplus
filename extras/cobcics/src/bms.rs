@@ -71,12 +71,10 @@ fn statements(source: &str) -> Result<Vec<(usize, String)>, String> {
         if raw.trim().is_empty() || raw.starts_with('*') {
             continue;
         }
-        if !raw.is_ascii() {
-            return Err(format!(
-                "line {line_number}: non-ASCII BMS source is not yet supported"
-            ));
-        }
-        let body = raw.get(..raw.len().min(71)).unwrap_or(raw).trim();
+        // BMS columns count source characters; UTF-8 storage bytes must not
+        // split a Japanese INITIAL literal at the continuation margin.
+        let body = raw.chars().take(71).collect::<String>();
+        let body = body.trim();
         if pending.is_empty() {
             first_line = line_number;
         } else if pending.bytes().filter(|byte| *byte == b'\'').count() % 2 == 0 {
@@ -85,8 +83,8 @@ fn statements(source: &str) -> Result<Vec<(usize, String)>, String> {
             pending.push(' ');
         }
         pending.push_str(body);
-        let continuation = raw.as_bytes().get(71).is_some_and(|byte| *byte != b' ')
-            || (raw.len() < 72 && raw.trim_end().ends_with('*'));
+        let continuation = raw.chars().nth(71).is_some_and(|ch| ch != ' ')
+            || (raw.chars().count() < 72 && raw.trim_end().ends_with('*'));
         if continuation && pending.ends_with('*') {
             pending.pop();
         }
@@ -449,6 +447,14 @@ mod tests {
         assert_eq!((action.row, action.column, action.length), (5, 16, 1));
         assert!(!action.protected);
         assert!(action.initial_cursor);
+    }
+
+    #[test]
+    fn utf8_japanese_initial_is_preserved() {
+        let source = "JPMAP DFHMSD TYPE=MAP\nJPSCR DFHMDI SIZE=(24,80)\nNAME DFHMDF POS=(2,1),LENGTH=12,ATTRB=UNPROT,INITIAL='日本語'\n";
+        let map = parse(source).unwrap().remove(0);
+        assert_eq!(map.fields[0].initial, "日本語");
+        assert_eq!(map.fields[0].length, 12);
     }
 
     #[test]
