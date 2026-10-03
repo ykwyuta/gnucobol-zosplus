@@ -2,6 +2,8 @@
 
 `cobcicsd` は Rust 製の TN3270 ホストである。BMS の物理マップを読み、COBOL ワーカーが返す画面項目と CICS トランザクション ID を端末に表示する。`wc3270` や `c3270` はこのホストに接続するクライアントとして使う。以下は Bank of Z の非 IMS 画面を Windows PowerShell から起動する手順である。
 
+対応する CICS 機能、`EXEC CICS` コマンドと制限は [CICS 対応機能・コマンド一覧](cics-supported-features.md) を参照。
+
 ## 準備とビルド
 
 [Db2 ガイド](db2.md)に従って Db2 を起動し、`.runtime.env` と `gnucobol-db2-build` イメージを用意する。`reference/Bank-of-Z-main/src/base/cics` と、Rust のオフライン依存パッケージ、`rust:1-alpine` イメージも必要である。テスト専用の `BANKZTEST` スキーマと固定データを用意し、画面ワーカーをビルドする。
