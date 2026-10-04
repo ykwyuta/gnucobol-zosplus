@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod datasets;
 mod jcl;
 
 type Result<T> = std::result::Result<T, String>;
@@ -66,6 +67,10 @@ struct Profile {
     plan: String,
     library: String,
     programs: HashMap<String, PathBuf>,
+    proclibs: HashMap<String, PathBuf>,
+    datasets: HashMap<String, PathBuf>,
+    dataset_root: PathBuf,
+    site: HashMap<String, String>,
     ld_library_path: String,
 }
 
@@ -74,6 +79,9 @@ fn read_profile(path: &Path) -> Result<Profile> {
         fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut values = HashMap::new();
     let mut programs = HashMap::new();
+    let mut proclibs = HashMap::new();
+    let mut datasets = HashMap::new();
+    let mut site = HashMap::new();
     for (index, line) in source.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -91,6 +99,67 @@ fn read_profile(path: &Path) -> Result<Profile> {
                     index + 1
                 ));
             }
+        } else if let Some(name) = key.strip_prefix("proclib.") {
+            let name = name.to_ascii_uppercase();
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".$#@".contains(&b))
+            {
+                return Err(format!(
+                    "{}:{}: invalid proclib name",
+                    path.display(),
+                    index + 1
+                ));
+            }
+            if proclibs.insert(name, PathBuf::from(value.trim())).is_some() {
+                return Err(format!(
+                    "{}:{}: duplicate proclib",
+                    path.display(),
+                    index + 1
+                ));
+            }
+        } else if let Some(name) = key.strip_prefix("dataset.") {
+            let name = name.to_ascii_uppercase();
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".$#@".contains(&b))
+            {
+                return Err(format!(
+                    "{}:{}: invalid dataset name",
+                    path.display(),
+                    index + 1
+                ));
+            }
+            if datasets.insert(name, PathBuf::from(value.trim())).is_some() {
+                return Err(format!(
+                    "{}:{}: duplicate dataset",
+                    path.display(),
+                    index + 1
+                ));
+            }
+        } else if let Some(name) = key.strip_prefix("site.") {
+            let name = name.to_ascii_uppercase();
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_".contains(&b))
+                || value.contains(['\r', '\n'])
+            {
+                return Err(format!(
+                    "{}:{}: invalid site placeholder",
+                    path.display(),
+                    index + 1
+                ));
+            }
+            if site.insert(name, value.trim().to_string()).is_some() {
+                return Err(format!(
+                    "{}:{}: duplicate site placeholder",
+                    path.display(),
+                    index + 1
+                ));
+            }
         } else if matches!(
             key,
             "image"
@@ -100,6 +169,7 @@ fn read_profile(path: &Path) -> Result<Profile> {
                 | "dsn_plan"
                 | "dsn_library"
                 | "ld_library_path"
+                | "dataset_root"
         ) {
             if values
                 .insert(key.to_string(), value.trim().to_string())
@@ -134,8 +204,100 @@ fn read_profile(path: &Path) -> Result<Profile> {
         plan: required("dsn_plan")?,
         library: required("dsn_library")?,
         programs,
+        proclibs,
+        datasets,
+        dataset_root: PathBuf::from(
+            values
+                .get("dataset_root")
+                .map(String::as_str)
+                .unwrap_or("build/jclsh/datasets"),
+        ),
+        site,
         ld_library_path: required("ld_library_path")?,
     })
+}
+
+fn substitute_site(source: &str, site: &HashMap<String, String>) -> Result<String> {
+    let mut output = String::new();
+    let mut rest = source;
+    while let Some(start) = rest.find('<') {
+        output.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let Some(end) = rest.find('>') else {
+            output.push('<');
+            rest = &rest[1..];
+            continue;
+        };
+        let key = &rest[1..end];
+        if !key.is_empty()
+            && key.len() <= 32
+            && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            let value = site
+                .get(&key.to_ascii_uppercase())
+                .ok_or_else(|| format!("unresolved site placeholder <{key}>"))?;
+            output.push_str(value);
+            rest = &rest[end + 1..];
+        } else {
+            output.push('<');
+            rest = &rest[1..];
+        }
+    }
+    output.push_str(rest);
+    Ok(output)
+}
+
+fn load_catalog(profile: &Profile, workspace: &Path, expand_sites: bool) -> Result<jcl::Catalog> {
+    let mut catalog = jcl::Catalog::new();
+    for (library, relative) in &profile.proclibs {
+        let root = fs::canonicalize(workspace.join(relative))
+            .map_err(|error| format!("proclib {}: {error}", relative.display()))?;
+        if !root.starts_with(workspace) || !root.is_dir() {
+            return Err(format!(
+                "proclib {} must be a directory inside workspace",
+                relative.display()
+            ));
+        }
+        let mut members = HashMap::new();
+        for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if !path.is_file() {
+                continue;
+            }
+            let member = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| format!("invalid proclib member {}", path.display()))?
+                .to_ascii_uppercase();
+            if member.is_empty()
+                || member.len() > 8
+                || !member
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"$#@".contains(&b))
+            {
+                continue;
+            }
+            let resolved = fs::canonicalize(&path).map_err(|error| error.to_string())?;
+            if !resolved.starts_with(&root) {
+                return Err(format!(
+                    "proclib member outside directory: {}",
+                    path.display()
+                ));
+            }
+            let source = fs::read_to_string(&resolved)
+                .map_err(|error| format!("{}: {error}", resolved.display()))?;
+            let source = if expand_sites {
+                substitute_site(&source, &profile.site)?
+            } else {
+                source
+            };
+            if members.insert(member.clone(), source).is_some() {
+                return Err(format!("duplicate proclib member {library}({member})"));
+            }
+        }
+        catalog.insert(library.clone(), members);
+    }
+    Ok(catalog)
 }
 
 fn take_call_argument(text: &str, key: &str) -> Result<(String, String)> {
@@ -246,16 +408,10 @@ struct PlannedStep {
 
 fn plan_job(job: &Job, profile: &Profile, workspace: &Path) -> Result<Vec<PlannedStep>> {
     checked_file(workspace, &profile.env_file, "Db2 env file")?;
+    let datasets = datasets::DataSets::new(workspace, profile)?;
     let mut result = Vec::new();
     for step in &job.steps {
-        for dd in &step.dds {
-            if matches!(dd.kind, DdKind::Dataset(_)) && dd.name != "STEPLIB" {
-                return Err(format!(
-                    "line {}: dataset DD {} is not mapped",
-                    dd.line, dd.name
-                ));
-            }
-        }
+        datasets.validate(step)?;
         let dsn = if step.pgm == "IKJEFT01" {
             let systsin = step
                 .dds
@@ -297,7 +453,7 @@ fn plan_job(job: &Job, profile: &Profile, workspace: &Path) -> Result<Vec<Planne
     Ok(result)
 }
 
-fn print_plan(job: &Job, steps: &[PlannedStep], workspace: &Path) -> Result<()> {
+fn print_plan(job: &Job, steps: &[PlannedStep], profile: &Profile, workspace: &Path) -> Result<()> {
     println!("JOB {} {}", job.name, job.attributes);
     if let Some(condition) = &job.job_condition {
         println!("  COND {condition:?}");
@@ -333,7 +489,31 @@ fn print_plan(job: &Job, steps: &[PlannedStep], workspace: &Path) -> Result<()> 
                 }
                 DdKind::Sysout => println!("  DD {} SYSOUT=*", dd.name),
                 DdKind::Dataset(entries) => {
-                    println!("  DD {} dataset {:?} (STEPLIB metadata)", dd.name, entries)
+                    println!(
+                        "  DD {} dataset {:?}{}",
+                        dd.name,
+                        entries,
+                        if dd.name == "STEPLIB" {
+                            " (load metadata)"
+                        } else {
+                            ""
+                        }
+                    );
+                    if dd.name != "STEPLIB" {
+                        for (dsn, disp) in entries {
+                            if dsn.starts_with("&&") || dsn.is_empty() {
+                                println!("    {dsn} {disp} -> job temporary dataset");
+                            } else {
+                                let base =
+                                    dsn.split_once('(').map_or(dsn.as_str(), |(base, _)| base);
+                                let target = profile
+                                    .datasets
+                                    .get(base)
+                                    .ok_or_else(|| format!("unmapped dataset {base}"))?;
+                                println!("    {dsn} {disp} -> {}", target.display());
+                            }
+                        }
+                    }
                 }
                 DdKind::Dummy => println!("  DD {} DUMMY", dd.name),
             }
@@ -361,9 +541,11 @@ fn run_job(
     fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
     let mount = format!("{}:/src", docker_host_path(workspace));
     let env_file = checked_file(workspace, &profile.env_file, "Db2 env file")?;
+    let mut datasets = datasets::DataSets::new(workspace, profile)?;
     let mut final_rc = 0;
     let mut results = Vec::new();
     let mut previous: Vec<(String, Option<i32>)> = Vec::new();
+    let mut abends: HashMap<String, String> = HashMap::new();
     let mut job_bypassed = false;
     for planned in steps {
         let step = &planned.step;
@@ -378,20 +560,22 @@ fn run_job(
         let guard_allows = if job_bypassed {
             false
         } else {
-            jcl::guards_allow(&step.guards, &previous)?
+            jcl::guards_allow(&step.guards, &previous, &abends)?
         };
         let step_bypassed = if job_bypassed || !guard_allows {
             false
         } else {
-            step.conditions
-                .iter()
-                .try_fold(false, |bypassed, condition| {
-                    if bypassed {
-                        Ok(true)
-                    } else {
-                        jcl::cond_bypasses(condition, &previous, false)
-                    }
-                })?
+            (step.conditions.is_empty() && !abends.is_empty())
+                || step
+                    .conditions
+                    .iter()
+                    .try_fold(false, |bypassed, condition| {
+                        if bypassed {
+                            Ok(true)
+                        } else {
+                            jcl::cond_bypasses(condition, &previous, !abends.is_empty())
+                        }
+                    })?
         };
         if !guard_allows || job_bypassed || step_bypassed {
             println!("JCLSH STEP {} SKIPPED", step.name);
@@ -413,6 +597,20 @@ fn run_job(
             "-e",
             &format!("LD_LIBRARY_PATH={}", profile.ld_library_path),
         ]);
+        let abend_file = step_dir.join("abend.txt");
+        command.args([
+            "-e",
+            &format!("JCL_ABEND_FILE={}", container_path(workspace, &abend_file)?),
+        ]);
+        let (dataset_env, allocations) = datasets.prepare(step, &step_dir)?;
+        for (name, path) in dataset_env {
+            let value = if path == Path::new("/dev/null") {
+                "/dev/null".to_string()
+            } else {
+                container_path(workspace, &path)?
+            };
+            command.args(["-e", &format!("DD_{name}={value}")]);
+        }
         for dd in &step.dds {
             if let DdKind::Inline(lines) = &dd.kind {
                 if dd.name == "SYSTSIN" {
@@ -439,6 +637,37 @@ fn run_job(
             .output()
             .map_err(|error| format!("docker run for {}: {error}", step.name))?;
         let rc = output.status.code().unwrap_or(1);
+        if matches!(rc, 125..=127) {
+            return Err(format!(
+                "docker failed to start step {}: {}",
+                step.name,
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let abend = if abend_file.exists() {
+            let code = fs::read_to_string(&abend_file)
+                .map_err(|error| error.to_string())?
+                .trim()
+                .to_ascii_uppercase();
+            let valid = (code.len() == 4
+                && code.starts_with('S')
+                && code[1..].bytes().all(|b| b.is_ascii_hexdigit()))
+                || (code.len() == 5
+                    && code.starts_with('U')
+                    && code[1..].bytes().all(|b| b.is_ascii_digit()));
+            if !valid {
+                return Err(format!(
+                    "step {} wrote invalid ABEND code {code:?}",
+                    step.name
+                ));
+            }
+            Some(code)
+        } else if (129..=192).contains(&rc) {
+            Some(format!("S{:03X}", rc - 128))
+        } else {
+            None
+        };
+        datasets.finish(allocations, abend.is_some())?;
         for dd in &step.dds {
             if dd.kind == DdKind::Sysout {
                 let content: &[u8] = match dd.name.as_str() {
@@ -455,14 +684,26 @@ fn run_job(
         io::stderr()
             .write_all(&output.stderr)
             .map_err(|error| error.to_string())?;
-        println!("JCLSH STEP {} RC={rc}", step.name);
-        results.push(format!(
-            "{{\"step\":\"{}\",\"status\":\"EXECUTED\",\"rc\":{rc}}}",
-            step.name
-        ));
-        previous.push((step.name.clone(), Some(rc)));
-        final_rc = final_rc.max(rc);
+        if let Some(code) = abend {
+            println!("JCLSH STEP {} ABEND={code}", step.name);
+            results.push(format!(
+                "{{\"step\":\"{}\",\"status\":\"ABEND\",\"rc\":null,\"abend\":\"{code}\"}}",
+                step.name
+            ));
+            previous.push((step.name.clone(), None));
+            abends.insert(step.name.clone(), code);
+            final_rc = final_rc.max(16);
+        } else {
+            println!("JCLSH STEP {} RC={rc}", step.name);
+            results.push(format!(
+                "{{\"step\":\"{}\",\"status\":\"EXECUTED\",\"rc\":{rc}}}",
+                step.name
+            ));
+            previous.push((step.name.clone(), Some(rc)));
+            final_rc = final_rc.max(rc);
+        }
     }
+    datasets.end_job()?;
     let result = format!(
         "{{\"job\":\"{}\",\"job_id\":\"{}\",\"rc\":{},\"steps\":[{}]}}\n",
         job.name,
@@ -540,17 +781,25 @@ fn execute(
     path: &str,
     profile_path: &Path,
     workspace: &Path,
+    site_overrides: &HashMap<String, String>,
 ) -> Result<Option<(String, i32)>> {
     let source = read_source(path)?;
-    let job = jcl::parse_jcl(&source)?;
+    let mut profile = read_profile(profile_path)?;
+    profile.site.extend(site_overrides.clone());
+    let catalog = load_catalog(&profile, workspace, mode != "lint")?;
+    let source = if mode == "lint" {
+        source
+    } else {
+        substitute_site(&source, &profile.site)?
+    };
+    let job = jcl::parse_jcl_with_catalog(&source, &catalog)?;
     if mode == "lint" {
         println!("JCLSH LINT {} OK: {} step(s)", job.name, job.steps.len());
         return Ok(None);
     }
-    let profile = read_profile(profile_path)?;
     let steps = plan_job(&job, &profile, workspace)?;
     if mode == "plan" {
-        print_plan(&job, &steps, workspace)?;
+        print_plan(&job, &steps, &profile, workspace)?;
         return Ok(None);
     }
     if mode == "run" {
@@ -559,10 +808,14 @@ fn execute(
     Err(format!("unknown command {mode}"))
 }
 
-fn shell(profile_path: &Path, workspace: &Path) -> Result<()> {
+fn shell(
+    profile_path: &Path,
+    workspace: &Path,
+    mut site_overrides: HashMap<String, String>,
+) -> Result<()> {
     let mut jobs: Vec<(String, i32)> = Vec::new();
     let stdin = io::stdin();
-    println!("jclsh: submit FILE, plan FILE, jobs, status JOBID, spool JOBID [DD], exit");
+    println!("jclsh: submit FILE, plan FILE, jobs, status JOBID, spool JOBID [DD], datasets [PREFIX], set NAME VALUE, exit");
     loop {
         print!("jclsh> ");
         io::stdout().flush().map_err(|error| error.to_string())?;
@@ -579,15 +832,18 @@ fn shell(profile_path: &Path, workspace: &Path) -> Result<()> {
             [] => {}
             ["exit" | "quit"] => break,
             ["help"] => {
-                println!("submit FILE | plan FILE | jobs | status JOBID | spool JOBID [DD] | exit")
+                println!("submit FILE | plan FILE | jobs | status JOBID | spool JOBID [DD] | datasets [PREFIX] | set NAME VALUE | exit")
             }
-            ["submit", path] => match execute("run", path, profile_path, workspace) {
-                Ok(Some(result)) => jobs.push(result),
-                Ok(None) => {}
-                Err(error) => eprintln!("jclsh: {error}"),
-            },
+            ["submit", path] => {
+                match execute("run", path, profile_path, workspace, &site_overrides) {
+                    Ok(Some(result)) => jobs.push(result),
+                    Ok(None) => {}
+                    Err(error) => eprintln!("jclsh: {error}"),
+                }
+            }
             ["plan", path] => {
-                if let Err(error) = execute("plan", path, profile_path, workspace) {
+                if let Err(error) = execute("plan", path, profile_path, workspace, &site_overrides)
+                {
                     eprintln!("jclsh: {error}");
                 }
             }
@@ -611,6 +867,33 @@ fn shell(profile_path: &Path, workspace: &Path) -> Result<()> {
                     Err(error) => eprintln!("jclsh: {error}"),
                 }
             }
+            ["datasets"] | ["datasets", _] => {
+                let prefix = parts.get(1).copied().unwrap_or("").to_ascii_uppercase();
+                match read_profile(profile_path) {
+                    Ok(profile) => {
+                        let mut names: Vec<_> = profile
+                            .datasets
+                            .iter()
+                            .filter(|(name, _)| name.starts_with(&prefix))
+                            .collect();
+                        names.sort_by_key(|(name, _)| *name);
+                        for (name, path) in names {
+                            println!("{name} -> {}", path.display());
+                        }
+                    }
+                    Err(error) => eprintln!("jclsh: {error}"),
+                }
+            }
+            ["set", name, value] => {
+                let name = name.to_ascii_uppercase();
+                if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                {
+                    eprintln!("jclsh: invalid site symbol {name}");
+                } else {
+                    site_overrides.insert(name.clone(), (*value).to_string());
+                    println!("{name} set");
+                }
+            }
             _ => eprintln!("jclsh: unsupported shell command"),
         }
     }
@@ -624,6 +907,7 @@ fn cli() -> Result<()> {
     let mut mode: Option<&str> = None;
     let mut input: Option<&str> = None;
     let mut profile = PathBuf::from("extras/jclsh/bank.conf");
+    let mut site_overrides = HashMap::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -631,8 +915,21 @@ fn cli() -> Result<()> {
                 index += 1;
                 profile = PathBuf::from(args.get(index).ok_or("--profile requires a path")?);
             }
+            "--set" => {
+                index += 1;
+                let setting = args.get(index).ok_or("--set requires NAME=VALUE")?;
+                let (name, value) = setting.split_once('=').ok_or("--set requires NAME=VALUE")?;
+                let name = name.to_ascii_uppercase();
+                if name.is_empty()
+                    || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    || value.is_empty()
+                {
+                    return Err("invalid --set NAME=VALUE".to_string());
+                }
+                site_overrides.insert(name, value.to_string());
+            }
             "-h" | "--help" => {
-                println!("usage: jclsh [run|plan|lint FILE|-] [--profile FILE]; no arguments starts shell");
+                println!("usage: jclsh [run|plan|lint FILE|-] [--profile FILE] [--set NAME=VALUE]; no arguments starts shell");
                 return Ok(());
             }
             "run" | "plan" | "lint" if mode.is_none() => mode = Some(&args[index]),
@@ -644,7 +941,7 @@ fn cli() -> Result<()> {
     let profile = workspace.join(profile);
     if let Some(mode) = mode {
         let input = input.ok_or("JCL file path is required")?;
-        let result = execute(mode, input, &profile, &workspace)?;
+        let result = execute(mode, input, &profile, &workspace, &site_overrides)?;
         if let Some((_, rc)) = result {
             if rc != 0 {
                 return Err(format!("job RC={rc}"));
@@ -652,7 +949,7 @@ fn cli() -> Result<()> {
         }
         Ok(())
     } else {
-        shell(&profile, &workspace)
+        shell(&profile, &workspace, site_overrides)
     }
 }
 
@@ -767,8 +1064,8 @@ mod tests {
             DdKind::Inline(vec!["//literal record".to_string()])
         );
         let previous = vec![("A".to_string(), Some(0))];
-        assert!(jcl::guards_allow(&job.steps[1].guards, &previous).unwrap());
-        assert!(!jcl::guards_allow(&job.steps[2].guards, &previous).unwrap());
+        assert!(jcl::guards_allow(&job.steps[1].guards, &previous, &HashMap::new()).unwrap());
+        assert!(!jcl::guards_allow(&job.steps[2].guards, &previous, &HashMap::new()).unwrap());
     }
 
     #[test]
@@ -801,5 +1098,77 @@ mod tests {
         assert!(jcl::parse_jcl(&broken)
             .unwrap_err()
             .contains("cyclic JCL symbol"));
+    }
+
+    #[test]
+    fn cataloged_proc_and_include_follow_jcllib_order() {
+        let mut catalog = jcl::Catalog::new();
+        catalog.insert("FIRST.LIB".to_string(), HashMap::from([
+            ("CATP".to_string(), "//CATP PROC VALUE=DEFAULT\n//A EXEC PGM=TEST,PARM='&VALUE'\n//CARD DD DUMMY\n// PEND\n".to_string()),
+            ("INC1".to_string(), "// SET VALUE=FROM_INCLUDE\n".to_string()),
+        ]));
+        catalog.insert(
+            "SECOND.LIB".to_string(),
+            HashMap::from([("CATP".to_string(), "//A EXEC PGM=WRONG\n".to_string())]),
+        );
+        let source = "//X JOB 'A'\n//LIB JCLLIB ORDER=(FIRST.LIB,SECOND.LIB)\n//INC INCLUDE MEMBER=INC1\n//S EXEC CATP,VALUE=&VALUE\n//A.CARD DD *\n0\n/*\n";
+        let job = jcl::parse_jcl_with_catalog(source, &catalog).unwrap();
+        assert_eq!(job.steps.len(), 1);
+        assert_eq!(job.steps[0].name, "S.A");
+        assert_eq!(job.steps[0].parm.as_deref(), Some("FROM_INCLUDE"));
+        assert_eq!(
+            job.steps[0].dds[0].kind,
+            DdKind::Inline(vec!["0".to_string()])
+        );
+    }
+
+    #[test]
+    fn nested_proc_passes_symbols_and_detects_recursion() {
+        let source = "//X JOB 'A'\n//P1 PROC VALUE=DEFAULT\n//A EXEC P2,VALUE=&VALUE\n// PEND\n//P2 PROC VALUE=SECOND\n//B EXEC PGM=TEST,PARM='&VALUE'\n// PEND\n//S EXEC P1,VALUE=OUTER\n";
+        let job = jcl::parse_jcl(source).unwrap();
+        assert_eq!(job.steps[0].name, "S.A.B");
+        assert_eq!(job.steps[0].parm.as_deref(), Some("OUTER"));
+        let broken = source.replace("//A EXEC P2,VALUE=&VALUE", "//A EXEC P1,VALUE=&VALUE");
+        assert!(jcl::parse_jcl(&broken).unwrap_err().contains("recursive"));
+    }
+
+    #[test]
+    fn duplicate_step_names_have_unique_ids_and_ambiguous_cond_is_rejected() {
+        let source =
+            "//X JOB 'A'\n//A EXEC PGM=TEST\n//A EXEC PGM=TEST\n//B EXEC PGM=TEST,COND=(4,LT,A)\n";
+        let job = jcl::parse_jcl(source).unwrap();
+        assert_eq!(job.steps[0].name, "A");
+        assert_eq!(job.steps[1].name, "A#2");
+        let previous = vec![("A".to_string(), Some(0)), ("A#2".to_string(), Some(8))];
+        assert!(
+            jcl::cond_bypasses(&job.steps[2].conditions[0], &previous, false)
+                .unwrap_err()
+                .contains("ambiguous")
+        );
+    }
+
+    #[test]
+    fn if_can_test_abend_and_run() {
+        let source = "//X JOB 'A'\n//FAIL EXEC PGM=TEST\n// IF (FAIL.ABEND AND NOT FAIL.RC = 0) THEN\n//A EXEC PGM=TEST\n// ENDIF\n";
+        let job = jcl::parse_jcl(source).unwrap();
+        let previous = vec![("FAIL".to_string(), None)];
+        let abends = HashMap::from([("FAIL".to_string(), "U1234".to_string())]);
+        assert!(jcl::guards_allow(&job.steps[1].guards, &previous, &abends).unwrap());
+        let source = "//X JOB 'A'\n//FAIL EXEC PGM=TEST\n// IF (FAIL.ABENDCC=U1234 AND ¬FAIL.RC = 0) THEN\n//A EXEC PGM=TEST\n// ENDIF\n";
+        let job = jcl::parse_jcl(source).unwrap();
+        assert!(jcl::guards_allow(&job.steps[1].guards, &previous, &abends).unwrap());
+    }
+
+    #[test]
+    fn site_placeholders_are_explicit() {
+        let source = "//X JOB 'A'\n//S EXEC PGM=TEST\n//INPUT DD DSN=<HLQ>.FILE,DISP=SHR\nA < B\n";
+        let site = HashMap::from([("HLQ".to_string(), "LOCAL".to_string())]);
+        assert!(substitute_site(source, &site)
+            .unwrap()
+            .contains("DSN=LOCAL.FILE"));
+        assert!(substitute_site(source, &site).unwrap().contains("A < B"));
+        assert!(substitute_site(source, &HashMap::new())
+            .unwrap_err()
+            .contains("<HLQ>"));
     }
 }

@@ -1,6 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{Dd, DdKind, Job, Result, Step};
+
+pub(super) type Catalog = HashMap<String, HashMap<String, String>>;
 
 #[derive(Clone, Debug)]
 pub(super) struct CondTest {
@@ -51,6 +53,9 @@ struct RawStep {
     dds: Vec<RawDd>,
     guards: Vec<IfGuard>,
     symbols: HashMap<String, String>,
+    inherited_conditions: Vec<CondSpec>,
+    call_stack: Vec<String>,
+    local_steps: HashSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +65,17 @@ struct Procedure {
 }
 
 fn name(value: &str, line: usize) -> Result<String> {
+    if let Some(site) = value
+        .strip_prefix('<')
+        .and_then(|text| text.strip_suffix('>'))
+    {
+        if !site.is_empty()
+            && site.len() <= 32
+            && site.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return Ok(value.to_ascii_uppercase());
+        }
+    }
     if value.is_empty()
         || value.len() > 20
         || !value
@@ -198,6 +214,147 @@ fn cards(source: &str) -> Result<Vec<Card>> {
         return Err("unterminated DD DATA delimiter".to_string());
     }
     Ok(result)
+}
+
+fn library_order(card: &Card) -> Result<Vec<String>> {
+    let value = card
+        .operands
+        .strip_prefix("ORDER=")
+        .ok_or_else(|| format!("line {}: unsupported JCLLIB operand", card.line))?;
+    let value = value
+        .strip_prefix('(')
+        .and_then(|v| v.strip_suffix(')'))
+        .unwrap_or(value);
+    split_top(value)?
+        .iter()
+        .map(|part| {
+            let library = part.trim().trim_matches('\'').to_ascii_uppercase();
+            if library.is_empty()
+                || !library
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".$#@_<>".contains(&b))
+            {
+                return Err(format!("line {}: invalid JCLLIB library {part}", card.line));
+            }
+            Ok(library)
+        })
+        .collect()
+}
+
+fn catalog_member<'a>(
+    catalog: &'a Catalog,
+    order: &[String],
+    member: &str,
+    line: usize,
+) -> Result<&'a str> {
+    for library in order {
+        if let Some(source) = catalog.get(library).and_then(|members| members.get(member)) {
+            return Ok(source);
+        }
+    }
+    Err(format!(
+        "line {line}: member {member} not found in JCLLIB ORDER"
+    ))
+}
+
+fn expand_includes(
+    input: Vec<Card>,
+    catalog: &Catalog,
+    order: &mut Vec<String>,
+    stack: &mut Vec<String>,
+) -> Result<Vec<Card>> {
+    let mut output = Vec::new();
+    for card in input {
+        if card.operation == "JCLLIB" {
+            *order = library_order(&card)?;
+            output.push(card);
+            continue;
+        }
+        if card.operation != "INCLUDE" {
+            output.push(card);
+            continue;
+        }
+        let member = card
+            .operands
+            .strip_prefix("MEMBER=")
+            .ok_or_else(|| format!("line {}: INCLUDE requires MEMBER=", card.line))?;
+        let member = name(member.trim(), card.line)?;
+        if stack.contains(&member) {
+            return Err(format!("line {}: recursive INCLUDE {member}", card.line));
+        }
+        let source = catalog_member(catalog, order, &member, card.line)?;
+        stack.push(member);
+        output.extend(expand_includes(cards(source)?, catalog, order, stack)?);
+        stack.pop();
+    }
+    Ok(output)
+}
+
+fn catalog_procedure(
+    source: &str,
+    requested: &str,
+    catalog: &Catalog,
+    order: &[String],
+) -> Result<Procedure> {
+    let mut member_cards = cards(source)?;
+    let mut local_order = order.to_vec();
+    member_cards = expand_includes(member_cards, catalog, &mut local_order, &mut Vec::new())?;
+    if member_cards
+        .first()
+        .is_none_or(|card| card.operation != "PROC")
+    {
+        member_cards.insert(
+            0,
+            Card {
+                line: 1,
+                name: requested.to_string(),
+                operation: "PROC".to_string(),
+                operands: String::new(),
+                data: Vec::new(),
+            },
+        );
+    } else if member_cards[0].name.is_empty() {
+        member_cards[0].name = requested.to_string();
+    }
+    if member_cards[0].name != requested {
+        return Err(format!(
+            "cataloged PROC member {requested} has mismatched name {}",
+            member_cards[0].name
+        ));
+    }
+    if member_cards
+        .last()
+        .is_none_or(|card| card.operation != "PEND")
+    {
+        member_cards.push(Card {
+            line: 0,
+            name: String::new(),
+            operation: "PEND".to_string(),
+            operands: String::new(),
+            data: Vec::new(),
+        });
+    }
+    member_cards.insert(
+        0,
+        Card {
+            line: 0,
+            name: "CATJOB".to_string(),
+            operation: "JOB".to_string(),
+            operands: "'CATALOG'".to_string(),
+            data: Vec::new(),
+        },
+    );
+    member_cards.push(Card {
+        line: 0,
+        name: "CATSTEP".to_string(),
+        operation: "EXEC".to_string(),
+        operands: "PGM=CATDUMMY".to_string(),
+        data: Vec::new(),
+    });
+    let (_, _, _, _, _, mut procedures) = raw_job(member_cards)?;
+    procedures
+        .remove(requested)
+        .ok_or_else(|| format!("cataloged PROC {requested} has no definition"))
 }
 
 fn assignments(text: &str, line: usize) -> Result<HashMap<String, String>> {
@@ -387,6 +544,9 @@ fn raw_job(
                     dds: Vec::new(),
                     guards: guards.clone(),
                     symbols: symbols.clone(),
+                    inherited_conditions: Vec::new(),
+                    call_stack: Vec::new(),
+                    local_steps: HashSet::new(),
                 };
                 if let Some((_, procedure)) = current_proc.as_mut() {
                     procedure.steps.push(step);
@@ -591,19 +751,26 @@ fn parse_dd(card: &Card, symbols: &HashMap<String, String>) -> Result<DdKind> {
         return Ok(DdKind::Sysout);
     }
     let mut dsn = String::new();
-    let mut disp = "SHR".to_string();
+    let mut disp = None;
     for part in parts {
         let Some((key, value)) = part.split_once('=') else {
             return Err(format!("line {}: unsupported DD operand {part}", card.line));
         };
         match key {
             "DSN" | "DSNAME" => dsn = value.to_string(),
-            "DISP" => disp = value.to_string(),
+            "DISP" => disp = Some(value.to_string()),
             "UNIT" | "SPACE" | "DCB" | "VOL" | "LABEL" | "AMP" | "STORCLAS" | "DATACLAS"
             | "MGMTCLAS" => {}
             _ => return Err(format!("line {}: unsupported DD operand {key}", card.line)),
         }
     }
+    let disp = disp.unwrap_or_else(|| {
+        if dsn.is_empty() {
+            "(NEW,DELETE)".to_string()
+        } else {
+            "SHR".to_string()
+        }
+    });
     Ok(DdKind::Dataset(vec![(dsn, disp)]))
 }
 
@@ -624,18 +791,54 @@ fn expand_dd(raw: &RawDd, symbols: &HashMap<String, String>) -> Result<Dd> {
     })
 }
 
+fn unique_step_name(name: &str, seen: &mut HashMap<String, usize>) -> String {
+    let count = seen.entry(name.to_string()).or_default();
+    *count += 1;
+    if *count == 1 {
+        name.to_string()
+    } else {
+        format!("{name}#{count}")
+    }
+}
+
+fn matches_step(actual: &str, requested: &str) -> bool {
+    actual == requested
+        || actual
+            .split_once('#')
+            .is_some_and(|(base, _)| base == requested)
+}
+
+#[cfg(test)]
 pub(super) fn parse_jcl(source: &str) -> Result<Job> {
-    let (name, attributes, job_condition, raw_joblib, raw_steps, procedures) =
-        raw_job(cards(source)?)?;
+    parse_jcl_with_catalog(source, &Catalog::new())
+}
+
+pub(super) fn parse_jcl_with_catalog(source: &str, catalog: &Catalog) -> Result<Job> {
+    let mut order = Vec::new();
+    let expanded_cards = expand_includes(cards(source)?, catalog, &mut order, &mut Vec::new())?;
+    let (name, attributes, job_condition, raw_joblib, raw_steps, mut procedures) =
+        raw_job(expanded_cards)?;
     let joblib = raw_joblib
         .iter()
         .map(|dd| expand_dd(dd, &HashMap::new()))
         .collect::<Result<Vec<_>>>()?;
     let mut steps = Vec::new();
-    let mut seen = HashSet::new();
-    for raw in raw_steps {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut pending: VecDeque<RawStep> = raw_steps.into();
+    while let Some(raw) = pending.pop_front() {
         let call_exec = substitute(&raw.operands, &raw.symbols, raw.line)?;
-        let (target, is_proc, options, call_cond) = parse_exec(&call_exec, raw.line)?;
+        let (target, is_proc, options, mut call_cond) = parse_exec(&call_exec, raw.line)?;
+        if let Some(cond) = &mut call_cond {
+            if let Some((prefix, _)) = raw.name.rsplit_once('.') {
+                for test in &mut cond.tests {
+                    if let Some(reference) = &test.step {
+                        if raw.local_steps.contains(reference) {
+                            test.step = Some(format!("{prefix}.{reference}"));
+                        }
+                    }
+                }
+            }
+        }
         if !is_proc {
             let pgm = target;
             let dds = raw
@@ -643,9 +846,7 @@ pub(super) fn parse_jcl(source: &str) -> Result<Job> {
                 .iter()
                 .map(|dd| expand_dd(dd, &raw.symbols))
                 .collect::<Result<Vec<_>>>()?;
-            if !seen.insert(raw.name.clone()) {
-                return Err(format!("line {}: duplicate step {}", raw.line, raw.name));
-            }
+            let step_name = unique_step_name(&raw.name, &mut seen);
             if !options.keys().all(|key| {
                 matches!(
                     key.as_str(),
@@ -657,16 +858,31 @@ pub(super) fn parse_jcl(source: &str) -> Result<Job> {
             let parm = options
                 .get("PARM")
                 .map(|value| value.trim_matches('\'').to_string());
+            let mut conditions = raw.inherited_conditions;
+            conditions.extend(call_cond);
             steps.push(Step {
-                name: raw.name,
+                name: step_name,
                 line: raw.line,
                 pgm,
                 parm,
                 dds,
-                conditions: call_cond.into_iter().collect(),
+                conditions,
                 guards: raw.guards,
             });
             continue;
+        }
+        if raw.call_stack.contains(&target) || raw.call_stack.len() >= 15 {
+            return Err(format!(
+                "line {}: recursive or too deeply nested PROC {target}",
+                raw.line
+            ));
+        }
+        if !procedures.contains_key(&target) {
+            let source = catalog_member(catalog, &order, &target, raw.line)?;
+            procedures.insert(
+                target.clone(),
+                catalog_procedure(source, &target, catalog, &order)?,
+            );
         }
         let procedure = procedures
             .get(&target)
@@ -695,33 +911,10 @@ pub(super) fn parse_jcl(source: &str) -> Result<Job> {
                 ));
             }
         }
+        let mut children = Vec::new();
         for proc_step in &procedure.steps {
             let expanded_name = format!("{}.{}", raw.name, proc_step.name);
-            if !seen.insert(expanded_name.clone()) {
-                return Err(format!(
-                    "line {}: duplicate expanded step {expanded_name}",
-                    raw.line
-                ));
-            }
             let exec = substitute(&proc_step.operands, &symbols, proc_step.line)?;
-            let (pgm, nested_proc, exec_options, proc_cond) = parse_exec(&exec, proc_step.line)?;
-            if nested_proc {
-                return Err(format!(
-                    "line {}: nested PROC invocation is unsupported",
-                    proc_step.line
-                ));
-            }
-            if !exec_options.keys().all(|key| {
-                matches!(
-                    key.as_str(),
-                    "PARM" | "REGION" | "TIME" | "DYNAMNBR" | "MEMLIMIT"
-                )
-            }) {
-                return Err(format!("line {}: unsupported EXEC option", proc_step.line));
-            }
-            let parm = exec_options
-                .get("PARM")
-                .map(|value| value.trim_matches('\'').to_string());
             let mut dds = proc_step.dds.clone();
             for override_dd in &raw.dds {
                 let Some((step_name, dd_name)) = override_dd.name.split_once('.') else {
@@ -741,32 +934,28 @@ pub(super) fn parse_jcl(source: &str) -> Result<Job> {
                     dds.push(adjusted);
                 }
             }
-            let dds = dds
-                .iter()
-                .map(|dd| expand_dd(dd, &symbols))
-                .collect::<Result<Vec<_>>>()?;
-            let mut conditions: Vec<CondSpec> = call_cond.clone().into_iter().collect();
-            if let Some(mut cond) = proc_cond {
-                for test in &mut cond.tests {
-                    if let Some(reference) = &test.step {
-                        if proc_names.contains(reference) {
-                            test.step = Some(format!("{}.{}", raw.name, reference));
-                        }
-                    }
-                }
-                conditions.push(cond);
-            }
+            let mut conditions = raw.inherited_conditions.clone();
+            conditions.extend(call_cond.clone());
             let mut guards = raw.guards.clone();
             guards.extend(proc_step.guards.clone());
-            steps.push(Step {
+            let mut call_stack = raw.call_stack.clone();
+            call_stack.push(target.clone());
+            let mut child_symbols = symbols.clone();
+            child_symbols.extend(proc_step.symbols.clone());
+            children.push(RawStep {
                 name: expanded_name,
                 line: proc_step.line,
-                pgm,
-                parm,
+                operands: exec,
                 dds,
-                conditions,
                 guards,
+                symbols: child_symbols,
+                inherited_conditions: conditions,
+                call_stack,
+                local_steps: proc_names.clone(),
             });
+        }
+        for child in children.into_iter().rev() {
+            pending.push_front(child);
         }
     }
     Ok(Job {
@@ -791,7 +980,10 @@ pub(super) fn cond_bypasses(
     }
     for test in &spec.tests {
         let candidates: Vec<_> = if let Some(target) = &test.step {
-            let matched: Vec<_> = previous.iter().filter(|(name, _)| name == target).collect();
+            let matched: Vec<_> = previous
+                .iter()
+                .filter(|(name, _)| matches_step(name, target))
+                .collect();
             if matched.len() > 1 {
                 return Err(format!("ambiguous COND step {target}"));
             }
@@ -821,9 +1013,13 @@ pub(super) fn cond_bypasses(
     Ok(false)
 }
 
-pub(super) fn guards_allow(guards: &[IfGuard], previous: &[(String, Option<i32>)]) -> Result<bool> {
+pub(super) fn guards_allow(
+    guards: &[IfGuard],
+    previous: &[(String, Option<i32>)],
+    abends: &HashMap<String, String>,
+) -> Result<bool> {
     for guard in guards {
-        let value = evaluate_if(&guard.expression, previous)?;
+        let value = evaluate_if(&guard.expression, previous, abends)?;
         if value != guard.then_branch {
             return Ok(false);
         }
@@ -831,7 +1027,25 @@ pub(super) fn guards_allow(guards: &[IfGuard], previous: &[(String, Option<i32>)
     Ok(true)
 }
 
-fn evaluate_if(expression: &str, previous: &[(String, Option<i32>)]) -> Result<bool> {
+fn prior_step<'a>(
+    step: &str,
+    previous: &'a [(String, Option<i32>)],
+) -> Result<&'a (String, Option<i32>)> {
+    let mut matches = previous.iter().filter(|(name, _)| matches_step(name, step));
+    let first = matches
+        .next()
+        .ok_or_else(|| format!("IF references unknown step {step}"))?;
+    if matches.next().is_some() {
+        return Err(format!("IF references ambiguous step {step}"));
+    }
+    Ok(first)
+}
+
+fn evaluate_if(
+    expression: &str,
+    previous: &[(String, Option<i32>)],
+    abends: &HashMap<String, String>,
+) -> Result<bool> {
     let mut expression = expression.trim();
     while expression.starts_with('(') && expression.ends_with(')') {
         let mut depth = 0;
@@ -866,42 +1080,103 @@ fn evaluate_if(expression: &str, previous: &[(String, Option<i32>)]) -> Result<b
                     .iter()
                     .find(|operator| expression[index..].starts_with(**operator))
                 {
-                    let left = evaluate_if(&expression[..index], previous)?;
+                    let left = evaluate_if(&expression[..index], previous, abends)?;
                     if *operator == " OR " || *operator == " | " {
                         return if left {
                             Ok(true)
                         } else {
-                            evaluate_if(&expression[index + operator.len()..], previous)
+                            evaluate_if(&expression[index + operator.len()..], previous, abends)
                         };
                     }
                     return if !left {
                         Ok(false)
                     } else {
-                        evaluate_if(&expression[index + operator.len()..], previous)
+                        evaluate_if(&expression[index + operator.len()..], previous, abends)
                     };
                 }
             }
         }
     }
     if let Some(rest) = expression.strip_prefix("NOT ") {
-        return evaluate_if(rest, previous).map(|value| !value);
+        return evaluate_if(rest, previous, abends).map(|value| !value);
+    }
+    if let Some(rest) = expression.strip_prefix('¬') {
+        return evaluate_if(rest, previous, abends).map(|value| !value);
+    }
+    let upper = expression.to_ascii_uppercase();
+    if upper == "ABEND" {
+        return Ok(!abends.is_empty());
+    }
+    if let Some(code) = upper.strip_prefix("ABENDCC=") {
+        return Ok(previous
+            .iter()
+            .rev()
+            .find_map(|(name, _)| abends.get(name))
+            .is_some_and(|actual| actual == code));
+    }
+    if let Some((step, code)) = upper.split_once(".ABENDCC=") {
+        return Ok(abends
+            .get(&prior_step(step, previous)?.0)
+            .is_some_and(|actual| actual == code));
+    }
+    if let Some(step) = upper.strip_suffix(".ABEND") {
+        return Ok(abends.contains_key(&prior_step(step, previous)?.0));
+    }
+    if let Some(step) = upper.strip_suffix(".RUN") {
+        let prior = prior_step(step, previous)?;
+        return Ok(prior.1.is_some() || abends.contains_key(&prior.0));
     }
     let fields: Vec<_> = expression.split_whitespace().collect();
     if fields.len() != 3 {
         return Err(format!("unsupported IF expression {expression:?}"));
     }
     let left = fields[0].to_ascii_uppercase();
+    if left == "ABENDCC" || left.ends_with(".ABENDCC") {
+        let actual = if left == "ABENDCC" {
+            previous.iter().rev().find_map(|(name, _)| abends.get(name))
+        } else {
+            abends.get(&prior_step(left.trim_end_matches(".ABENDCC"), previous)?.0)
+        };
+        let desired = fields[2].to_ascii_uppercase();
+        return match fields[1] {
+            "=" | "EQ" => Ok(actual.is_some_and(|code| code == &desired)),
+            "<>" | "NE" => Ok(actual.is_some_and(|code| code != &desired)),
+            _ => Err(format!("unsupported IF operator {}", fields[1])),
+        };
+    }
+    if left == "ABEND" || left.ends_with(".ABEND") || left.ends_with(".RUN") {
+        let actual = if left == "ABEND" {
+            !abends.is_empty()
+        } else if let Some(step) = left.strip_suffix(".ABEND") {
+            abends.contains_key(&prior_step(step, previous)?.0)
+        } else if let Some(step) = left.strip_suffix(".RUN") {
+            let prior = prior_step(step, previous)?;
+            prior.1.is_some() || abends.contains_key(&prior.0)
+        } else {
+            false
+        };
+        let desired = match fields[2].to_ascii_uppercase().as_str() {
+            "TRUE" => true,
+            "FALSE" => false,
+            _ => return Err(format!("invalid IF boolean {expression:?}")),
+        };
+        return match fields[1] {
+            "=" | "EQ" => Ok(actual == desired),
+            "<>" | "NE" => Ok(actual != desired),
+            _ => Err(format!("unsupported IF operator {}", fields[1])),
+        };
+    }
     let right = fields[2]
         .parse::<i32>()
         .map_err(|_| format!("invalid IF RC {expression:?}"))?;
     let value = if left == "RC" || left == "MAXCC" {
         previous.iter().filter_map(|(_, rc)| *rc).max().unwrap_or(0)
     } else if let Some(step) = left.strip_suffix(".RC") {
-        previous
-            .iter()
-            .find(|(name, _)| name == step)
-            .and_then(|(_, rc)| *rc)
-            .ok_or_else(|| format!("IF references unknown or skipped step {step}"))?
+        let prior = prior_step(step, previous)?;
+        let Some(rc) = prior.1 else {
+            return Ok(false);
+        };
+        rc
     } else {
         return Err(format!("unsupported IF variable {left}"));
     };

@@ -118,4 +118,6 @@ Bank of Z の `BNKSTMT` は [PL/I → C コンパイラの提案](pli-to-c-compi
 
 2026-10-04 の追加実装で、複数ステップ、インストリーム `PROC` / `PEND`、PROC パラメーターと `SET` 記号、`step.ddname` 上書き、`COND`、`IF` / `ELSE` / `ENDIF`、`PARM`、`JOBLIB`、`DD DATA,DLM=` を解析・実行経路へ追加した。GenApp の `cobol.jcl` は 93 ステップに展開できる。登録済みの直接 `PGM=` も Docker で起動する。非ゼロ RC の後に `COND` と IF を評価し、スキップを `result.json` に明記する。[複数ステップ試験](../testcases/jcl-multistep.md)は Docker で成功し、既存の Bank of Z 試験も再成功した。
 
-DISP 台帳、カタログド PROC / INCLUDE、IDCAMS/IEBGENER/コンパイルアダプター、GenApp 運用 JCL の業務実行は残作業である。未登録 PGM と未マッピングのデータセット DD は計画エラーにする。構文を展開できたことはそのジョブの業務処理を実行できたことを意味しない。利用手順と現在の対応範囲は [jclsh README](../../extras/jclsh/README.md)に記載する。
+追加実装では、`JCLLIB ORDER` によるカタログド PROC／INCLUDE の探索、入れ子 PROC、サイト依存 `<名前>` の外部設定、同名ステップの一意な記録と曖昧参照の検出を加えた。DD はジョブ専用領域で割り当て、永続データセットの変更を `dataset_root` の内側に制限し、正常／異常終了時の `DISP` を処理する。ABEND はアダプターのコードファイルまたは Docker のシグナル終了から明示的に記録し、`COND=EVEN` / `ONLY` と IF の RC／RUN／ABEND／ABENDCC 判定に渡す。[データセット・ABEND 試験](../testcases/jcl-datasets-abend.md)で実際のステップ間 `PASS`、`CATLG`、`DELETE`、`UNCATLG` と異常時 DELETE を確認した。
+
+GenApp 29 本のうち 20 本は現在の資材だけで構文展開できる。残る 9 本はリポジトリにない IBM 提供ユーティリティー PROC `DFHLS2WS` または `EYUJXBTP` を参照するため、登録ライブラリーがなければメンバー未発見と報告する。未登録の z/OS ユーティリティーの実行、およびそれらの外部 PROC 資材の提供は別作業である。構文展開だけで業務処理の実行成功とは扱わない。利用手順と現在の対応範囲は [jclsh README](../../extras/jclsh/README.md)に記載する。
