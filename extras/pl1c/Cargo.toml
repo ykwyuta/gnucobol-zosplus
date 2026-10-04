@@ -1,0 +1,10 @@
+[package]
+name = "pl1c"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental PL/I to C compiler for the GnuCOBOL z/OS compatibility work"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "pl1c"
+path = "src/main.rs"
