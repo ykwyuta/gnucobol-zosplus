@@ -262,6 +262,9 @@ static void
 alloc_figurative (const cob_field *f1, const cob_field *f2)
 {
 	const size_t		size2 = f2->size;
+#if 1	/* size1 is always 1 here, so several optimizations possible */
+	const cob_charset	*cs = COB_CS;
+#endif
 
 	if (COB_FIELD_NATIONAL_ALL (f1)) {
 		/* national: repeat the UTF-16 pattern */
@@ -282,7 +285,6 @@ alloc_figurative (const cob_field *f1, const cob_field *f2)
 	}
 
 #if 1	/* size1 is always 1 here, so several optimizations possible */
-	const cob_charset	*cs = COB_CS;
 	if (*f1->data == cs->space && size2 <= COB_SPACES_ALPHABETIC_BYTE_LENGTH) {
 		alpha_fld.size = size2;
 		alpha_fld.data = (unsigned char *) cs->spaces;

@@ -419,6 +419,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: Japanese literals and DBCS])
 AT_KEYWORDS([ebcdic data-codeset dbcs])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 AT_SKIP_IF([! printf '漢字' | iconv -f UTF-8 -t IBM1399 >/dev/null 2>&1])
 
 AT_DATA([prog.cob], [
@@ -477,6 +478,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: -fsource-codeset])
 AT_KEYWORDS([ebcdic data-codeset dbcs])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 AT_SKIP_IF([! printf '漢字' | iconv -f UTF-8 -t IBM1399 >/dev/null 2>&1])
 
 AT_DATA([prog.cob], [
@@ -499,6 +501,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: DBCS items PIC G / PIC N])
 AT_KEYWORDS([ebcdic data-codeset dbcs national])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 AT_SKIP_IF([! printf '漢字' | iconv -f UTF-8 -t IBM1399 >/dev/null 2>&1])
 
 AT_DATA([prog.cob], [
@@ -561,6 +564,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: user-defined DBCS characters])
 AT_KEYWORDS([ebcdic data-codeset dbcs gaiji])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 AT_SKIP_IF([! printf '漢字' | iconv -f UTF-8 -t IBM1399 >/dev/null 2>&1])
 
 AT_DATA([prog.cob], [
@@ -599,6 +603,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: national items (UTF-16)])
 AT_KEYWORDS([ebcdic data-codeset dbcs national nsymbol])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 AT_SKIP_IF([! printf '漢字' | iconv -f UTF-8 -t IBM1399 >/dev/null 2>&1])
 
 AT_DATA([prog.cob], [
@@ -680,6 +685,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: NATIONAL-OF and DISPLAY-OF])
 AT_KEYWORDS([ebcdic data-codeset dbcs national functions])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 AT_SKIP_IF([! printf '漢字' | iconv -f UTF-8 -t IBM1399 >/dev/null 2>&1])
 
 AT_DATA([prog.cob], [
@@ -722,6 +728,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: MOVE with DBCS items])
 AT_KEYWORDS([ebcdic data-codeset dbcs])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 AT_SKIP_IF([! printf '漢字' | iconv -f UTF-8 -t IBM1399 >/dev/null 2>&1])
 
 AT_DATA([prog.cob], [
@@ -846,6 +853,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: comparison with national items])
 AT_KEYWORDS([ebcdic data-codeset national])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 AT_SKIP_IF([! printf '漢字' | iconv -f UTF-8 -t IBM1399 >/dev/null 2>&1])
 
 AT_DATA([prog.cob], [
@@ -895,6 +903,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: STRING / UNSTRING / INSPECT with national items])
 AT_KEYWORDS([ebcdic data-codeset national])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 
 AT_DATA([prog.cob], [
        IDENTIFICATION DIVISION.
@@ -967,6 +976,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: national and DBCS edited items])
 AT_KEYWORDS([ebcdic data-codeset national dbcs])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 AT_SKIP_IF([! printf '漢字' | iconv -f UTF-8 -t IBM1399 >/dev/null 2>&1])
 
 AT_DATA([prog.cob], [
@@ -1058,6 +1068,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: functions with national arguments])
 AT_KEYWORDS([ebcdic data-codeset national functions])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 
 AT_DATA([prog.cob], [
        IDENTIFICATION DIVISION.
@@ -1101,6 +1112,7 @@ AT_CLEANUP
 
 AT_SETUP([national items with -fdata-codeset=HOST])
 AT_KEYWORDS([data-codeset national host])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 
 AT_DATA([prog.cob], [
        IDENTIFICATION DIVISION.
@@ -1208,6 +1220,7 @@ AT_CLEANUP
 
 AT_SETUP([EBCDIC data: national details])
 AT_KEYWORDS([ebcdic data-codeset national functions])
+AT_SKIP_IF([test "$COB_HAS_ICONV" = "no"])
 
 AT_DATA([prog.cob], [
        IDENTIFICATION DIVISION.
