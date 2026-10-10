@@ -22,7 +22,7 @@ def run(worker: Path, environment: dict[str, str],
                             check=False)
     if result.returncode:
         raise AssertionError(result.stderr.decode("utf-8", "replace"))
-    assert result.stdout.startswith(b"CCO6"), result.stdout[:16]
+    assert result.stdout.startswith(b"CCO7"), result.stdout[:16]
     return result.stdout
 
 

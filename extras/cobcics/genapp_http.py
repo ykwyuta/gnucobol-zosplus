@@ -59,12 +59,12 @@ def run_business(transid: bytes, payload: bytearray) -> bytes:
         print(result.stderr.decode("utf-8", "replace")[-1000:], file=sys.stderr)
         raise RuntimeError("GenApp worker failed")
     output = result.stdout
-    if not output.startswith(b"CCO6\0\0\0\0\x04\0APIR") or len(output) < 16:
+    if not output.startswith(b"CCO7\0\0\0\0\0\0\x04\0APIR") or len(output) < 18:
         raise RuntimeError("invalid GenApp worker response")
-    length = int.from_bytes(output[14:16], "big")
-    if length != 2048 or len(output) < 16 + length:
+    length = int.from_bytes(output[16:18], "big")
+    if length != 2048 or len(output) < 18 + length:
         raise RuntimeError("invalid GenApp COMMAREA response")
-    return output[16:16 + length]
+    return output[18:18 + length]
 
 
 def text_at(payload: bytes, start: int, width: int) -> str:

@@ -1,0 +1,24 @@
+services:
+  mq:
+    build: .
+    environment:
+      LICENSE: accept
+      MQ_QMGR_NAME: QM1
+      MQ_CONNAUTH_USE_HTP: "true"
+    ports:
+      - "127.0.0.1:1415:1414"
+      - "127.0.0.1:9444:9443"
+    secrets:
+      - mqAppPassword
+      - mqAdminPassword
+    volumes:
+      - mq-data:/mnt/mqm
+
+secrets:
+  mqAppPassword:
+    file: ./secrets/app-password.txt
+  mqAdminPassword:
+    file: ./secrets/admin-password.txt
+
+volumes:
+  mq-data:

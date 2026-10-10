@@ -138,6 +138,8 @@ def map_name(value):
 
 def rewrite_dfhresp(line, number):
     """Expand supported DFHRESP constants in fixed-format code, outside literals."""
+    if "DFHRESP" not in line.upper() and "DFHVALUE" not in line.upper():
+        return line
     code = line[7:72]
     result = []
     quote = None
@@ -168,7 +170,14 @@ def rewrite_dfhresp(line, number):
                 continue
             result.append(char)
         index += 1
-    return line[:7] + "".join(result) + line[72:]
+    rewritten = "".join(result)
+    if len(rewritten) > 65:
+        raise CicsError(f"{number}: rewritten COBOL line exceeds column 72")
+    suffix = line[72:].rstrip("\r\n")
+    newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+    if suffix:
+        return line[:7] + rewritten.ljust(65) + suffix + newline
+    return line[:7] + rewritten.rstrip() + newline
 
 
 def response_targets(options):
@@ -295,7 +304,7 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
     asktime = re.fullmatch(r"ASKTIME\b(.*)", body, re.I | re.S)
     if asktime:
         options = parse_options(asktime.group(1))
-        unsupported = set(options) - {"ABSTIME", "RESP", "RESP2"}
+        unsupported = set(options) - {"ABSTIME", "RESP", "RESP2", "NOHANDLE"}
         if unsupported:
             raise CicsError(f"unsupported ASKTIME option: {sorted(unsupported)[0]}")
         area = identifier(options.get("ABSTIME"), "ABSTIME")
@@ -313,7 +322,7 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
     formattime = re.fullmatch(r"FORMATTIME\b(.*)", body, re.I | re.S)
     if formattime:
         options = parse_options(formattime.group(1))
-        unsupported = set(options) - {"ABSTIME", "DDMMYYYY", "MMDDYYYY", "TIME", "DATESEP", "RESP", "RESP2"}
+        unsupported = set(options) - {"ABSTIME", "DDMMYYYY", "MMDDYYYY", "TIME", "DATESEP", "TIMESEP", "RESP", "RESP2"}
         if unsupported:
             raise CicsError(f"unsupported FORMATTIME option: {sorted(unsupported)[0]}")
         if ("DDMMYYYY" in options) == ("MMDDYYYY" in options):
@@ -331,19 +340,34 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                 separator = f'"{raw[1]}"'
             else:
                 raise CicsError("DATESEP requires a single character literal")
+        time_separator = None
+        if "TIMESEP" in options:
+            raw = options["TIMESEP"]
+            if raw is None:
+                time_separator = '":"'
+            elif re.fullmatch(r"'[ -~]'", raw):
+                time_separator = f'"{raw[1]}"'
+            else:
+                raise CicsError("TIMESEP requires a single character literal")
+        routine = "COBCICS_FORMATTIME" + ("_MMDD" if date_format == "MMDDYYYY" else "")
+        if time_separator is not None:
+            routine += "_TIMESEP"
         lines = [f"           MOVE LENGTH OF {abstime}\n",
                  "             TO COBCICS-LENGTH\n",
                  f"           MOVE LENGTH OF {date}\n",
                  "             TO COBCICS-DATE-CAPACITY\n",
                  f"           MOVE LENGTH OF {clock}\n",
                  "             TO COBCICS-TIME-CAPACITY\n",
-                 f'           CALL STATIC "COBCICS_FORMATTIME{("_MMDD" if date_format == "MMDDYYYY" else "")}"\n',
+                 f'           CALL STATIC "{routine}"\n',
                  f"             USING {abstime} COBCICS-LENGTH\n",
                  f"                   {date}\n",
                  "                   COBCICS-DATE-CAPACITY\n",
                  f"                   {clock}\n",
                  "                   COBCICS-TIME-CAPACITY\n",
-                 f"                   {separator} EIBRESP EIBRESP2\n"]
+                 f"                   {separator}\n"]
+        if time_separator is not None:
+            lines.append(f"                   {time_separator}\n")
+        lines.append("                   EIBRESP EIBRESP2\n")
         if "RESP" not in options and "RESP2" not in options:
             lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
                       '             USING EIBRESP\n']
@@ -686,6 +710,10 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
     if keyed_file:
         verb = keyed_file.group(1).upper()
         options = parse_options(keyed_file.group(2))
+        if "DATASET" in options:
+            if "FILE" in options:
+                raise CicsError(f"{verb} cannot specify FILE and DATASET")
+            options["FILE"] = options.pop("DATASET")
         if not (verb == "WRITE" and
                 options.get("FILE", "").upper() == "'ABNDFILE'"):
             allowed = {"FILE", "LENGTH", "RESP", "RESP2"}
@@ -702,9 +730,11 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
             if unsupported:
                 raise CicsError(f"unsupported {verb} FILE option: {sorted(unsupported)[0]}")
             file_name = options.get("FILE", "").upper()
-            if file_name not in ("'KSDSCUST'", "'KSDSPOLY'"):
-                raise CicsError(f"unsupported {verb} FILE name: {file_name}")
-            lines = [f'           MOVE "{file_name[1:-1]}"\n',
+            if re.fullmatch(r"'[A-Z0-9]{1,8}'", file_name):
+                source_name = f'"{file_name[1:-1]}"'
+            else:
+                source_name = identifier(file_name, "FILE")
+            lines = [f"           MOVE {source_name}\n",
                      "             TO COBCICS-FILE-NAME\n"]
             if verb != "DELETE":
                 direction = "INTO" if verb == "READ" else "FROM"
@@ -722,7 +752,8 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                 key = identifier(options.get("RIDFLD"), "RIDFLD")
                 raw_key_length = options.get("KEYLENGTH")
                 if raw_key_length is None or not re.fullmatch(
-                        r"[0-9]+|[A-Z][A-Z0-9-]*", raw_key_length, re.I):
+                        r"[0-9]+|[A-Z][A-Z0-9-]*|LENGTH\s+OF\s+[A-Z][A-Z0-9-]*",
+                        raw_key_length, re.I):
                     raise CicsError(f"{verb} FILE requires KEYLENGTH")
                 lines += [f"           MOVE {raw_key_length}\n",
                           "             TO COBCICS-FILE-KEY-LENGTH\n",
@@ -827,6 +858,25 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                  "                   COBCICS-LINK-CAPACITY\n",
                  "                   EIBRESP EIBRESP2\n"]
         if "RESP" not in options and "RESP2" not in options:
+            lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
+                      '             USING EIBRESP\n']
+        lines += response_targets(options)
+        if period:
+            lines[-1] = lines[-1].rstrip() + ".\n"
+        return lines
+    retrieve = re.fullmatch(r"RETRIEVE\b(.*)", body, re.I | re.S)
+    if retrieve:
+        options = parse_options(retrieve.group(1))
+        unsupported = set(options) - {"INTO", "RESP", "RESP2", "NOHANDLE"}
+        if unsupported:
+            raise CicsError(f"unsupported RETRIEVE option: {sorted(unsupported)[0]}")
+        area = identifier(options.get("INTO"), "INTO")
+        lines = [f"           MOVE LENGTH OF {area}\n",
+                 "             TO COBCICS-DATA-CAPACITY\n",
+                 '           CALL STATIC "COBCICS_RETRIEVE"\n',
+                 f"             USING {area} COBCICS-DATA-CAPACITY\n",
+                 "                   EIBRESP EIBRESP2\n"]
+        if "RESP" not in options and "RESP2" not in options and "NOHANDLE" not in options:
             lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
                       '             USING EIBRESP\n']
         lines += response_targets(options)

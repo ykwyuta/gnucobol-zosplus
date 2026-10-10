@@ -20,7 +20,7 @@ def call(worker, transid, payload, environment):
         input=vsam.request(transid, payload.encode("ascii")),
         capture_output=True, env=environment, timeout=30)
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-    assert result.stdout.startswith(b"CCO6"), result.stdout[:20]
+    assert result.stdout.startswith(b"CCO7"), result.stdout[:20]
     return result.stdout
 
 

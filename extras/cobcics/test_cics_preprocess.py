@@ -67,6 +67,27 @@ class CicsPreprocessTests(unittest.TestCase):
                              "MAPSET('OTHER') END-EXEC.\n",
                              self.maps, expected_mapset="BNK1MAI")
 
+    def test_mq_trigger_retrieve_and_carddemo_dataset_read(self):
+        retrieved = "".join(MODULE.statement(
+            "RETRIEVE INTO(MQTM) NOHANDLE", self.maps, False,
+            None, None, None))
+        self.assertIn('CALL STATIC "COBCICS_RETRIEVE"', retrieved)
+        self.assertNotIn('COBCICS_REQUIRE_NORMAL', retrieved)
+        read = "".join(MODULE.statement(
+            "READ DATASET(WS-FILE) INTO(ACCT-ROW) "
+            "LENGTH(LENGTH OF ACCT-ROW) RIDFLD(ACCT-ID) "
+            "KEYLENGTH(LENGTH OF ACCT-ID) RESP(WS-RESP)",
+            self.maps, False, None, None, None))
+        self.assertIn("MOVE WS-FILE", read)
+        self.assertIn('CALL STATIC "COBCICS_FILE_READ"', read)
+
+    def test_fixed_columns_preserved_when_rewriting_dfhresp(self):
+        line = ("000100     IF EIBRESP = DFHRESP(NORMAL)".ljust(72)
+                + "12345678\n")
+        output = MODULE.rewrite_dfhresp(line, 1)
+        self.assertEqual(output[72:80], "12345678")
+        self.assertIn("EIBRESP = 0", output[7:72])
+
     def test_quotes_comments_and_missing_end(self):
         self.assertIsNone(MODULE.find_end("MAP('END-EXEC')"))
         self.assertEqual(MODULE.find_end("MAP('A') END-EXEC."), 9)

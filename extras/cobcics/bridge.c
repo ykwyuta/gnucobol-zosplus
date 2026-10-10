@@ -218,6 +218,7 @@ void COBCICS_DEEDIT(unsigned char *field, const unsigned char *length,
 
 void COBCICS_START(unsigned char *aid, unsigned char *calen,
                    unsigned char *transid) {
+    (void)transid; /* Third argument is accessed through libcob's call ABI. */
     unsigned char header[5];
     int has_containers;
     if (active_child >= 0) {
@@ -913,6 +914,30 @@ void COBCICS_SYNCPOINT(const unsigned char *mode, unsigned char *resp,
     set_cobol_response(resp2, 0);
 }
 
+void COBCICS_RETRIEVE(unsigned char *destination,
+                      const unsigned char *capacity,
+                      unsigned char *resp, unsigned char *resp2) {
+    const char *queue = getenv("COBCICS_MQ_TRIGGER_QUEUE");
+    size_t length;
+    if (!started)
+        failure("invalid RETRIEVE call");
+    if (!queue || !*queue) {
+        set_cobol_response(resp, 44); /* QIDERR: no trigger data */
+        set_cobol_response(resp2, 1);
+        return;
+    }
+    length = strlen(queue);
+    if (length > 48 || cobol_fullword(capacity) < 112) {
+        set_cobol_response(resp, 22); /* LENGERR */
+        set_cobol_response(resp2, 0);
+        return;
+    }
+    memset(destination, ' ', 112);
+    memcpy(destination, queue, length);
+    set_cobol_response(resp, 0);
+    set_cobol_response(resp2, 0);
+}
+
 void COBCICS_DELAY(const unsigned char *seconds) {
     uint16_t count = cobol_length(seconds);
     if (!started || count > 60)
@@ -1056,9 +1081,10 @@ static void format_time(const unsigned char *abstime,
                          unsigned char *clock, const unsigned char *clock_capacity,
                          const unsigned char *separator,
                          unsigned char *resp, unsigned char *resp2,
-                         int month_first) {
+                         int month_first, unsigned char time_separator) {
     if (!started || cobol_length(abstime_capacity) != 8 ||
-        cobol_length(date_capacity) < 10 || cobol_length(clock_capacity) < 6)
+        cobol_length(date_capacity) < 10 ||
+        cobol_length(clock_capacity) < (time_separator ? 8 : 6))
         failure("invalid FORMATTIME data area length");
     uint64_t milliseconds;
     if (!unpack_abstime(abstime, &milliseconds)) {
@@ -1078,7 +1104,7 @@ static void format_time(const unsigned char *abstime,
         return;
     }
     char formatted_date[11];
-    char formatted_time[7];
+    char formatted_time[9];
     int date_size;
     if (*separator && month_first)
         date_size = snprintf(formatted_date, sizeof formatted_date,
@@ -1094,17 +1120,25 @@ static void format_time(const unsigned char *abstime,
     else
         date_size = snprintf(formatted_date, sizeof formatted_date,
                              "%02u%02u%04d", day, month, year);
-    int time_size = snprintf(formatted_time, sizeof formatted_time,
+    int time_size;
+    if (time_separator)
+        time_size = snprintf(formatted_time, sizeof formatted_time,
+                             "%02llu%c%02llu%c%02llu",
+                             (unsigned long long)(seconds / 3600), time_separator,
+                             (unsigned long long)(seconds / 60 % 60), time_separator,
+                             (unsigned long long)(seconds % 60));
+    else
+        time_size = snprintf(formatted_time, sizeof formatted_time,
                              "%02llu%02llu%02llu",
                              (unsigned long long)(seconds / 3600),
                              (unsigned long long)(seconds / 60 % 60),
                              (unsigned long long)(seconds % 60));
-    if (date_size < 0 || date_size > 10 || time_size != 6)
+    if (date_size < 0 || date_size > 10 || time_size != (time_separator ? 8 : 6))
         failure("FORMATTIME formatting failed");
     memset(date, ' ', cobol_length(date_capacity));
     memcpy(date, formatted_date, (size_t)date_size);
     memset(clock, ' ', cobol_length(clock_capacity));
-    memcpy(clock, formatted_time, 6);
+    memcpy(clock, formatted_time, (size_t)time_size);
     set_cobol_response(resp, 0);
     set_cobol_response(resp2, 0);
 }
@@ -1116,7 +1150,7 @@ void COBCICS_FORMATTIME(const unsigned char *abstime,
                          const unsigned char *separator,
                          unsigned char *resp, unsigned char *resp2) {
     format_time(abstime, abstime_capacity, date, date_capacity,
-                clock, clock_capacity, separator, resp, resp2, 0);
+                clock, clock_capacity, separator, resp, resp2, 0, 0);
 }
 
 void COBCICS_FORMATTIME_MMDD(const unsigned char *abstime,
@@ -1126,7 +1160,31 @@ void COBCICS_FORMATTIME_MMDD(const unsigned char *abstime,
                               const unsigned char *separator,
                               unsigned char *resp, unsigned char *resp2) {
     format_time(abstime, abstime_capacity, date, date_capacity,
-                clock, clock_capacity, separator, resp, resp2, 1);
+                clock, clock_capacity, separator, resp, resp2, 1, 0);
+}
+
+void COBCICS_FORMATTIME_TIMESEP(const unsigned char *abstime,
+                         const unsigned char *abstime_capacity,
+                         unsigned char *date, const unsigned char *date_capacity,
+                         unsigned char *clock, const unsigned char *clock_capacity,
+                         const unsigned char *separator,
+                         const unsigned char *time_separator,
+                         unsigned char *resp, unsigned char *resp2) {
+    format_time(abstime, abstime_capacity, date, date_capacity,
+                clock, clock_capacity, separator, resp, resp2, 0,
+                *time_separator);
+}
+
+void COBCICS_FORMATTIME_MMDD_TIMESEP(const unsigned char *abstime,
+                         const unsigned char *abstime_capacity,
+                         unsigned char *date, const unsigned char *date_capacity,
+                         unsigned char *clock, const unsigned char *clock_capacity,
+                         const unsigned char *separator,
+                         const unsigned char *time_separator,
+                         unsigned char *resp, unsigned char *resp2) {
+    format_time(abstime, abstime_capacity, date, date_capacity,
+                clock, clock_capacity, separator, resp, resp2, 1,
+                *time_separator);
 }
 
 void COBCICS_ABEND(const char *abcode, const unsigned char *length) {

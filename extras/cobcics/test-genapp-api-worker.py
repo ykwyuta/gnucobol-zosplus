@@ -25,10 +25,10 @@ def call(transid: bytes, request_id: bytes, customer: int, policy: int = 0,
         check=False)
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
     output = result.stdout
-    assert output.startswith(b"CCO6\0\0\0\0\x04\0APIR"), output[:24]
-    length = int.from_bytes(output[14:16], "big")
+    assert output.startswith(b"CCO7\0\0\0\0\0\0\x04\0APIR"), output[:24]
+    length = int.from_bytes(output[16:18], "big")
     assert length == 2048, length
-    return output[16:16 + length]
+    return output[18:18 + length]
 
 
 def main() -> None:

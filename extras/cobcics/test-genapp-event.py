@@ -48,7 +48,7 @@ def main() -> None:
                 result = subprocess.run([str(worker)], input=frame,
                     capture_output=True, env=environment, timeout=20, check=False)
                 assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-                assert result.stdout.startswith(b"CCO6"), result.stdout[:16]
+                assert result.stdout.startswith(b"CCO7"), result.stdout[:16]
             queue = queue_path(storage, b"GENASTRT")
             assert queue.exists() and int.from_bytes(queue.read_bytes()[:4], "big") == 1
             print(f"GenApp LGASTAT1 event {label} wrote TS queue OK")

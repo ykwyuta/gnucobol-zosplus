@@ -63,8 +63,9 @@ for file in build/bank-syntax/sql/*.cob; do
     }
   echo "$name OK"
 done
-gcc -std=c11 -Wall -Wextra -Werror \
+gcc -std=c11 -Wall -Wextra -Werror -I. \
   extras/cobcics/bridge.c extras/cobcics/test_bridge_channel.c \
+  -Lbuild/libcob/.libs -lcob -Wl,-rpath,/src/build/libcob/.libs \
   -o build/bank-syntax/test_bridge_channel
 printf 'CCI3\\175OMENBANKAPP \\000\\000\\000\\000' | \
   build/bank-syntax/test_bridge_channel

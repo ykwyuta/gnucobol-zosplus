@@ -24,7 +24,7 @@ def main() -> None:
             if result.returncode:
                 raise AssertionError(result.stderr.decode("utf-8", "replace"))
             response = result.stdout
-            assert response.startswith(b"CCO6"), response[:16]
+            assert response.startswith(b"CCO7"), response[:16]
             expected = f"HIGH CUSTOMER={number:010d}".encode("ascii")
             assert response[-24:] == expected, response[-24:]
 

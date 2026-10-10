@@ -4,6 +4,14 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Standalone C harness has no COBOL call frame. Verify the converted
+   TRANSID passed through libcob's parameter helper. */
+int cob_put_param_str(int number, const char *value) {
+    assert(number == 3);
+    assert(strcmp(value, "OMEN") == 0);
+    return 0;
+}
+
 void COBCICS_START(unsigned char *, unsigned char *, unsigned char *);
 void COBCICS_PUT_CONTAINER(const char *, const unsigned char *,
                           const unsigned char *, const unsigned char *,
