@@ -5069,6 +5069,7 @@ cob_display_field (cob_field *f, const cob_flags_t fattr, const char *parms, ...
 
 	int 	sline;
 	int 	scolumn;
+	int 	host;
 
 	if (parms && *parms) {
 		va_list 	args;
@@ -5115,8 +5116,6 @@ cob_display_field (cob_field *f, const cob_flags_t fattr, const char *parms, ...
 		va_end (args);
 	}
 
-	int	host;
-
 	init_cob_screen_if_needed ();
 
 	extract_line_and_col_vals (line, column, DISPLAY_STATEMENT,
@@ -5157,6 +5156,7 @@ cob_accept_field (cob_field *f, const cob_flags_t fattr, const char *parms, ...)
 
 	int 	sline;
 	int 	scolumn;
+	int 	host;
 
 	if (parms && *parms) {
 		va_list 	args;
@@ -5211,8 +5211,6 @@ cob_accept_field (cob_field *f, const cob_flags_t fattr, const char *parms, ...)
 		}
 		va_end (args);
 	}
-
-	int	host;
 
 	extract_line_and_col_vals (line, column, ACCEPT_STATEMENT,
 			zero_line_col_allowed, &sline, &scolumn);
