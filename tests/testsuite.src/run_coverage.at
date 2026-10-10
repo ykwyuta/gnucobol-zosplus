@@ -48,12 +48,12 @@ AT_DATA([json-exception.cob], [
           03 B PIC XX VALUE 'bb'.
        PROCEDURE DIVISION.
            JSON GENERATE SHORT-STR FROM VALID-REC
-             ON EXCEPTION DISPLAY 'EXCEPTION'
-             NOT ON EXCEPTION DISPLAY 'BAD'
+             ON EXCEPTION DISPLAY 'EXCEPTION' END-DISPLAY
+             NOT ON EXCEPTION DISPLAY 'BAD' END-DISPLAY
            END-JSON.
            JSON GENERATE LONG-STR FROM VALID-REC
-             ON EXCEPTION DISPLAY 'BAD'
-             NOT ON EXCEPTION DISPLAY 'NORMAL'
+             ON EXCEPTION DISPLAY 'BAD' END-DISPLAY
+             NOT ON EXCEPTION DISPLAY 'NORMAL' END-DISPLAY
            END-JSON.
            STOP RUN.
 ])
@@ -64,10 +64,10 @@ NORMAL
 ])
 AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
 [COBOL JSON EXCEPTION branches: 2/4 (50.0%), 1 counter file(s)
-json-exception.cob:11:0 JSONCOV JSON EXCEPTION #0 exception: 1
-json-exception.cob:11:0 JSONCOV JSON EXCEPTION #0 normal: 0
-json-exception.cob:15:0 JSONCOV JSON EXCEPTION #1 exception: 0
-json-exception.cob:15:0 JSONCOV JSON EXCEPTION #1 normal: 1
+json-exception.cob:12:0 JSONCOV JSON EXCEPTION #0 exception: 1
+json-exception.cob:12:0 JSONCOV JSON EXCEPTION #0 normal: 0
+json-exception.cob:16:0 JSONCOV JSON EXCEPTION #1 exception: 0
+json-exception.cob:16:0 JSONCOV JSON EXCEPTION #1 normal: 1
 ])
 AT_CLEANUP
 
@@ -90,8 +90,8 @@ AT_DATA([xml-exception.cob], [
        PARSE-INPUT.
            XML PARSE XML-INPUT
              PROCESSING PROCEDURE PROCESS-XML
-             ON EXCEPTION DISPLAY 'EXCEPTION'
-             NOT ON EXCEPTION DISPLAY 'NORMAL'
+             ON EXCEPTION DISPLAY 'EXCEPTION' END-DISPLAY
+             NOT ON EXCEPTION DISPLAY 'NORMAL' END-DISPLAY
            END-XML.
        PROCESS-XML.
            CONTINUE.
@@ -103,8 +103,8 @@ EXCEPTION
 ], [ignore])
 AT_CHECK([python3 "$abs_top_srcdir/bin/cobcov" report . .], [0],
 [COBOL XML EXCEPTION branches: 2/2 (100.0%), 1 counter file(s)
-xml-exception.cob:12:0 XMLCOV XML EXCEPTION #0 exception: 1
-xml-exception.cob:12:0 XMLCOV XML EXCEPTION #0 normal: 1
+xml-exception.cob:13:0 XMLCOV XML EXCEPTION #0 exception: 1
+xml-exception.cob:13:0 XMLCOV XML EXCEPTION #0 normal: 1
 ])
 AT_CLEANUP
 

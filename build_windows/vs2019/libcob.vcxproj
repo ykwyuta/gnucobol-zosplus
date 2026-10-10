@@ -169,6 +169,7 @@
     <ClCompile Include="..\..\libcob\charset.c" />
     <ClCompile Include="..\..\libcob\cobgetopt.c" />
     <ClCompile Include="..\..\libcob\common.c" />
+    <ClCompile Include="..\..\libcob\coverage.c" />
     <ClCompile Include="..\..\libcob\fileio.c" />
     <ClCompile Include="..\..\libcob\intrinsic.c" />
     <ClCompile Include="..\..\libcob\mlio.c" />
