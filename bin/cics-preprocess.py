@@ -54,10 +54,17 @@ def find_end(code):
     return None
 
 
+class MapDefinitions(dict):
+    def __init__(self):
+        super().__init__()
+        self.extended = {}
+
+
 def maps_from_copybook(copybook):
-    maps = {}
+    maps = MapDefinitions()
     current = None
     occurs = 1
+    last_field = None
     for line in copybook.splitlines():
         code = line[7:72].strip().upper() if len(line) >= 7 else line.strip().upper()
         match = MAP.fullmatch(code)
@@ -67,8 +74,10 @@ def maps_from_copybook(copybook):
                 raise CicsError(f"duplicate symbolic map: {current}")
             maps[current] = []
             occurs = 1
+            last_field = None
         elif code.startswith("01 "):
             current = None
+            last_field = None
         elif current:
             group = re.fullmatch(r"02\s+([A-Z0-9-]+)G\s+OCCURS\s+([0-9]+)\.", code)
             if group:
@@ -80,7 +89,13 @@ def maps_from_copybook(copybook):
             if match:
                 if code.startswith("02 "):
                     occurs = 1
-                maps[current].append((match.group(1), occurs))
+                last_field = match.group(1)
+                maps[current].append((last_field, occurs))
+            elif last_field:
+                ext = re.fullmatch(r"0[23]\s+([A-Z0-9-]+)\s+PIC\s+X\.", code)
+                if ext and ext.group(1) in (last_field + "C", last_field + "H"):
+                    maps.extended.setdefault((current, last_field), set()).add(
+                        ext.group(1)[-1])
     if not maps or any(not fields for fields in maps.values()):
         raise CicsError("copybook contains no symbolic output fields")
     return maps
@@ -1102,6 +1117,11 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                           '           CALL STATIC "COBCICS_SEND_ATTRIBUTE"\n',
                           f"             USING {literal}\n",
                           f"                   {field}A{suffix}\n"]
+                for attribute in sorted(getattr(maps, "extended", {}).get((name, field), ())):
+                    lines += ['           CALL STATIC "COBCICS_SEND_EXT_ATTRIBUTE"\n',
+                              f"             USING {literal}\n",
+                              f"                   X'{ord(attribute):02X}'\n",
+                              f"                   {field}{attribute}{suffix}\n"]
     if verb == "RECEIVE":
         lines.append("           END-IF\n")
     if period:

@@ -1,5 +1,7 @@
 pub mod bms;
 pub mod codec;
+pub mod indfile;
+pub mod printer;
 pub mod schedule;
 pub mod server;
 pub mod symbolic;

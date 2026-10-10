@@ -6,11 +6,32 @@ use std::time::Duration;
 
 use crate::bms::Map;
 use crate::codec::HostCodec;
-use crate::tn3270::{self, Event, Input, Telnet};
+use crate::tn3270::{self, Event, Input, Telnet, TerminalModel};
+
+pub trait ConnectionIo: Read + Write {
+    fn set_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()>;
+}
+
+impl ConnectionIo for TcpStream {
+    fn set_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.set_read_timeout(timeout)
+    }
+}
+
+impl ConnectionIo for rustls::StreamOwned<rustls::ServerConnection, TcpStream> {
+    fn set_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.get_mut().set_read_timeout(timeout)
+    }
+}
 
 #[derive(Clone)]
 pub struct WorkerRouting {
     pub codec: HostCodec,
+    pub tn3270e: bool,
+    pub nvt: bool,
+    pub printer_queue: Option<[u8; 8]>,
+    pub printer_utf8: bool,
+    pub indfile_root: Option<PathBuf>,
     pub initial_transid: [u8; 4],
     pub applid: [u8; 8],
     pub default_worker: Option<PathBuf>,
@@ -22,6 +43,11 @@ impl Default for WorkerRouting {
     fn default() -> Self {
         Self {
             codec: HostCodec::Cp037,
+            tn3270e: false,
+            nvt: false,
+            printer_queue: None,
+            printer_utf8: false,
+            indfile_root: None,
             initial_transid: *b"    ",
             applid: *b"COBCICS ",
             default_worker: None,
@@ -72,45 +98,61 @@ fn aid_message(input: &Input, codec: HostCodec) -> Result<String, String> {
     }
 }
 
-fn send_map(stream: &mut TcpStream, map: &Map, codec: HostCodec) -> Result<(), String> {
-    let record = tn3270::render_map_with_codec(map, codec)?;
+fn frame_screen(record: &[u8], enhanced: bool) -> Vec<u8> {
+    if enhanced {
+        let mut data = vec![0, 0, 0, 0, 0];
+        data.extend_from_slice(record);
+        tn3270::frame_record(&data)
+    } else {
+        tn3270::frame_record(record)
+    }
+}
+
+fn send_map<S: Read + Write>(stream: &mut S, map: &Map, codec: HostCodec, terminal: TerminalModel, enhanced: bool) -> Result<(), String> {
+    let record = tn3270::render_map_for_terminal(map, codec, terminal)?;
     stream
-        .write_all(&tn3270::frame_record(&record))
+        .write_all(&frame_screen(&record, enhanced))
         .map_err(|err| format!("send map: {err}"))
 }
 
-fn send_screen(
-    stream: &mut TcpStream,
+fn send_screen<S: Read + Write>(
+    stream: &mut S,
     map: &Map,
     action: crate::worker::ScreenAction,
     changed_fields: &[usize],
     changed_attributes: &[usize],
     text: Option<&str>,
     codec: HostCodec,
+    terminal: TerminalModel,
+    enhanced: bool,
 ) -> Result<(), String> {
     match action {
         crate::worker::ScreenAction::None => Ok(()),
-        crate::worker::ScreenAction::Map => send_map(stream, map, codec),
+        crate::worker::ScreenAction::Map => send_map(stream, map, codec, terminal, enhanced),
         crate::worker::ScreenAction::Erase => stream
-            .write_all(&tn3270::frame_record(&[0xf5, 0xc2]))
+            .write_all(&frame_screen(&[
+                if map.rows == 24 && map.columns == 80 { 0xf5 } else { 0x7e },
+                0xc2,
+            ], enhanced))
             .map_err(|err| format!("erase screen: {err}")),
         crate::worker::ScreenAction::DataOnly | crate::worker::ScreenAction::DataOnlyAlarm => {
-            let record = tn3270::render_dataonly_with_codec(
+            let record = tn3270::render_dataonly_for_terminal(
                 map,
                 changed_fields,
                 changed_attributes,
                 action == crate::worker::ScreenAction::DataOnlyAlarm,
                 codec,
+                terminal,
             )?;
             stream
-                .write_all(&tn3270::frame_record(&record))
+                .write_all(&frame_screen(&record, enhanced))
                 .map_err(|err| format!("send data-only map: {err}"))
         }
         crate::worker::ScreenAction::Text => {
             let record = tn3270::render_text_with_codec(
                 text.ok_or("SEND TEXT has no text")?, codec)?;
             stream
-                .write_all(&tn3270::frame_record(&record))
+                .write_all(&frame_screen(&record, enhanced))
                 .map_err(|err| format!("send text: {err}"))
         }
     }
@@ -118,12 +160,14 @@ fn send_screen(
 
 const MAX_IMMEDIATE_CHAIN: usize = 32;
 
-fn run_worker_chain(
-    stream: &mut TcpStream,
+fn run_worker_chain<S: Read + Write>(
+    stream: &mut S,
     map: &mut Map,
     routing: &WorkerRouting,
     session: &mut crate::worker::Session,
     mut input: Input,
+    terminal: TerminalModel,
+    enhanced: bool,
 ) -> Result<bool, String> {
     for _ in 0..MAX_IMMEDIATE_CHAIN {
         if let Some(next_map) = routing.maps.get(&session.transid) {
@@ -144,6 +188,8 @@ fn run_worker_chain(
             &outcome.changed_attributes,
             outcome.text.as_deref(),
             routing.codec,
+            terminal,
+            enhanced,
         )?;
         let Some(next) = outcome.next else {
             return Ok(true);
@@ -188,20 +234,62 @@ pub fn serve_connection_with_routing(
     stream
         .set_read_timeout(Some(Duration::from_secs(15)))
         .map_err(|err| err.to_string())?;
+    serve_connection_with_io(stream, map, routing)
+}
+
+/// Serve an established plaintext or TLS transport. The caller configures
+/// the underlying socket's read timeout before entering this loop.
+pub fn serve_connection_with_io<S: ConnectionIo>(
+    stream: &mut S,
+    map: &mut Map,
+    routing: &WorkerRouting,
+) -> Result<(), String> {
+    let greeting = if routing.nvt {
+        b"COBCICS NVT gateway\r\nType 3270 to open the terminal, HELP, or QUIT.\r\n> ".to_vec()
+    } else if routing.tn3270e {
+        Telnet::enhanced_greeting()
+    } else {
+        Telnet::greeting().to_vec()
+    };
     stream
-        .write_all(Telnet::greeting())
+        .write_all(&greeting)
         .map_err(|err| format!("send Telnet greeting: {err}"))?;
-    let mut telnet = Telnet::default();
+    let mut telnet = if routing.nvt { Telnet::nvt() } else { Telnet::default() };
     let mut session = crate::worker::Session {
         transid: routing.initial_transid,
         ..crate::worker::Session::default()
     };
     let mut shown = false;
+    let mut terminal = None;
+    let mut printer = None;
+    let mut transfer: Option<crate::indfile::Transfer> = None;
+    let mut query_pending = false;
+    let mut query_done = false;
     let mut buffer = [0u8; 4096];
     loop {
+        if let Some(queue) = printer.as_mut() {
+            let queue: &mut crate::printer::PrinterQueue = queue;
+            let batch = queue.next_batch()?;
+            if !batch.is_empty() {
+                for record in batch {
+                    let record = if routing.printer_utf8 {
+                        crate::printer::encode_utf8_record(&record, routing.codec)?
+                    } else {
+                        record
+                    };
+                    stream.write_all(&telnet.frame_printer_data(&record)?)
+                        .map_err(|err| format!("send 3287 print data: {err}"))?;
+                }
+                stream.write_all(&telnet.frame_print_eoj()?)
+                    .map_err(|err| format!("send PRINT-EOJ: {err}"))?;
+                queue.commit()?;
+            }
+        }
         let size = match stream.read(&mut buffer) {
             Ok(0) => return Ok(()),
             Ok(size) => size,
+            Err(err) if printer.is_some() && matches!(err.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => continue,
             Err(err) => return Err(format!("read terminal: {err}")),
         };
         let events = telnet.feed(&buffer[..size])?;
@@ -210,17 +298,82 @@ pub fn serve_connection_with_routing(
                 Event::Reply(reply) => stream
                     .write_all(&reply)
                     .map_err(|err| format!("send Telnet reply: {err}"))?,
-                Event::TerminalType(_) => {}
+                Event::TerminalType(name) => terminal = Some(TerminalModel::from_name(&name)?),
+                Event::Printer(_) => (),
+                Event::NvtLine(line) => {
+                    match line.trim().to_ascii_uppercase().as_str() {
+                        "3270" => {
+                            telnet.begin_3270();
+                            let greeting = if routing.tn3270e {
+                                Telnet::enhanced_greeting()
+                            } else {
+                                Telnet::greeting().to_vec()
+                            };
+                            stream.write_all(&greeting)
+                                .map_err(|err| format!("start 3270: {err}"))?;
+                        }
+                        "QUIT" | "EXIT" => return Ok(()),
+                        "HELP" => stream.write_all(b"Commands: 3270, HELP, QUIT\r\n> ")
+                            .map_err(|err| format!("NVT reply: {err}"))?,
+                        _ => stream.write_all(b"Unknown command. Type HELP.\r\n> ")
+                            .map_err(|err| format!("NVT reply: {err}"))?,
+                    }
+                }
                 Event::Record(record) => {
+                    if printer.is_some() {
+                        // Basic SCS sessions do not request response messages.
+                        continue;
+                    }
+                    let record = telnet.decode_3270(&record)?;
+                    if query_pending {
+                        let (rows, columns) = tn3270::query_usable_area(record)?;
+                        let model = terminal.as_mut().ok_or("terminal model not negotiated")?;
+                        model.rows = rows;
+                        model.columns = columns;
+                        query_pending = false;
+                        query_done = true;
+                        continue;
+                    }
                     if !shown {
                         return Err("terminal data arrived before TN3270 negotiation".to_owned());
                     }
-                    let input = tn3270::parse_input_with_codec(map, &record, routing.codec)?;
+                    if let Some(active) = transfer.as_mut() {
+                        let response = active.receive(record)?;
+                        if !response.is_empty() {
+                            stream.write_all(&telnet.frame_3270(&response))
+                                .map_err(|err| format!("send IND$FILE: {err}"))?;
+                        }
+                        if active.done() {
+                            transfer = None;
+                            stream.set_timeout(None).map_err(|err| err.to_string())?;
+                            let model = terminal.ok_or("3270 terminal model not negotiated")?;
+                            send_map(stream, map, routing.codec, model, telnet.enhanced())?;
+                        }
+                        continue;
+                    }
+                    let input = tn3270::parse_input_with_codec(map, record, routing.codec)?;
+                    if let Some(root) = routing.indfile_root.as_deref() {
+                        let command = input.fields.iter()
+                            .map(|(_, bytes)| routing.codec.decode(bytes))
+                            .collect::<Result<Vec<_>, _>>()?
+                            .into_iter()
+                            .find(|value| value.trim_start().to_ascii_uppercase().starts_with("IND$FILE "));
+                        if let Some(command) = command {
+                            let (active, query) = crate::indfile::Transfer::start(&command, root)?;
+                            stream.write_all(&telnet.frame_3270(&query))
+                                .map_err(|err| format!("send IND$FILE query: {err}"))?;
+                            stream.set_timeout(Some(Duration::from_secs(60)))
+                                .map_err(|err| err.to_string())?;
+                            transfer = Some(active);
+                            continue;
+                        }
+                    }
+                    let model = terminal.ok_or("3270 terminal model not negotiated")?;
                     let done = match routing.worker_for(&session.transid)? {
-                        Some(_) => run_worker_chain(stream, map, routing, &mut session, input)?,
+                        Some(_) => run_worker_chain(stream, map, routing, &mut session, input, model, telnet.enhanced())?,
                         None => {
                             display_message(map, &aid_message(&input, routing.codec)?);
-                            send_map(stream, map, routing.codec)?;
+                            send_map(stream, map, routing.codec, model, telnet.enhanced())?;
                             matches!(input.aid, 0xf3 | 0x7c)
                         }
                     };
@@ -230,22 +383,36 @@ pub fn serve_connection_with_routing(
                 }
             }
         }
-        if telnet.ready() && !shown {
+        if telnet.ready() && !shown && !query_pending {
+            if telnet.printer() {
+                let name = routing.printer_queue.ok_or(
+                    "printer session requested but --printer-queue is not configured")?;
+                printer = Some(crate::printer::PrinterQueue::new(&name)?);
+                stream.set_timeout(Some(Duration::from_millis(250)))
+                    .map_err(|err| err.to_string())?;
+                shown = true;
+                continue;
+            }
+            let model = terminal.ok_or("3270 terminal model not negotiated")?;
+            if telnet.enhanced() && model.extended && !query_done {
+                stream.write_all(&telnet.frame_3270(&[0xf3, 0, 5, 1, 0xff, 2]))
+                    .map_err(|err| format!("query terminal usable area: {err}"))?;
+                query_pending = true;
+                continue;
+            }
             if routing.worker_for(&session.transid)?.is_some() {
                 let input = Input {
                     aid: 0,
                     cursor: None,
                     fields: Vec::new(),
                 };
-                if run_worker_chain(stream, map, routing, &mut session, input)? {
+                if run_worker_chain(stream, map, routing, &mut session, input, model, telnet.enhanced())? {
                     return Ok(());
                 }
             } else {
-                send_map(stream, map, routing.codec)?;
+                send_map(stream, map, routing.codec, model, telnet.enhanced())?;
             }
-            stream
-                .set_read_timeout(None)
-                .map_err(|err| err.to_string())?;
+            stream.set_timeout(None).map_err(|err| err.to_string())?;
             shown = true;
         }
     }
@@ -260,6 +427,11 @@ mod tests {
     fn transid_routes_select_worker_before_default() {
         let routing = WorkerRouting {
             codec: HostCodec::Cp037,
+            tn3270e: false,
+            nvt: false,
+            printer_queue: None,
+            printer_utf8: false,
+            indfile_root: None,
             initial_transid: *b"OMEN",
             applid: *b"BANKAPP ",
             default_worker: Some(PathBuf::from("fallback")),

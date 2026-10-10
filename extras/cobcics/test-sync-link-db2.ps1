@@ -9,7 +9,7 @@ if (-not (Test-Path extras/db2sql/.runtime.env)) {
     throw 'Create extras/db2sql/.runtime.env as described in extras/db2sql/README.md'
 }
 
-cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcics-mapgen --offline -- `
+cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcics-mapgen --locked -- `
     reference/Bank-of-Z-main/src/base/cics/bms/BNK1MAI.bms "$output/BNK1MAI.cpy"
 if ($LASTEXITCODE -ne 0) { throw 'BMS map generation failed' }
 python bin/cics-preprocess.py extras/cobcics/sync-link-worker.cob `

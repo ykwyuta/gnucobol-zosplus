@@ -47,6 +47,12 @@ static struct {
     unsigned char value;
 } output_attributes[MAX_FIELDS];
 static unsigned output_attribute_count;
+static struct {
+    char name[8];
+    unsigned char kind;
+    unsigned char value;
+} output_extended_attributes[MAX_FIELDS * 2];
+static unsigned output_extended_attribute_count;
 static int started;
 static FILE *protocol_stdout;
 static unsigned char input_commarea[MAX_COMMAREA];
@@ -1213,11 +1219,37 @@ void COBCICS_SEND_ATTRIBUTE(const char *name, const unsigned char *value) {
     output_attributes[output_attribute_count++].value = *value;
 }
 
+void COBCICS_SEND_EXT_ATTRIBUTE(const char *name, const unsigned char *kind,
+                                const unsigned char *value) {
+    char host_name[9];
+    if (!started)
+        failure("SEND_EXT_ATTRIBUTE before START");
+    if (*value == 0 || *value == 0xff || *value == 0x80 || *value == ' ' || *value == 0x40)
+        return;
+    if ((*kind != 'C' || *value < 0xf0) &&
+        (*kind != 'H' || !(*value == 0xf0 || *value == 0xf1 ||
+                            *value == 0xf2 || *value == 0xf4)))
+        failure("unsupported BMS extended attribute");
+    (void)name;
+    if (!cob_get_param_str(1, host_name, sizeof host_name))
+        failure("cannot convert extended attribute name");
+    if (output_extended_attribute_count >= MAX_FIELDS * 2)
+        failure("too many output extended attributes");
+    for (unsigned index = 0; index < output_extended_attribute_count; ++index)
+        if (memcmp(output_extended_attributes[index].name, host_name, 8) == 0 &&
+            output_extended_attributes[index].kind == *kind)
+            failure("duplicate output extended attribute");
+    memcpy(output_extended_attributes[output_extended_attribute_count].name, host_name, 8);
+    output_extended_attributes[output_extended_attribute_count].kind = *kind;
+    output_extended_attributes[output_extended_attribute_count++].value = *value;
+}
+
 void COBCICS_SEND_MAP(const unsigned char *action) {
     if (!started || (*action != 0 && *action != 2 && *action != 3))
         failure("invalid SEND_MAP action");
     output_count = 0;
     output_attribute_count = 0;
+    output_extended_attribute_count = 0;
     output_text_length = 0;
     screen_action = *action;
 }
@@ -1227,6 +1259,7 @@ void COBCICS_SEND_CONTROL(void) {
         failure("SEND_CONTROL before START");
     output_count = 0;
     output_attribute_count = 0;
+    output_extended_attribute_count = 0;
     output_text_length = 0;
     screen_action = 1;
 }
@@ -1242,6 +1275,7 @@ void COBCICS_SEND_TEXT(const unsigned char *source, const unsigned char *length,
         failure("invalid SEND TEXT length");
     output_count = 0;
     output_attribute_count = 0;
+    output_extended_attribute_count = 0;
     cob_field area = *cob_get_param_field(1, "COBCICS_SEND_TEXT");
     area.data = (unsigned char *)source;
     area.size = count;
@@ -1293,7 +1327,7 @@ void COBCICS_FINISH(void) {
     if (COBCICS_START_FLUSH() != 0)
         failure("CICS START scheduling failed");
 #endif
-    write_bytes("CCO6", 4);
+    write_bytes("CCO7", 4);
     write_u16((uint16_t)output_count);
     for (unsigned index = 0; index < output_count; ++index) {
         const struct field *field = &output_fields[index];
@@ -1305,6 +1339,12 @@ void COBCICS_FINISH(void) {
     for (unsigned index = 0; index < output_attribute_count; ++index) {
         write_bytes(output_attributes[index].name, 8);
         write_bytes(&output_attributes[index].value, 1);
+    }
+    write_u16((uint16_t)output_extended_attribute_count);
+    for (unsigned index = 0; index < output_extended_attribute_count; ++index) {
+        write_bytes(output_extended_attributes[index].name, 8);
+        write_bytes(&output_extended_attributes[index].kind, 1);
+        write_bytes(&output_extended_attributes[index].value, 1);
     }
     write_bytes(&screen_action, 1);
     write_bytes(&return_immediate, 1);

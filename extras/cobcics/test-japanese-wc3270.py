@@ -3,6 +3,7 @@
 
 import argparse
 import socket
+import time
 
 
 def main() -> None:
@@ -31,11 +32,19 @@ def main() -> None:
 
         codepage = command("Query(CodePage)")
         assert "cp939" in codepage, codepage
-        initial = command("Ascii")
+        for _ in range(100):
+            initial = command("Ascii")
+            if "日本語を入力" in initial:
+                break
+            time.sleep(0.1)
         assert "日本語を入力" in initial, initial
         command("String(日本語)")
         command("Enter")
-        echoed = command("Ascii")
+        for _ in range(100):
+            echoed = command("Ascii")
+            if "日本語" in echoed and "日本語を入力" not in echoed:
+                break
+            time.sleep(0.1)
         assert "日本語" in echoed, echoed
         assert "日本語を入力" not in echoed, echoed
         print("wc3270 cp939 Japanese display, input and COBOL echo OK")

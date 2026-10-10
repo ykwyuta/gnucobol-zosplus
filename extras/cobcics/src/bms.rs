@@ -1,4 +1,4 @@
-//! A deliberately small BMS reader for the initial 24x80 TN3270 subset.
+//! BMS map definitions used by the TN3270 host and COBOL symbolic maps.
 
 use std::collections::HashSet;
 
@@ -13,12 +13,15 @@ pub struct Field {
     pub initial: String,
     pub occurrence_values: Vec<Option<String>>,
     pub protected: bool,
+    pub numeric: bool,
     pub intensified: bool,
     pub hidden: bool,
     pub initial_cursor: bool,
     pub fset: bool,
     pub justify_right: bool,
     pub justify_zero: bool,
+    pub color: Option<u8>,
+    pub highlight: Option<u8>,
 }
 
 impl Field {
@@ -256,7 +259,7 @@ pub fn parse(source: &str) -> Result<Vec<Map>, String> {
                 if mapset.is_empty()
                     || rows == 0
                     || columns == 0
-                    || rows.checked_mul(columns).is_none_or(|size| size > 4096)
+                    || rows.checked_mul(columns).is_none_or(|size| size > 16383)
                 {
                     return Err(format!("line {line}: invalid map geometry or mapset"));
                 }
@@ -338,6 +341,17 @@ pub fn parse(source: &str) -> Result<Vec<Map>, String> {
                     .unwrap_or("")
                     .to_ascii_uppercase();
                 let attributes: HashSet<&str> = attr.split(',').map(str::trim).collect();
+                let color = value(&opts, "COLOR").map(|name| match name {
+                    "BLUE" => Ok(0xf1), "RED" => Ok(0xf2), "PINK" => Ok(0xf3),
+                    "GREEN" => Ok(0xf4), "TURQUOISE" => Ok(0xf5),
+                    "YELLOW" => Ok(0xf6), "NEUTRAL" => Ok(0xf7),
+                    _ => Err(format!("line {line}: unsupported COLOR={name}")),
+                }).transpose()?;
+                let highlight = value(&opts, "HILIGHT").map(|name| match name {
+                    "OFF" | "NORMAL" => Ok(0xf0), "BLINK" => Ok(0xf1),
+                    "REVERSE" => Ok(0xf2), "UNDERLINE" => Ok(0xf4),
+                    _ => Err(format!("line {line}: unsupported HILIGHT={name}")),
+                }).transpose()?;
                 let protected = attributes.contains("PROT")
                     || attributes.contains("ASKIP")
                     || (label.is_none() && !attributes.contains("UNPROT"));
@@ -374,12 +388,15 @@ pub fn parse(source: &str) -> Result<Vec<Map>, String> {
                     initial: initial.chars().take(length).collect(),
                     occurrence_values: vec![None; occurs],
                     protected,
+                    numeric: attributes.contains("NUM"),
                     intensified: attributes.contains("BRT"),
                     hidden: attributes.contains("DRK"),
                     initial_cursor: attributes.contains("IC"),
                     fset: attributes.contains("FSET"),
                     justify_right,
                     justify_zero,
+                    color,
+                    highlight,
                 });
             }
             _ => unreachable!(),

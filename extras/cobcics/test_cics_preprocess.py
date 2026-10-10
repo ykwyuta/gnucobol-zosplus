@@ -91,6 +91,18 @@ class CicsPreprocessTests(unittest.TestCase):
         self.assertIn('USING "ACCO0001"', "".join(lines))
         self.assertIn("ACCOUNTO(10)", "".join(lines))
 
+    def test_extended_symbolic_attributes_reach_bridge(self):
+        copybook = self.copybook + (
+            "       02 ACTIONC PIC X.\n"
+            "       02 ACTIONH PIC X.\n")
+        maps = MODULE.maps_from_copybook(copybook)
+        lines = "".join(MODULE.statement(
+            "SEND MAP('BNK1ME')", maps, False, None, "BNK1ME", None))
+        self.assertEqual(lines.count('CALL STATIC "COBCICS_SEND_EXT_ATTRIBUTE"'), 2)
+        self.assertIn("ACTIONC", lines)
+        self.assertIn("ACTIONH", lines)
+        self.assertTrue(all(len(line) <= 72 for line in lines.splitlines()))
+
     def test_dfhresp_rewrite_skips_literals_and_rejects_unknown(self):
         prefix = ("       DATA DIVISION.\n"
                   "       WORKING-STORAGE SECTION.\n"

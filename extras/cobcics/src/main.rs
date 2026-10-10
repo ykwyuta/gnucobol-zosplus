@@ -1,12 +1,50 @@
 use std::env;
 use std::fs;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
 use cobcics::server::WorkerRouting;
 
 fn usage() -> &'static str {
-    "usage: cobcicsd --bms FILE [--map NAME] [--charset IBM-037|IBM-930|IBM-939|IBM-1390|IBM-1399] [--listen 127.0.0.1:3270] [--applid ID] [--worker COBOL-EXE] [--transid ID --route ID=COBOL-EXE --map-route ID=BMS-FILE#MAP ...]"
+    "usage: cobcicsd --bms FILE [--map NAME] [--tn3270e] [--nvt] [--printer-queue NAME --printer-input host|utf8] [--indfile-root DIR] [--tls-cert PEM --tls-key PEM [--starttls]] [--charset IBM-037|IBM-930|IBM-939|IBM-1390|IBM-1399] [--listen 127.0.0.1:3270] [--applid ID] [--worker COBOL-EXE] [--transid ID --route ID=COBOL-EXE --map-route ID=BMS-FILE#MAP ...]"
+}
+
+fn starttls(stream: &mut std::net::TcpStream) -> Result<(), String> {
+    // Require an immediate upgrade. No application data is sent in cleartext,
+    // and a refusal closes the connection rather than downgrading it.
+    stream.write_all(&[0xff, 0xfd, 46])
+        .map_err(|err| format!("STARTTLS offer: {err}"))?;
+    let mut response = [0_u8; 9];
+    stream.read_exact(&mut response)
+        .map_err(|err| format!("STARTTLS negotiation: {err}"))?;
+    if response != [0xff, 0xfb, 46, 0xff, 0xfa, 46, 1, 0xff, 0xf0] {
+        return Err("client did not accept Telnet STARTTLS".to_owned());
+    }
+    stream.write_all(&[0xff, 0xfa, 46, 1, 0xff, 0xf0])
+        .map_err(|err| format!("STARTTLS FOLLOWS: {err}"))?;
+    Ok(())
+}
+
+fn tls_config(cert: &str, key: &str) -> Result<Arc<rustls::ServerConfig>, String> {
+    let certificates: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert)
+        .map_err(|err| format!("TLS certificate {cert}: {err}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|err| format!("TLS certificate {cert}: {err}"))?;
+    if certificates.is_empty() {
+        return Err(format!("TLS certificate {cert}: no certificates"));
+    }
+    let private_key = PrivateKeyDer::from_pem_file(key)
+        .map_err(|err| format!("TLS private key {key}: {err}"))?;
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .map_err(|err| format!("TLS configuration: {err}"))?;
+    Ok(Arc::new(config))
 }
 
 fn select_map(source: &str, name: Option<&str>) -> Result<cobcics::bms::Map, String> {
@@ -24,11 +62,40 @@ fn run() -> Result<(), String> {
     let mut bms = None;
     let mut map_name = None;
     let mut listen = "127.0.0.1:3270".to_owned();
+    let mut tls_cert = None;
+    let mut tls_key = None;
+    let mut use_starttls = false;
+    let mut printer_input_seen = false;
     let mut routing = WorkerRouting::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--bms" => bms = args.next(),
             "--map" => map_name = args.next(),
+            "--tn3270e" => routing.tn3270e = true,
+            "--nvt" => routing.nvt = true,
+            "--indfile-root" => routing.indfile_root = Some(PathBuf::from(
+                args.next().ok_or_else(|| usage().to_owned())?)),
+            "--printer-queue" => {
+                let name = args.next().ok_or_else(|| usage().to_owned())?;
+                if name.is_empty() || name.len() > 8 || !name.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+                    return Err("--printer-queue requires an alphanumeric name of at most 8 bytes".to_owned());
+                }
+                let mut queue = [b' '; 8];
+                queue[..name.len()].copy_from_slice(name.to_ascii_uppercase().as_bytes());
+                routing.printer_queue = Some(queue);
+                routing.tn3270e = true;
+            }
+            "--printer-input" => {
+                printer_input_seen = true;
+                routing.printer_utf8 = match args.next().as_deref() {
+                    Some("host") => false,
+                    Some("utf8") => true,
+                    _ => return Err("--printer-input requires host or utf8".to_owned()),
+                };
+            }
+            "--tls-cert" => tls_cert = args.next(),
+            "--tls-key" => tls_key = args.next(),
+            "--starttls" => use_starttls = true,
             "--listen" => listen = args.next().ok_or_else(|| usage().to_owned())?,
             "--charset" => {
                 let name = args.next().ok_or_else(|| usage().to_owned())?;
@@ -95,6 +162,20 @@ fn run() -> Result<(), String> {
         return Err("initial TRANSID has no worker route".to_owned());
     }
     let bms = bms.ok_or_else(|| usage().to_owned())?;
+    let tls = match (tls_cert.as_deref(), tls_key.as_deref()) {
+        (Some(cert), Some(key)) => Some(tls_config(cert, key)?),
+        (None, None) => None,
+        _ => return Err("--tls-cert and --tls-key must be provided together".to_owned()),
+    };
+    if use_starttls && tls.is_none() {
+        return Err("--starttls requires --tls-cert and --tls-key".to_owned());
+    }
+    if routing.nvt && routing.printer_queue.is_some() {
+        return Err("--nvt and --printer-queue require separate listeners".to_owned());
+    }
+    if printer_input_seen && routing.printer_queue.is_none() {
+        return Err("--printer-input requires --printer-queue".to_owned());
+    }
     let source = fs::read_to_string(&bms).map_err(|err| format!("{bms}: {err}"))?;
     let map = select_map(&source, map_name.as_deref())?;
     routing
@@ -114,13 +195,24 @@ fn run() -> Result<(), String> {
             Ok(stream) => {
                 let mut map = map.clone();
                 let routing = routing.clone();
+                let tls = tls.clone();
                 std::thread::spawn(move || {
                     let mut stream = stream;
-                    if let Err(err) = cobcics::server::serve_connection_with_routing(
-                        &mut stream,
-                        &mut map,
-                        &routing,
-                    ) {
+                    let outcome = if let Some(config) = tls {
+                        let upgrade = if use_starttls { starttls(&mut stream) } else { Ok(()) };
+                        match upgrade.and_then(|()| rustls::ServerConnection::new(config)
+                            .map_err(|err| format!("TLS connection: {err}"))) {
+                            Ok(connection) => {
+                                let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
+                                let mut secure = rustls::StreamOwned::new(connection, stream);
+                                cobcics::server::serve_connection_with_io(&mut secure, &mut map, &routing)
+                            }
+                            Err(err) => Err(err),
+                        }
+                    } else {
+                        cobcics::server::serve_connection_with_routing(&mut stream, &mut map, &routing)
+                    };
+                    if let Err(err) = outcome {
                         eprintln!("cobcicsd: terminal session: {err}");
                     }
                 });

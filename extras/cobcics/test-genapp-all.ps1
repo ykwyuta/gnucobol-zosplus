@@ -12,7 +12,7 @@ if ($LASTEXITCODE -ne 0) { throw 'GenApp COBOL build failed' }
 
 docker run --rm -v "${workspace}:/src" -w /src/extras/cobcics `
     -e CARGO_TARGET_DIR=/tmp/cobcics-target $RustImage sh -c `
-    'cargo build --offline --release --bin cobcicsd && cp /tmp/cobcics-target/release/cobcicsd /src/build/genapp/cobcicsd'
+    'cargo build --locked --release --bin cobcicsd && cp /tmp/cobcics-target/release/cobcicsd /src/build/genapp/cobcicsd'
 if ($LASTEXITCODE -ne 0) { throw 'GenApp TN3270 host build failed' }
 
 $driver = '/usr/local/lib64/python3.9/site-packages'

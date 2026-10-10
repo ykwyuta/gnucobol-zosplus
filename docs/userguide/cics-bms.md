@@ -3,6 +3,7 @@
 `cobcicsd` は Rust 製の TN3270 ホストである。BMS の物理マップを読み、COBOL ワーカーが返す画面項目と CICS トランザクション ID を端末に表示する。`wc3270` や `c3270` はこのホストに接続するクライアントとして使う。以下は Bank of Z の非 IMS 画面を Windows PowerShell から起動する手順である。
 
 対応する CICS 機能、`EXEC CICS` コマンドと制限は [CICS 対応機能・コマンド一覧](cics-supported-features.md) を参照。
+wc3270 の TN3270E、TLS、NVT、IND$FILE、3287 印刷は [wc3270 接続ガイド](wc3270-host.md)を参照。
 
 ## 準備とビルド
 
@@ -87,7 +88,7 @@ docker run --rm --env-file extras/db2sql/.runtime.env `
 
 `cobcics-mapgen` で BMS からシンボリックマップ `.cpy` を作る。固定形式の COBOL ソースでは `--cics-map=<生成した .cpy>` を指定する。Db2 の埋め込み SQL も使う場合は `--db2-sql` を同時に指定する。変換順は CICS、SQL、通常の COBOL コンパイルである。ソースチェックアウトからコンパイルするときは `COB_CICS_PREPROCESSOR` と `COB_DB2_SQL_PREPROCESSOR` に各 Python スクリプトの絶対パスを設定する。生成したマップ、`extras/cobcics/copy`、アプリケーションの COPY を `-I` で探索させ、ワーカーには `extras/cobcics/bridge.c` と呼び出す COBOL プログラムをリンクする。Db2 を使うワーカーには `libdb2sql` と CLI ドライバーも必要である。具体的なビルド例は `extras/cobcics/build-bank-screens.ps1` にある。
 
-TN3270 ホストには最初の BMS を `--bms` で渡し、トランザクションごとに `--route ID=ワーカー` と `--map-route ID=BMS` を設定する。現在の実装は 24×80 の基本画面、Enter/Clear/PF キーと Read Modified を対象にする。TN3270E、IMS、すべての CICS コマンドと BMS 拡張属性には対応しない。日本語の入力欄には SO/SI 入力制御の拡張属性を付ける。未対応構文は変換時にソース行を示してエラーとなる。
+TN3270 ホストには最初の BMS を `--bms` で渡し、トランザクションごとに `--route ID=ワーカー` と `--map-route ID=BMS` を設定する。Enter/Clear/PF キー、Read Modified、Model 2～5 と拡張画面、色・強調表示を扱える。TN3270E や TLS などの起動オプションは [wc3270 接続ガイド](wc3270-host.md)を参照する。IMS、すべての CICS コマンドと BMS オプションには対応しない。日本語の入力欄には SO/SI 入力制御の拡張属性を付ける。未対応構文は変換時にソース行を示してエラーとなる。
 
 ## 日本語 EBCDIC の画面入出力
 

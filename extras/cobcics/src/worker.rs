@@ -30,6 +30,7 @@ pub struct Outcome {
     pub changed_fields: Vec<usize>,
     pub changed_attributes: Vec<usize>,
     pub attribute_updates: Vec<(usize, bool, bool, bool)>,
+    pub extended_updates: Vec<(usize, u8, u8)>,
     pub text: Option<String>,
 }
 
@@ -129,8 +130,8 @@ fn response(map: &Map, bytes: &[u8]) -> Result<(Vec<(usize, usize, String)>, Out
 
 fn response_with_codec(map: &Map, bytes: &[u8], codec: HostCodec)
     -> Result<(Vec<(usize, usize, String)>, Outcome), String> {
-    if bytes.len() < 16 || !matches!(&bytes[..4], b"CCO5" | b"CCO6") {
-        return Err("worker response has no CCO5/CCO6 header".to_owned());
+    if bytes.len() < 16 || !matches!(&bytes[..4], b"CCO5" | b"CCO6" | b"CCO7") {
+        return Err("worker response has no CCO5/CCO6/CCO7 header".to_owned());
     }
     let count = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
     if count > MAX_FIELDS {
@@ -175,7 +176,7 @@ fn response_with_codec(map: &Map, bytes: &[u8], codec: HostCodec)
         index += length;
     }
     let mut attribute_updates = Vec::new();
-    if &bytes[..4] == b"CCO6" {
+    if matches!(&bytes[..4], b"CCO6" | b"CCO7") {
         if bytes.len() - index < 2 {
             return Err("truncated worker attribute count".to_owned());
         }
@@ -205,6 +206,39 @@ fn response_with_codec(map: &Map, bytes: &[u8], codec: HostCodec)
             };
             attribute_updates.push((field_index, protected, hidden, fset));
             index += 9;
+        }
+    }
+    let mut extended_updates = Vec::new();
+    if &bytes[..4] == b"CCO7" {
+        if bytes.len() - index < 2 {
+            return Err("truncated worker extended attribute count".to_owned());
+        }
+        let count = u16::from_be_bytes([bytes[index], bytes[index + 1]]) as usize;
+        index += 2;
+        if count > MAX_FIELDS * 2 || bytes.len() - index < count * 10 {
+            return Err("invalid worker extended attribute count".to_owned());
+        }
+        for _ in 0..count {
+            let name = std::str::from_utf8(&bytes[index..index + 8])
+                .map_err(|_| "worker extended attribute name is not ASCII".to_owned())?
+                .trim_end();
+            let field_index = map.fields.iter().position(|field| {
+                (0..field.occurs).any(|occurrence| {
+                    field.wire_name(occurrence).as_deref() == Some(name)
+                })
+            }).ok_or_else(|| format!("worker returned unknown extended attribute: {name}"))?;
+            let kind = bytes[index + 8];
+            let value = bytes[index + 9];
+            if !matches!((kind, value), (b'C', 0xf0..=0xff) |
+                (b'H', 0xf0 | 0xf1 | 0xf2 | 0xf4)) {
+                return Err(format!("invalid worker extended attribute {kind:02X}/{value:02X}"));
+            }
+            if extended_updates.iter().any(|(seen, old_kind, _)|
+                *seen == field_index && *old_kind == kind) {
+                return Err(format!("duplicate worker extended attribute: {name}"));
+            }
+            extended_updates.push((field_index, kind, value));
+            index += 10;
         }
     }
     if bytes.len() - index < 8 {
@@ -283,6 +317,11 @@ fn response_with_codec(map: &Map, bytes: &[u8], codec: HostCodec)
             changed_fields.push(*field_index);
         }
     }
+    let mut changed_attributes: Vec<usize> = attribute_updates.iter()
+        .map(|(index, _, _, _)| *index).collect();
+    for (index, _, _) in &extended_updates {
+        if !changed_attributes.contains(index) { changed_attributes.push(*index); }
+    }
     Ok((
         fields,
         Outcome {
@@ -290,8 +329,9 @@ fn response_with_codec(map: &Map, bytes: &[u8], codec: HostCodec)
             immediate,
             screen,
             changed_fields,
-            changed_attributes: attribute_updates.iter().map(|(index, _, _, _)| *index).collect(),
+            changed_attributes,
             attribute_updates,
+            extended_updates,
             text,
         },
     ))
@@ -348,6 +388,13 @@ pub fn run_with_codec(
         map.fields[index].hidden = hidden;
         map.fields[index].fset = fset;
     }
+    for &(index, kind, value) in &outcome.extended_updates {
+        match kind {
+            b'C' => map.fields[index].color = Some(value),
+            b'H' => map.fields[index].highlight = Some(value),
+            _ => unreachable!(),
+        }
+    }
     for (index, occurrence, value) in fields {
         if map.fields[index].occurs == 1 {
             map.fields[index].initial = value;
@@ -382,6 +429,33 @@ mod tests {
         assert!(!map.fields[index].protected);
         let record = crate::tn3270::render_dataonly(&map, &[], &[index], false).unwrap();
         assert!(record.windows(2).any(|bytes| bytes == [0x1d, 0x41]));
+    }
+
+    #[test]
+    fn cobol_color_and_highlight_update_dataonly_field() {
+        let mut map = crate::bms::parse(include_str!(
+            "../../../reference/Bank-of-Z-main/src/base/cics/bms/BNK1MAI.bms"
+        )).unwrap().remove(0);
+        let index = map.fields.iter().position(|field|
+            field.name.as_deref() == Some("MESSAGE")).unwrap();
+        let mut output = b"CCO7\0\0\0\0\0\x02".to_vec();
+        output.extend_from_slice(b"MESSAGE C\xf2");
+        output.extend_from_slice(b"MESSAGE H\xf4");
+        output.extend_from_slice(b"\x02\0OMEN\0\0\0\0");
+        let (_, outcome) = response(&map, &output).unwrap();
+        assert_eq!(outcome.changed_attributes, vec![index]);
+        for (field, kind, value) in outcome.extended_updates {
+            match kind {
+                b'C' => map.fields[field].color = Some(value),
+                b'H' => map.fields[field].highlight = Some(value),
+                _ => unreachable!(),
+            }
+        }
+        let record = crate::tn3270::render_dataonly_for_terminal(
+            &map, &[], &[index], false, HostCodec::Cp037,
+            crate::tn3270::TerminalModel::from_name("IBM-3279-2-E").unwrap()).unwrap();
+        assert!(record.windows(8).any(|part|
+            part == [0x29, 3, 0xc0, 0xf8, 0x42, 0xf2, 0x41, 0xf4]));
     }
 
     #[test]
@@ -486,6 +560,7 @@ mod tests {
                     changed_fields: vec![],
                     changed_attributes: vec![],
                     attribute_updates: vec![],
+                    extended_updates: vec![],
                     text: None,
                 }
             )

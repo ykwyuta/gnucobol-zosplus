@@ -22,7 +22,7 @@ if ($LASTEXITCODE -ne 0) { throw 'IBM-939 COBOL worker build failed' }
 
 docker run --rm -v "${workspace}:/src" -w /src/extras/cobcics `
     -e CARGO_TARGET_DIR=/tmp/cobcics-target $RustImage sh -c `
-    'cargo build --offline --release --bin cobcicsd && cp /tmp/cobcics-target/release/cobcicsd /src/build/cobcics-japanese/cobcicsd'
+    'cargo build --locked --release --bin cobcicsd && cp /tmp/cobcics-target/release/cobcicsd /src/build/cobcics-japanese/cobcicsd'
 if ($LASTEXITCODE -ne 0) { throw 'Rust host build failed' }
 
 function Get-FreePort {

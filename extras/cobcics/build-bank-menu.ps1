@@ -18,7 +18,7 @@ $programs = @(
 foreach ($program in $programs) {
     $name = $program.Name
     $map = $program.Map
-    cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcics-mapgen --offline -- `
+    cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcics-mapgen --locked -- `
         "reference/Bank-of-Z-main/src/base/cics/bms/$map.bms" "$output/$map.cpy"
     if ($LASTEXITCODE -ne 0) { throw "BMS map generation failed: $map" }
     python bin/cics-preprocess.py `
@@ -45,7 +45,7 @@ if ($LASTEXITCODE -ne 0) { throw 'COBOL worker compilation failed' }
 
 $buildRust = @'
 set -eu
-cargo build --offline --release --bin cobcicsd
+cargo build --locked --release --bin cobcicsd
 cp /tmp/cobcics-target/release/cobcicsd /src/build/bank-demo/cobcicsd
 '@
 docker run --rm -v "${workspace}:/src" -w /src/extras/cobcics `

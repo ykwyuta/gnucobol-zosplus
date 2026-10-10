@@ -1,8 +1,8 @@
 # cobcics prototype
 
-This crate starts a small TN3270 host in Rust. It reads a BMS source file,
-renders one 24x80 map to a 3278/3279 model 2 terminal, and accepts AID keys
-and modified, unprotected fields. `cobcics-mapgen` creates a fixed-format
+This crate starts a TN3270/TN3270E host in Rust. It reads BMS source files,
+renders maps to 3278/3279 models 2-5 and IBM-DYNAMIC terminals, and accepts
+AID keys and modified, unprotected fields. `cobcics-mapgen` creates a fixed-format
 GnuCOBOL symbolic map copybook from the same BMS model.
 
 ## Build and try
@@ -11,7 +11,7 @@ From the repository root:
 
 ```sh
 mkdir -p build
-cargo test --manifest-path extras/cobcics/Cargo.toml --offline
+cargo test --manifest-path extras/cobcics/Cargo.toml --locked
 cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcics-mapgen -- \
   reference/Bank-of-Z-main/src/base/cics/bms/BNK1MAI.bms build/BNK1MAI.cpy
 cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcicsd -- \
@@ -19,8 +19,10 @@ cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcicsd -- \
   --listen 127.0.0.1:3270
 ```
 
-Connect c3270 or wc3270 to `N:127.0.0.1:3270` with model `3279-2`.
-The `N:` prefix disables TN3270E, which this host does not yet implement.
+Connect c3270 or wc3270 to `N:127.0.0.1:3270` with model `3279-2` for
+legacy TN3270, or add `--tn3270e` to the host and connect without `N:`.
+For TLS, NVT, IND$FILE, 3287 printing and oversize screens, see the
+[wc3270 host guide](../../docs/userguide/wc3270-host.md).
 
 ### Bank of Z syntax audit
 
@@ -76,7 +78,8 @@ and modified fields,
 then returns named output fields and the next TRANSID/COMMAREA. The Rust host
 keeps this state within one terminal session and validates names and lengths before
 rendering them. `menu-worker.cob` shows the C ABI directly.
-The request pipe format is `CCI3` and the response format is `CCO5`.
+The request pipe format is `CCI3`; responses use `CCO5`/`CCO6` and `CCO7`
+when extended BMS attributes are returned.
 The response screen action selects full map,
 screen erase, a data-only field update with optional alarm, text output, or no screen change.
 Its IMMEDIATE flag starts the returned TRANSID without waiting for another AID.
@@ -230,32 +233,59 @@ number. `ASKTIME` does not yet update `EIBDATE` and `EIBTIME`. The current
 `SEND MAP` overlays named fields containing nonzero bytes;
 low-values retain BMS initial data.
 
-## Current coverage
+## wc3270 display interoperability
 
-- Telnet BINARY, TERMINAL-TYPE, EOR negotiation and record framing;
-  fragmented input and IAC escaping.
-- Basic 3270 Erase/Write and Write, SBA, SF, IC, CP037 or Japanese EBCDIC text, Enter/Clear/PF and
-  modified-field parsing.
+- Optional `--tn3270e` basic display negotiation (DEVICE-TYPE and an empty
+  FUNCTIONS set), with TN3270 fallback; Telnet BINARY, TERMINAL-TYPE, EOR, fragmented
+  input and IAC escaping.
+- IBM 3278/3279 Models 2 (24x80), 3 (32x80), 4 (43x80), and 5 (27x132),
+  including Erase/Write Alternate and 12/14-bit buffer addresses.
+- Formatted 3270 Erase/Write and Write, SBA, SF/SFE, IC, CP037 or Japanese
+  EBCDIC text, Enter/Clear/PA/PF and modified-field parsing.
 - BMS mapset, map, named/unnamed fields, attributes needed for basic
   input, continuation lines, `TIOAPFX`, `DSATTS`, `OCCURS`, and `PICOUT`.
+- BMS `COLOR` and `HILIGHT` static values and COBOL symbolic `C`/`H`
+  output updates, including `DATAONLY`; `ATTRB=NUM` uses the numeric field
+  attribute on the terminal.
 - COBOL symbolic input `L/F/A/I` and output `O` plus extended attribute
   subfields; `OCCURS` groups.
 - An unrecognized BMS option or unsupported `EXEC CICS` command is an error
   with its source line.
 
-Extended field colors, highlighting, outline and programmed symbols appear
-in the symbolic copybook but are not yet encoded as extended field attributes
-in the terminal stream. Japanese unprotected fields use SFE input control for
-automatic SO/SI creation. `--charset` selects CP037 (default),
-IBM-930, IBM-939, IBM-1390, or IBM-1399; Japanese text uses SO/SI in the
+Existing deployments retain TN3270 by default; pass `--tn3270e` to offer
+TN3270E to clients that support it. Run
+`cargo test --manifest-path extras/cobcics/Cargo.toml --locked` and
+`python extras/cobcics/test_cics_preprocess.py` for protocol and code-generation
+checks. On Windows with `C:\Program Files\wc3270\wc3270.exe`, build `cobcicsd`
+and run `python extras/cobcics/test-wc3270-models.py`. This launches wc3270
+in both TN3270E and TN3270 modes and inspects its data-stream trace for each
+screen size and extended field attribute. The traces are written under
+`build/wc3270-models`.
+
+The server queries TN3270E terminals for usable area dimensions and supports
+IBM-DYNAMIC oversize screens. It also has a line-oriented NVT gateway,
+immediate TLS and STARTTLS, IND$FILE DFT GET/PUT, and a 3287 printer session
+fed from a CICS TDQ. Run `test-wc3270-transport.py` and
+`test-indfile-client.py` on Windows to exercise these paths. CUT file transfer,
+full TN3270E SNA functions, CICS/JES printer resource management, and a
+general NVT login shell are outside the current implementation. `OUTLINE`
+and programmed symbols remain in the symbolic copybook
+but do not yet change the terminal stream. Japanese unprotected fields use
+SFE input control for automatic SO/SI creation. `--charset` selects CP037
+(default), IBM-930, IBM-939, IBM-1390, or IBM-1399; Japanese text uses SO/SI in the
 terminal stream and UTF-8 in the worker pipe. Run
 `extras/cobcics/test-japanese-tn3270.ps1` for an IBM-1399 COBOL round trip
 or `extras/cobcics/test-japanese-wc3270.ps1` for an IBM-939 round trip using
 the installed Windows wc3270 emulator.
+
+Protocol references: [wc3270 manual](https://x3270.bgp.nu/Windows/wc3270-man.html),
+[TN3270 RFC 1576](https://www.rfc-editor.org/rfc/rfc1576.html),
+[TN3270E RFC 2355](https://www.rfc-editor.org/rfc/rfc2355.html), and
+[IBM CICS 3270 field attributes](https://www.ibm.com/docs/en/cics-ts/5.6.0?topic=terminals-3270-field-attributes).
 The command ABI is an initial subset: EIB fields other than `EIBAID`,
 `EIBCALEN`, `EIBTRNID`, `EIBRESP`, and `EIBRESP2`, Db2 unit of work,
 broader CICS response codes and conditions,
-full BMS SEND/RECEIVE options and TN3270E are not yet implemented.
+full BMS SEND/RECEIVE options and advanced TN3270E functions are not yet implemented.
 The session COMMAREA is limited to 2048 bytes. The prototype exposes it in
 `COBCICS-COMMAREA`; it does not yet populate a program's `DFHCOMMAREA` linkage
 item. Routes currently select executable paths supplied at startup; CICS
