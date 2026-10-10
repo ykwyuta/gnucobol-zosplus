@@ -3,6 +3,7 @@
 
 import os
 import socket
+import ssl
 import subprocess
 import time
 import uuid
@@ -62,7 +63,7 @@ def launch_server(listen, *options, env=None):
     return host, output
 
 
-def tls_wc3270(starttls=False):
+def make_certificate():
     cert, key = OUT / "cert.pem", OUT / "key.pem"
     subprocess.run(
         [str(OPENSSL), "req", "-x509", "-newkey", "rsa:2048", "-nodes",
@@ -70,6 +71,11 @@ def tls_wc3270(starttls=False):
          "-addext", "subjectAltName=IP:127.0.0.1"],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+    return cert, key
+
+
+def tls_wc3270(starttls=False):
+    cert, key = OUT / "cert.pem", OUT / "key.pem"
     listen = port()
     options = ["--tn3270e", "--tls-cert", str(cert), "--tls-key", str(key)]
     if starttls:
@@ -91,6 +97,52 @@ def tls_wc3270(starttls=False):
         print(f"wc3270 {'STARTTLS' if starttls else 'TLS tunnel'} and TN3270E display OK")
     finally:
         stop(client, host)
+        output.close()
+
+
+def tls_rejection_and_verified_certificate():
+    cert, key = OUT / "cert.pem", OUT / "key.pem"
+    listen = port()
+    host, output = launch_server(listen, "--tn3270e", "--tls-cert", str(cert),
+                                 "--tls-key", str(key))
+    try:
+        untrusted = ssl.create_default_context()
+        with socket.create_connection(("127.0.0.1", listen), timeout=3) as raw:
+            try:
+                with untrusted.wrap_socket(raw, server_hostname="127.0.0.1"):
+                    raise AssertionError("untrusted TLS certificate was accepted")
+            except ssl.SSLCertVerificationError:
+                pass
+        trusted = ssl.create_default_context(cafile=str(cert))
+        with socket.create_connection(("127.0.0.1", listen), timeout=3) as raw:
+            with trusted.wrap_socket(raw, server_hostname="127.0.0.1") as secure:
+                assert secure.recv(32).startswith(b"\xff\xfd\x28")
+        print("TLS rejects untrusted certificate and accepts verified server identity OK")
+    finally:
+        stop(host)
+        output.close()
+
+
+def starttls_refusal():
+    cert, key = OUT / "cert.pem", OUT / "key.pem"
+    listen = port()
+    host, output = launch_server(listen, "--tn3270e", "--tls-cert", str(cert),
+                                 "--tls-key", str(key), "--starttls")
+    try:
+        with socket.create_connection(("127.0.0.1", listen), timeout=3) as client:
+            client.settimeout(3)
+            assert client.recv(3) == b"\xff\xfd\x2e"
+            client.sendall(b"\xff\xfc\x2e" + b"\x00" * 6)
+            assert client.recv(1) == b""
+        for _ in range(30):
+            if "client did not accept Telnet STARTTLS" in Path(output.name).read_text(errors="replace"):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("STARTTLS refusal was not logged")
+        print("STARTTLS refusal closes the connection without plaintext fallback OK")
+    finally:
+        stop(host)
         output.close()
 
 
@@ -175,7 +227,7 @@ def printer_negotiation():
         output.close()
 
 
-def printer_spool_delivery(utf8=False, japanese=False):
+def printer_spool_delivery(utf8=False, japanese=False, tls=False):
     storage = OUT / f"storage-{uuid.uuid4().hex[:8]}"
     storage.mkdir()
     env = dict(os.environ, COBCICS_STORAGE_DIR=str(storage))
@@ -185,9 +237,16 @@ def printer_spool_delivery(utf8=False, japanese=False):
         options.extend(["--printer-input", "utf8"])
     if japanese:
         options.extend(["--charset", "IBM-939"])
+    if tls:
+        options.extend(["--tls-cert", str(OUT / "cert.pem"),
+                        "--tls-key", str(OUT / "key.pem")])
     host, output = launch_server(listen, *options, env=env)
     try:
-        with socket.create_connection(("127.0.0.1", listen), timeout=3) as client:
+        client = socket.create_connection(("127.0.0.1", listen), timeout=3)
+        if tls:
+            context = ssl.create_default_context(cafile=str(OUT / "cert.pem"))
+            client = context.wrap_socket(client, server_hostname="127.0.0.1")
+        with client:
             client.settimeout(3)
             client.recv(128)
             client.sendall(b"\xff\xfb\x28")  # WILL TN3270E
@@ -219,7 +278,70 @@ def printer_spool_delivery(utf8=False, japanese=False):
                 time.sleep(0.05)
             assert cursor.read_bytes() == (4 + len(data)).to_bytes(8, "big")
             print(f"TDQ {'UTF-8' if utf8 else 'host EBCDIC'}"
-                  f"{' IBM-939 Japanese' if japanese else ''} to TN3270E SCS and PRINT-EOJ OK")
+                  f"{' IBM-939 Japanese' if japanese else ''}"
+                  f"{' TLS' if tls else ''} to TN3270E SCS and PRINT-EOJ OK")
+    finally:
+        stop(host)
+        output.close()
+
+
+def printer_reconnect_resumes_without_replay():
+    storage = OUT / f"reconnect-{uuid.uuid4().hex[:8]}"
+    storage.mkdir()
+    listen = port()
+    host, output = launch_server(
+        listen, "--printer-queue", "PRNT",
+        env=dict(os.environ, COBCICS_STORAGE_DIR=str(storage)))
+    hash_value = 14695981039346656037
+    for byte in b"PRNT    ":
+        hash_value = ((hash_value ^ byte) * 1099511628211) & ((1 << 64) - 1)
+    spool = storage / f"cobcics-tdq-{hash_value:016x}.data"
+    cursor = storage / f"cobcics-tdq-{hash_value:016x}.cursor"
+
+    def connect_and_receive():
+        with socket.create_connection(("127.0.0.1", listen), timeout=3) as client:
+            client.settimeout(3)
+            client.recv(128)
+            client.sendall(b"\xff\xfb\x28")
+            client.sendall(b"\xff\xfa\x28\x02\x07IBM-3287-1\xff\xf0")
+            client.sendall(b"\xff\xfa\x28\x03\x07\x03\xff\xf0")
+            received = b""
+            while b"\x08\x00\x00\x00\x00\xff\xef" not in received:
+                chunk = client.recv(512)
+                assert chunk, "printer disconnected before PRINT-EOJ"
+                received += chunk
+            return received
+
+    try:
+        first, second = b"\xc6\xc9\xd9\xe2\xe3\x15", b"\xe2\xc5\xc3\xd6\xd5\xc4\x15"
+        spool.write_bytes(len(first).to_bytes(4, "big") + first)
+        received = connect_and_receive()
+        assert b"\x01\x00\x00\x00\x00" + first + b"\xff\xef" in received
+        for _ in range(50):
+            if cursor.exists() and int.from_bytes(cursor.read_bytes(), "big") == 4 + len(first):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("first print record was not committed")
+        with spool.open("ab") as file:
+            file.write(len(second).to_bytes(4, "big") + second)
+        for _ in range(30):
+            try:
+                received = connect_and_receive()
+                break
+            except (AssertionError, ConnectionError, OSError):
+                time.sleep(0.1)
+        else:
+            raise AssertionError("printer did not reconnect after the first session")
+        assert b"\x01\x00\x00\x00\x00" + second + b"\xff\xef" in received
+        assert b"\x01\x00\x00\x00\x00" + first + b"\xff\xef" not in received
+        for _ in range(50):
+            if int.from_bytes(cursor.read_bytes(), "big") == 8 + len(first) + len(second):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("second print record was not committed")
+        print("3287 reconnection resumes at committed TDQ cursor without replay OK")
     finally:
         stop(host)
         output.close()
@@ -228,6 +350,7 @@ def printer_spool_delivery(utf8=False, japanese=False):
 def main():
     assert SERVER.is_file() and WC3270.is_file() and PR3287.is_file() and OPENSSL.is_file()
     OUT.mkdir(parents=True, exist_ok=True)
+    make_certificate()
     (OUT / "transport.bms").write_text(
         "T DFHMSD TYPE=MAP\nSCREEN DFHMDI SIZE=(24,80)\n"
         "TITLE DFHMDF POS=(1,1),LENGTH=8,ATTRB=PROT,*\n"
@@ -237,6 +360,8 @@ def main():
     )
     tls_wc3270()
     tls_wc3270(starttls=True)
+    tls_rejection_and_verified_certificate()
+    starttls_refusal()
     nvt_upgrade()
     nvt_wc3270()
     printer_negotiation()
@@ -244,6 +369,8 @@ def main():
     printer_spool_delivery(utf8=True)
     printer_spool_delivery(japanese=True)
     printer_spool_delivery(utf8=True, japanese=True)
+    printer_spool_delivery(utf8=True, japanese=True, tls=True)
+    printer_reconnect_resumes_without_replay()
 
 
 if __name__ == "__main__":

@@ -864,6 +864,16 @@ mod tests {
         record.pop(); // omit SI and the trailing SBCS B
         assert!(parse_input_with_codec(&map, &record, codec).is_err());
         assert!(render_map(&map).is_err()); // CP037 cannot represent the text.
+        let mut boundary = map.clone();
+        boundary.fields[0].length = encoded.len();
+        assert!(render_map_with_codec(&boundary, codec).is_ok());
+        let mut exact_input = vec![0x7d, 0x40, 0x40, 0x11, address[0], address[1]];
+        exact_input.extend_from_slice(&encoded);
+        assert!(parse_input_with_codec(&boundary, &exact_input, codec).is_ok());
+        exact_input.extend_from_slice(&codec.encode("A").unwrap());
+        assert!(parse_input_with_codec(&boundary, &exact_input, codec).is_err());
+        boundary.fields[0].length -= 1;
+        assert!(render_map_with_codec(&boundary, codec).is_err());
     }
 
     #[test]

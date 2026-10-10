@@ -134,6 +134,10 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    fn record(data: &[u8]) -> Vec<u8> {
+        [u32::try_from(data.len()).unwrap().to_be_bytes().as_slice(), data].concat()
+    }
+
     #[test]
     fn reads_complete_appended_tdq_records() {
         let path = std::env::temp_dir().join(format!("cobcics-printer-test-{}", std::process::id()));
@@ -164,5 +168,45 @@ mod tests {
         let japanese = HostCodec::parse("IBM-939").unwrap();
         let encoded = encode_utf8_record("日本語".as_bytes(), japanese).unwrap();
         assert_eq!(japanese.decode(&encoded).unwrap(), "日本語");
+    }
+
+    #[test]
+    fn reconnect_resumes_after_committed_record_and_enforces_one_lease() {
+        let name = format!("{:08X}", std::process::id());
+        let name: [u8; 8] = name.as_bytes().try_into().unwrap();
+        let path = queue_path(&name);
+        let cursor = path.with_extension("cursor");
+        let mut first = PrinterQueue::new(&name).unwrap();
+        assert!(PrinterQueue::new(&name).is_err());
+        fs::write(&path, record(b"FIRST")).unwrap();
+        assert_eq!(first.next_batch().unwrap(), vec![b"FIRST".to_vec()]);
+        first.commit().unwrap();
+        drop(first);
+
+        let mut second = PrinterQueue::new(&name).unwrap();
+        assert!(second.next_batch().unwrap().is_empty());
+        File::options().append(true).open(&path).unwrap()
+            .write_all(&record(b"SECOND")).unwrap();
+        assert_eq!(second.next_batch().unwrap(), vec![b"SECOND".to_vec()]);
+        second.commit().unwrap();
+        drop(second);
+        assert_eq!(fs::read(&cursor).unwrap(),
+            u64::try_from(record(b"FIRST").len() + record(b"SECOND").len())
+                .unwrap().to_be_bytes());
+        fs::remove_file(cursor).unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_tdq_record_length() {
+        let path = std::env::temp_dir().join(format!(
+            "cobcics-printer-bad-{}", std::process::id()));
+        let mut queue = PrinterQueue {
+            path: path.clone(), cursor: path.with_extension("cursor"),
+            offset: 0, leased: false,
+        };
+        fs::write(&path, [0, 0, 0, 0]).unwrap();
+        assert!(queue.next_batch().unwrap_err().contains("invalid printer queue record length"));
+        fs::remove_file(path).unwrap();
     }
 }

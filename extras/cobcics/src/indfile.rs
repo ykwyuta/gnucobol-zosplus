@@ -243,6 +243,26 @@ impl Drop for Transfer {
 mod tests {
     use super::*;
 
+    fn test_root() -> PathBuf {
+        std::env::temp_dir().join(format!("cobcics-indfile-test-{}-{}",
+            std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)))
+    }
+
+    fn answer(field: &[u8]) -> Vec<u8> {
+        [&[AID_SF][..], field].concat()
+    }
+
+    fn upload_data(number: u32, bytes: &[u8]) -> Vec<u8> {
+        let mut field = Vec::new();
+        field.extend_from_slice(&u16::try_from(bytes.len() + 16).unwrap().to_be_bytes());
+        field.extend_from_slice(&[0xd0, 0x46, 0x05, 0x63, 0x06]);
+        field.extend_from_slice(&number.to_be_bytes());
+        field.extend_from_slice(&[0xc0, 0x80, 0x61]);
+        field.extend_from_slice(&u16::try_from(bytes.len() + 5).unwrap().to_be_bytes());
+        field.extend_from_slice(bytes);
+        answer(&field)
+    }
+
     #[test]
     fn parses_command_and_rejects_path_escape() {
         let root = Path::new("storage");
@@ -262,9 +282,7 @@ mod tests {
 
     #[test]
     fn abandoned_upload_removes_partial_file() {
-        let root = std::env::temp_dir().join(format!(
-            "cobcics-indfile-test-{}-{}", std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)));
+        let root = test_root();
         let (transfer, query) = Transfer::start("IND$FILE PUT NEWDATA (BINARY", &root).unwrap();
         assert_eq!(query, [0xf3, 0, 5, 1, 0xff, 2]);
         let temporary = transfer.temporary.clone().unwrap();
@@ -272,6 +290,57 @@ mod tests {
         drop(transfer);
         assert!(!temporary.exists());
         assert!(!root.join("NEWDATA").exists());
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_upload_discards_data_and_rejects_repeated_record() {
+        let root = test_root();
+        let (mut transfer, _) = Transfer::start("IND$FILE PUT NEWDATA", &root).unwrap();
+        let temporary = transfer.temporary.clone().unwrap();
+        transfer.receive(&answer(&[0, 4, 0x81, 0x95])).unwrap();
+        transfer.receive(&answer(&[0, 5, 0xd0, 0, 9])).unwrap();
+        transfer.receive(&upload_data(1, b"partial")).unwrap();
+        assert_eq!(fs::read(&temporary).unwrap(), b"partial");
+        assert!(transfer.receive(&upload_data(1, b"duplicate")).is_err());
+        let mut wrong_length = upload_data(2, b"bad");
+        wrong_length[16] = 0;
+        assert!(transfer.receive(&wrong_length).is_err());
+        drop(transfer);
+        assert!(!temporary.exists());
+        assert!(!root.join("NEWDATA").exists());
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn download_rejects_wrong_ack_and_missing_file() {
+        let root = test_root();
+        fs::create_dir(&root).unwrap();
+        assert!(Transfer::start("IND$FILE GET ABSENT", &root).is_err());
+        fs::write(root.join("DATA"), b"original").unwrap();
+        let (mut transfer, _) = Transfer::start("IND$FILE GET DATA", &root).unwrap();
+        assert!(transfer.receive(&answer(&[0, 4, 0x81, 0x94])).is_err());
+        transfer.receive(&answer(&[0, 4, 0x81, 0x95])).unwrap();
+        transfer.receive(&answer(&[0, 5, 0xd0, 0, 9])).unwrap();
+        assert!(transfer.receive(&answer(&[0, 11, 0xd0, 0x47, 0x05,
+            0x63, 0x06, 0, 0, 0, 2])).is_err());
+        assert_eq!(fs::read(root.join("DATA")).unwrap(), b"original");
+        drop(transfer);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn simultaneous_uploads_have_distinct_partial_files() {
+        let root = test_root();
+        let (first, _) = Transfer::start("IND$FILE PUT SAME", &root).unwrap();
+        let (second, _) = Transfer::start("IND$FILE PUT SAME", &root).unwrap();
+        let first_path = first.temporary.clone().unwrap();
+        let second_path = second.temporary.clone().unwrap();
+        assert_ne!(first_path, second_path);
+        assert!(first_path.exists() && second_path.exists());
+        drop(first);
+        drop(second);
+        assert!(!first_path.exists() && !second_path.exists());
         fs::remove_dir(root).unwrap();
     }
 }

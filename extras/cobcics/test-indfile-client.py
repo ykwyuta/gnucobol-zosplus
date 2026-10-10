@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SERVER = ROOT / "extras/cobcics/target/debug/cobcicsd.exe"
 CLIENT = Path(r"C:\Program Files\wc3270\s3270.exe")
 WC3270 = Path(r"C:\Program Files\wc3270\wc3270.exe")
+OPENSSL = Path(r"C:\Program Files\Git\usr\bin\openssl.exe")
 OUTPUT = ROOT / "build/indfile-client"
 
 
@@ -22,7 +23,7 @@ def port():
         return sock.getsockname()[1]
 
 
-def case(direction, mode, payload, label=""):
+def case(direction, mode, payload, label="", transport="plain", existing_target=False):
     name = f"{direction}-{mode}-{uuid.uuid4().hex[:8]}"
     directory = OUTPUT / name
     directory.mkdir(parents=True)
@@ -33,14 +34,22 @@ def case(direction, mode, payload, label=""):
         remote.write_bytes(payload)
     else:
         local.write_bytes(payload)
+        if existing_target:
+            remote.write_bytes(b"previous file contents")
     trace = directory / "client.trace"
     log = directory / "server.log"
     listen = port()
     with log.open("w") as output:
+        tls_options = []
+        if transport != "plain":
+            tls_options = ["--tls-cert", str(OUTPUT / "cert.pem"),
+                           "--tls-key", str(OUTPUT / "key.pem")]
+            if transport == "starttls":
+                tls_options.append("--starttls")
         server = subprocess.Popen(
             [str(SERVER), "--bms", str(OUTPUT / "command.bms"),
              "--tn3270e", "--indfile-root", str(directory),
-             "--listen", f"127.0.0.1:{listen}"],
+             "--listen", f"127.0.0.1:{listen}", *tls_options],
             stdout=subprocess.DEVNULL, stderr=output,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
@@ -48,9 +57,14 @@ def case(direction, mode, payload, label=""):
             cr = ",Cr=keep" if mode == "ascii" else ""
             command = (f"Transfer(Direction={direction},HostFile={hostfile},"
                        f"LocalFile={local},Host=cics,Mode={mode}{cr})\nQuit()\n")
+            target = f"127.0.0.1:{listen}"
+            if transport == "tls":
+                target = "L:Y:" + target
+            elif transport == "starttls":
+                target = "Y:" + target
             result = subprocess.run(
                 [str(CLIENT), "-trace", "-tracefile", str(trace),
-                 f"127.0.0.1:{listen}"],
+                 target],
                 input=command, text=True, capture_output=True,
                 timeout=20, creationflags=subprocess.CREATE_NO_WINDOW,
             )
@@ -62,7 +76,8 @@ def case(direction, mode, payload, label=""):
             assert "FileTransferData Open('FT:DATA')" in content
             assert "FileTransferData Open('FT:MSG')" in content
             assert "FileTransferData Data(rec=1) 7 bytes" in content
-            print(f"IND$FILE DFT {direction} {mode}{' ' + label if label else ''}: "
+            print(f"IND$FILE DFT {transport} {direction} {mode}"
+                  f"{' ' + label if label else ''}: "
                   f"{len(payload)} bytes OK")
         finally:
             server.terminate()
@@ -139,8 +154,15 @@ def wc_case():
 
 
 def main():
-    assert SERVER.is_file() and CLIENT.is_file() and WC3270.is_file()
+    assert SERVER.is_file() and CLIENT.is_file() and WC3270.is_file() and OPENSSL.is_file()
     OUTPUT.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [str(OPENSSL), "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+         "-keyout", str(OUTPUT / "key.pem"), "-out", str(OUTPUT / "cert.pem"),
+         "-days", "1", "-subj", "/CN=localhost",
+         "-addext", "subjectAltName=IP:127.0.0.1"],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
     (OUTPUT / "command.bms").write_text(
         "FT DFHMSD TYPE=MAP\nSCREEN DFHMDI SIZE=(24,80)\n"
         "TITLE DFHMDF POS=(1,1),LENGTH=18,ATTRB=PROT,*\n"
@@ -151,11 +173,16 @@ def main():
     binary = os.urandom(6000) + b"\xff\x00\r\n"
     for direction in ("receive", "send"):
         case(direction, "binary", binary)
+        case(direction, "binary", os.urandom(128 * 1024 + 37),
+             "large multi-record transfer", existing_target=direction == "send")
         case(direction, "ascii", b"Plain ASCII text 123")
         case(direction, "binary", "日本語を転送\r\n".encode("utf-8"), "UTF-8 Japanese")
         # IBM-939 SO/DBCS/SI bytes for 日本語, independently verified by iconv.
         case(direction, "binary", bytes.fromhex("0e 45 62 45 66 48 e7 0f"),
              "IBM-939 Japanese")
+        for transport in ("tls", "starttls"):
+            case(direction, "binary", "日本語を転送\r\n".encode("utf-8"),
+                 "UTF-8 Japanese", transport=transport)
     wc_case()
 
 

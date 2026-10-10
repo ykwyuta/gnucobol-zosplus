@@ -21,6 +21,7 @@
 Makefile.in
 Makefile
 .*
+!/.github/
 !extras/db2sql/.gitignore
 !extras/db2sql/.env.example
 
