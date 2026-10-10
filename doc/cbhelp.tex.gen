@@ -146,6 +146,12 @@
 	}
     }
     
+    # Keep the option/description separator outside @code{...}, even when
+    # an option value uses brackets (for example [dbcs|national]).
+    if( /^-/ ) {
+	sub(/~/, " ~")
+    }
+
     # convert most WORD to @code{WORD}
     if( /[A-Z][A-Z]+/ ) {
 	n = split($0, a)
@@ -170,7 +176,7 @@
     # the rest on the next line.  Else just print what we have.  
     if( /^-/ ) {
 	sub(/~word/, "~@var{word}") # special for reserved=word
-	sub(/~/, "\n")
+	sub(/ ~/, "\n")
 	print sep "@item", $0
 	sep = "\n"
 	next

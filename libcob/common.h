@@ -331,7 +331,7 @@ typedef __mpz_struct mpz_t[1];
 
 #define strncasecmp		_strnicmp
 #define strcasecmp		_stricmp
-#if !COB_USE_VC2015_OR_GREATER
+#if _MSC_VER < 1900
 /* VC2015+ provides standard function with plain
    name, old posix emulation with underscore */
 #define snprintf		_snprintf
@@ -341,7 +341,7 @@ typedef __mpz_struct mpz_t[1];
 #define popen			_popen
 #define pclose			_pclose
 
-#if !COB_USE_VC2013_OR_GREATER
+#if _MSC_VER < 1800
 #define atoll			_atoi64
 #endif
 
