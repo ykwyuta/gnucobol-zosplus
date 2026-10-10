@@ -828,10 +828,8 @@ mod tests {
 
     #[test]
     fn genapp_right_zero_input_is_padded_to_field_width() {
-        let source = include_str!(
-            "../../../reference/cics-genapp/base/src/ssmap.bms"
-        ).replace("INITIAL='Fund Name '    '", "INITIAL='Fund Name '");
-        let maps = bms::parse(&source).unwrap();
+        let source = include_str!("../tests/fixtures/ssmap.bms");
+        let maps = bms::parse(source).unwrap();
         let map = &maps[0];
         let field = map.fields.iter()
             .find(|field| field.name.as_deref() == Some("ENT1CNO"))

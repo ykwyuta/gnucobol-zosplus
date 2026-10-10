@@ -496,11 +496,9 @@ mod tests {
     }
 
     #[test]
-    fn genapp_mapset_and_zero_initialized_fields() {
-        let source = include_str!("../../../reference/cics-genapp/base/src/ssmap.bms");
-        assert_eq!(source.matches("INITIAL='Fund Name '    '").count(), 1);
-        let source = source.replace("INITIAL='Fund Name '    '", "INITIAL='Fund Name '");
-        let maps = parse(&source).unwrap();
+    fn mapset_and_zero_initialized_fields() {
+        let source = include_str!("../tests/fixtures/ssmap.bms");
+        let maps = parse(source).unwrap();
         assert_eq!(maps.len(), 6);
         assert_eq!(maps[0].name, "SSMAPC1");
         assert_eq!(maps[5].name, "SSMAPP5");
