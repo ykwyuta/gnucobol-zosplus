@@ -48,16 +48,112 @@ pub struct Record {
 }
 
 type IndexKey = (String, Option<u64>, String, Vec<u8>, u64);
+type SecondaryKey = (String, Vec<u8>, u64);
 
-#[derive(Default)]
+#[derive(Clone)]
+struct KeyPart {
+    start: usize,
+    bytes: usize,
+}
+
+#[derive(Clone)]
+struct SecondaryDef {
+    index_dbd: String,
+    field_name: String,
+    target_dbd: String,
+    target_segment: String,
+    source_segment: String,
+    key_parts: Vec<KeyPart>,
+    search_bytes: usize,
+    unique: bool,
+}
+impl SecondaryDef {
+    fn key(
+        &self,
+        record: &Record,
+        records: &BTreeMap<u64, Record>,
+    ) -> Result<Option<(SecondaryKey, u64)>, StoreError> {
+        if record.dbd != self.target_dbd || record.segment != self.source_segment {
+            return Ok(None);
+        }
+        let mut key = Vec::new();
+        for part in &self.key_parts {
+            let bytes = record
+                .data
+                .get(part.start - 1..part.start - 1 + part.bytes)
+                .ok_or_else(|| {
+                    StoreError::Definition(format!(
+                        "{}/{} is too short for secondary index {}",
+                        record.dbd, record.segment, self.index_dbd
+                    ))
+                })?;
+            key.extend_from_slice(bytes);
+        }
+        let mut target = record;
+        while target.segment != self.target_segment {
+            let parent = target.parent.ok_or_else(|| {
+                StoreError::Corrupt(format!(
+                    "{}: index source has no target ancestor",
+                    self.index_dbd
+                ))
+            })?;
+            target = records.get(&parent).ok_or_else(|| {
+                StoreError::Corrupt(format!(
+                    "{}: index source parent {parent} is missing",
+                    self.index_dbd
+                ))
+            })?;
+        }
+        Ok(Some(((self.index_dbd.clone(), key, record.id), target.id)))
+    }
+}
+
+#[derive(Clone, Default)]
 struct State {
     records: BTreeMap<u64, Record>,
     // BTreeMap lets GU and same-parent sequential access avoid full scans.
     index: BTreeMap<IndexKey, ()>,
+    secondary_index: BTreeMap<SecondaryKey, u64>,
+    secondary_defs: Vec<SecondaryDef>,
     next_id: u64,
     latest_checkpoint: Option<[u8; 8]>,
 }
 impl State {
+    fn secondary_entries(
+        &self,
+        record: &Record,
+    ) -> Result<Vec<(SecondaryKey, u64, bool)>, StoreError> {
+        let mut entries = Vec::new();
+        for definition in &self.secondary_defs {
+            if let Some((key, target_id)) = definition.key(record, &self.records)? {
+                entries.push((key, target_id, definition.unique));
+            }
+        }
+        Ok(entries)
+    }
+
+    fn check_secondary_unique(
+        &self,
+        entries: &[(SecondaryKey, u64, bool)],
+    ) -> Result<(), StoreError> {
+        for ((dbd, key, id), _, unique) in entries {
+            if !unique {
+                continue;
+            }
+            let start = (dbd.clone(), key.clone(), 0);
+            if self.secondary_index.range(start..).next().is_some_and(
+                |((found_dbd, found_key, found_id), _)| {
+                    found_dbd == dbd && found_key == key && found_id != id
+                },
+            ) {
+                return Err(StoreError::Duplicate(format!(
+                    "{dbd}: duplicate secondary key"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn insert(&mut self, record: Record) -> Result<(), StoreError> {
         if self.records.contains_key(&record.id) {
             return Err(StoreError::Corrupt(format!(
@@ -72,16 +168,23 @@ impl State {
             record.key.clone(),
             record.id,
         );
+        let secondary = self.secondary_entries(&record)?;
+        self.check_secondary_unique(&secondary)?;
         self.next_id = self.next_id.max(record.id + 1);
         self.index.insert(index_key, ());
+        for (key, target_id, _) in secondary {
+            self.secondary_index.insert(key, target_id);
+        }
         self.records.insert(record.id, record);
         Ok(())
     }
     fn remove(&mut self, id: u64) -> Result<Record, StoreError> {
         let record = self
             .records
-            .remove(&id)
+            .get(&id)
             .ok_or_else(|| StoreError::Missing(format!("record {id} not found")))?;
+        let secondary = self.secondary_entries(record)?;
+        let record = self.records.remove(&id).unwrap();
         self.index.remove(&(
             record.dbd.clone(),
             record.parent,
@@ -89,7 +192,39 @@ impl State {
             record.key.clone(),
             record.id,
         ));
+        for (key, _, _) in secondary {
+            self.secondary_index.remove(&key);
+        }
         Ok(record)
+    }
+
+    fn replace_data(
+        &mut self,
+        record: &Record,
+        old_data: &[u8],
+        replay: bool,
+    ) -> Result<(), StoreError> {
+        let current = self
+            .records
+            .get(&record.id)
+            .ok_or_else(|| StoreError::Missing(format!("record {} not found", record.id)))?;
+        if !replay && current.data != old_data {
+            return Err(StoreError::Conflict(format!(
+                "record {} changed concurrently",
+                record.id
+            )));
+        }
+        let old_secondary = self.secondary_entries(current)?;
+        let new_secondary = self.secondary_entries(record)?;
+        self.check_secondary_unique(&new_secondary)?;
+        for (key, _, _) in old_secondary {
+            self.secondary_index.remove(&key);
+        }
+        for (key, target_id, _) in new_secondary {
+            self.secondary_index.insert(key, target_id);
+        }
+        self.records.get_mut(&record.id).unwrap().data = record.data.clone();
+        Ok(())
     }
     fn get(&self, dbd: &str, parent: Option<u64>, segment: &str, key: &[u8]) -> Option<&Record> {
         let start = (
@@ -168,6 +303,39 @@ impl Drop for Transaction {
     }
 }
 impl Transaction {
+    pub fn secondary_entry(
+        &self,
+        index_dbd: &str,
+        search: Option<&[u8]>,
+        after: Option<(&[u8], u64)>,
+    ) -> Result<Option<(Vec<u8>, u64, Record)>, StoreError> {
+        self.secondary_entry_mode(index_dbd, search, after, false)
+    }
+    pub fn secondary_pointer_entry(
+        &self,
+        index_dbd: &str,
+        search: Option<&[u8]>,
+        after: Option<(&[u8], u64)>,
+    ) -> Result<Option<(Vec<u8>, u64, Record)>, StoreError> {
+        self.secondary_entry_mode(index_dbd, search, after, true)
+    }
+    fn secondary_entry_mode(
+        &self,
+        index_dbd: &str,
+        search: Option<&[u8]>,
+        after: Option<(&[u8], u64)>,
+        complete_key: bool,
+    ) -> Result<Option<(Vec<u8>, u64, Record)>, StoreError> {
+        if self.changes.is_empty() {
+            let state = self.database.0.state.lock().unwrap();
+            return secondary_entry_in_state(&state, index_dbd, search, after, complete_key);
+        }
+        let mut view = self.database.0.state.lock().unwrap().clone();
+        for change in &self.changes {
+            apply(&mut view, change, false)?;
+        }
+        secondary_entry_in_state(&view, index_dbd, search, after, complete_key)
+    }
     fn release(&mut self) {
         let mut locks = self.database.0.locks.lock().unwrap();
         for key in self.locks.drain(..) {
@@ -297,6 +465,17 @@ impl Transaction {
         data: Vec<u8>,
         timeout: Duration,
     ) -> Result<u64, StoreError> {
+        if self
+            .database
+            .0
+            .dbds
+            .get(dbd)
+            .is_some_and(|definition| definition.access == "INDEX")
+        {
+            return Err(StoreError::Definition(format!(
+                "{dbd}: index segments are maintained from the target database"
+            )));
+        }
         let def = self.database.segment(dbd, segment)?;
         def.validate_data(&data).map_err(StoreError::Definition)?;
         let key = def
@@ -464,20 +643,7 @@ fn undo(state: &mut State, inverses: &[Change]) {
 fn apply(state: &mut State, change: &Change, replay: bool) -> Result<(), StoreError> {
     match change {
         Change::Insert(record) => state.insert(record.clone()),
-        Change::Replace { record, old_data } => {
-            let current = state
-                .records
-                .get_mut(&record.id)
-                .ok_or_else(|| StoreError::Missing(format!("record {} not found", record.id)))?;
-            if !replay && current.data != *old_data {
-                return Err(StoreError::Conflict(format!(
-                    "record {} changed concurrently",
-                    record.id
-                )));
-            }
-            current.data = record.data.clone();
-            Ok(())
-        }
+        Change::Replace { record, old_data } => state.replace_data(record, old_data, replay),
         Change::Delete { record } => {
             if !replay
                 && state
@@ -515,6 +681,153 @@ fn apply(state: &mut State, change: &Change, replay: bool) -> Result<(), StoreEr
     }
 }
 
+fn secondary_definitions(dbds: &HashMap<String, Dbd>) -> Result<Vec<SecondaryDef>, StoreError> {
+    let mut definitions = Vec::new();
+    for index_dbd in dbds.values().filter(|dbd| dbd.access == "INDEX") {
+        for link in &index_dbd.logical_children {
+            let field_name = link.index_field.as_ref().ok_or_else(|| {
+                StoreError::Definition(format!(
+                    "{}: INDEX field is required for materialized index",
+                    index_dbd.name
+                ))
+            })?;
+            let target_dbd = dbds.get(&link.target_dbd).ok_or_else(|| {
+                StoreError::Definition(format!(
+                    "{}: missing target DBD {}",
+                    index_dbd.name, link.target_dbd
+                ))
+            })?;
+            let target = target_dbd.segment(&link.target_segment).ok_or_else(|| {
+                StoreError::Definition(format!(
+                    "{}: missing target segment {}",
+                    index_dbd.name, link.target_segment
+                ))
+            })?;
+            let pointer = index_dbd.segment(&link.source_segment).ok_or_else(|| {
+                StoreError::Definition(format!(
+                    "{}: missing pointer segment {}",
+                    index_dbd.name, link.source_segment
+                ))
+            })?;
+            let pointer_key = pointer.key().ok_or_else(|| {
+                StoreError::Definition(format!(
+                    "{}: pointer segment has no sequence key",
+                    index_dbd.name
+                ))
+            })?;
+            let indexed_field = target_dbd
+                .indexed_fields
+                .iter()
+                .find(|field| field.name == *field_name && field.target_segment == target.name);
+            let (source, search_names, subsequence_names) = if let Some(field) = indexed_field {
+                let source = target_dbd.segment(&field.source_segment).ok_or_else(|| {
+                    StoreError::Definition(format!(
+                        "{}: missing XDFLD source segment {}",
+                        target_dbd.name, field.source_segment
+                    ))
+                })?;
+                (
+                    source,
+                    field.search_fields.clone(),
+                    field.subsequence_fields.clone(),
+                )
+            } else {
+                (target, vec![field_name.clone()], Vec::new())
+            };
+            let mut ancestor = source;
+            while ancestor.name != target.name {
+                let parent = ancestor.parent.as_ref().ok_or_else(|| {
+                    StoreError::Definition(format!(
+                        "{}: XDFLD source is not below target",
+                        target_dbd.name
+                    ))
+                })?;
+                ancestor = target_dbd.segment(parent).ok_or_else(|| {
+                    StoreError::Definition(format!(
+                        "{}: missing XDFLD ancestor {parent}",
+                        target_dbd.name
+                    ))
+                })?;
+            }
+            let mut key_parts = Vec::new();
+            let mut search_bytes = 0;
+            for name in &search_names {
+                let field = source
+                    .fields
+                    .iter()
+                    .find(|field| &field.name == name)
+                    .ok_or_else(|| {
+                        StoreError::Definition(format!(
+                            "{}: missing XDFLD search FIELD {name}",
+                            target_dbd.name
+                        ))
+                    })?;
+                if field.start - 1 + field.bytes > source.min_bytes {
+                    return Err(StoreError::Definition(format!(
+                        "{}: XDFLD field exceeds minimum record length",
+                        target_dbd.name
+                    )));
+                }
+                search_bytes += field.bytes;
+                key_parts.push(KeyPart {
+                    start: field.start,
+                    bytes: field.bytes,
+                });
+            }
+            for name in &subsequence_names {
+                let field = source
+                    .fields
+                    .iter()
+                    .find(|field| &field.name == name)
+                    .ok_or_else(|| {
+                        StoreError::Definition(format!(
+                            "{}: missing XDFLD SUBSEQ FIELD {name}",
+                            target_dbd.name
+                        ))
+                    })?;
+                if field.start - 1 + field.bytes > source.min_bytes {
+                    return Err(StoreError::Definition(format!(
+                        "{}: XDFLD field exceeds minimum record length",
+                        target_dbd.name
+                    )));
+                }
+                key_parts.push(KeyPart {
+                    start: field.start,
+                    bytes: field.bytes,
+                });
+            }
+            let key_bytes: usize = key_parts.iter().map(|part| part.bytes).sum();
+            if key_bytes != pointer_key.bytes {
+                return Err(StoreError::Definition(format!(
+                    "{}: secondary index sequence key length mismatch",
+                    index_dbd.name
+                )));
+            }
+            if !target_dbd.logical_children.iter().any(|reverse| {
+                reverse.source_segment == link.target_segment
+                    && reverse.target_segment == link.source_segment
+                    && reverse.target_dbd == index_dbd.name
+            }) {
+                return Err(StoreError::Definition(format!(
+                    "{}: missing reciprocal LCHILD in {}",
+                    index_dbd.name, target_dbd.name
+                )));
+            }
+            definitions.push(SecondaryDef {
+                index_dbd: index_dbd.name.clone(),
+                field_name: field_name.clone(),
+                target_dbd: target_dbd.name.clone(),
+                target_segment: target.name.clone(),
+                source_segment: source.name.clone(),
+                key_parts,
+                search_bytes,
+                unique: pointer_key.unique,
+            });
+        }
+    }
+    Ok(definitions)
+}
+
 impl Database {
     pub fn open(path: impl AsRef<Path>, dbds: Vec<Dbd>) -> Result<Self, StoreError> {
         let mut definitions = HashMap::new();
@@ -523,6 +836,7 @@ impl Database {
                 return Err(StoreError::Definition("duplicate DBD".into()));
             }
         }
+        let secondary_defs = secondary_definitions(&definitions)?;
         let mut wal = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -535,7 +849,10 @@ impl Database {
             ))
         })?;
         wal.seek(SeekFrom::Start(0))?;
-        let mut state = State::default();
+        let mut state = State {
+            secondary_defs,
+            ..State::default()
+        };
         let mut valid_end = 0;
         loop {
             let mut header = [0u8; 12];
@@ -699,10 +1016,184 @@ impl Database {
     pub fn count(&self) -> usize {
         self.0.state.lock().unwrap().records.len()
     }
+    pub fn secondary_lookup(
+        &self,
+        index_dbd: &str,
+        key: &[u8],
+    ) -> Result<Option<Record>, StoreError> {
+        let state = self.0.state.lock().unwrap();
+        let matching: Vec<_> = state
+            .secondary_defs
+            .iter()
+            .filter(|definition| definition.index_dbd == index_dbd)
+            .collect();
+        if matching.is_empty() {
+            return Err(StoreError::Definition(format!(
+                "{index_dbd}: no materialized secondary index"
+            )));
+        }
+        if !matching
+            .iter()
+            .any(|definition| definition.search_bytes == key.len())
+        {
+            return Err(StoreError::Definition(format!(
+                "{index_dbd}: search key has the wrong length"
+            )));
+        }
+        let start = (index_dbd.to_string(), key.to_vec(), 0);
+        let result = state.secondary_index.range(start..).next().and_then(
+            |((dbd, found_key, _), target_id)| {
+                if dbd == index_dbd && found_key.starts_with(key) {
+                    state.records.get(target_id).cloned()
+                } else {
+                    None
+                }
+            },
+        );
+        Ok(result)
+    }
+
+    /// A PROCSEQ PCB currently uses one root-target index definition.
+    pub fn procseq_field(
+        &self,
+        index_dbd: &str,
+        target_dbd: &str,
+    ) -> Result<(String, String, usize), StoreError> {
+        let state = self.0.state.lock().unwrap();
+        let definitions: Vec<_> = state
+            .secondary_defs
+            .iter()
+            .filter(|def| def.index_dbd == index_dbd && def.target_dbd == target_dbd)
+            .collect();
+        if definitions.len() != 1 {
+            return Err(StoreError::Definition(format!(
+                "{index_dbd}: PROCSEQ requires exactly one index for {target_dbd}"
+            )));
+        }
+        let def = definitions[0];
+        let target = self
+            .0
+            .dbds
+            .get(target_dbd)
+            .and_then(|dbd| dbd.segment(&def.target_segment));
+        if target.is_none_or(|segment| segment.parent.is_some()) {
+            return Err(StoreError::Definition(format!(
+                "{index_dbd}: PROCSEQ currently requires a root target"
+            )));
+        }
+        Ok((
+            def.target_segment.clone(),
+            def.field_name.clone(),
+            def.search_bytes,
+        ))
+    }
+
+    pub fn index_pointer(&self, index_dbd: &str) -> Result<(String, String, usize), StoreError> {
+        let dbd = self
+            .0
+            .dbds
+            .get(index_dbd)
+            .ok_or_else(|| StoreError::Definition(format!("missing DBD {index_dbd}")))?;
+        if dbd.access != "INDEX" {
+            return Err(StoreError::Definition(format!(
+                "{index_dbd}: not an index DBD"
+            )));
+        }
+        let state = self.0.state.lock().unwrap();
+        let definitions: Vec<_> = state
+            .secondary_defs
+            .iter()
+            .filter(|def| def.index_dbd == index_dbd)
+            .collect();
+        if definitions.len() != 1 {
+            return Err(StoreError::Definition(format!(
+                "{index_dbd}: direct PCB requires exactly one index definition"
+            )));
+        }
+        let pointer = dbd
+            .segment(&dbd.logical_children[0].source_segment)
+            .ok_or_else(|| {
+                StoreError::Definition(format!("{index_dbd}: missing pointer segment"))
+            })?;
+        let key = pointer.key().ok_or_else(|| {
+            StoreError::Definition(format!("{index_dbd}: pointer segment has no key"))
+        })?;
+        if pointer.parent.is_some()
+            || dbd.segments.len() != 1
+            || key.start != 1
+            || key.bytes != pointer.min_bytes
+            || pointer.min_bytes != pointer.max_bytes
+        {
+            return Err(StoreError::Definition(format!(
+                "{index_dbd}: direct PCB requires a key-only fixed root pointer segment"
+            )));
+        }
+        Ok((pointer.name.clone(), key.name.clone(), key.bytes))
+    }
+
+    pub fn secondary_entry(
+        &self,
+        index_dbd: &str,
+        search: Option<&[u8]>,
+        after: Option<(&[u8], u64)>,
+    ) -> Result<Option<(Vec<u8>, u64, Record)>, StoreError> {
+        let state = self.0.state.lock().unwrap();
+        secondary_entry_in_state(&state, index_dbd, search, after, false)
+    }
 
     pub fn latest_checkpoint(&self) -> Option<[u8; 8]> {
         self.0.state.lock().unwrap().latest_checkpoint
     }
+}
+
+fn secondary_entry_in_state(
+    state: &State,
+    index_dbd: &str,
+    search: Option<&[u8]>,
+    after: Option<(&[u8], u64)>,
+    complete_key: bool,
+) -> Result<Option<(Vec<u8>, u64, Record)>, StoreError> {
+    let definition = state
+        .secondary_defs
+        .iter()
+        .find(|def| def.index_dbd == index_dbd)
+        .ok_or_else(|| StoreError::Definition(format!("{index_dbd}: no secondary index")))?;
+    let required_length = if complete_key {
+        definition.key_parts.iter().map(|part| part.bytes).sum()
+    } else {
+        definition.search_bytes
+    };
+    if search.is_some_and(|key| key.len() != required_length) {
+        return Err(StoreError::Definition(format!(
+            "{index_dbd}: search key has the wrong length"
+        )));
+    }
+    let start = if let Some((key, id)) = after {
+        (index_dbd.to_string(), key.to_vec(), id.saturating_add(1))
+    } else {
+        (
+            index_dbd.to_string(),
+            search.unwrap_or_default().to_vec(),
+            0,
+        )
+    };
+    for ((dbd, key, source_id), target_id) in state.secondary_index.range(start..) {
+        if dbd != index_dbd
+            || search.is_some_and(|needle| {
+                if complete_key {
+                    key != needle
+                } else {
+                    !key.starts_with(needle)
+                }
+            })
+        {
+            break;
+        }
+        if let Some(record) = state.records.get(target_id) {
+            return Ok(Some((key.clone(), *source_id, record.clone())));
+        }
+    }
+    Ok(None)
 }
 
 fn checksum(data: &[u8]) -> u32 {

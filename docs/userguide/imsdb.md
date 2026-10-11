@@ -27,7 +27,40 @@ CardDemo の IMS 原本アンロードは `DFSURGU0` が出力した VB レコ�
     reference/aws-mainframe-modernization-carddemo/app/app-authorization-ims-db2-mq/data/EBCDIC/AWS.M2.CARDDEMO.IMSDATA.DBPAUTP0.dat
 ```
 
-原本には親22件・子202件が含まれます。`imsdbctl split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT` は同じアンロードを原本 `PAUDBLOD.CBL` 用の固定長入力ファイルに分けます。`test-carddemo-load.sh` は、このロードプログラムを無修正で実行し、親22件・子202件を読み戻します。`test-carddemo-roundtrip.sh` は無修正 `PAUDBUNL.CBL` の出力をバイト単位で照合します。親の最終1件は packed decimal キーが空白のため、原本の `IS NUMERIC` 条件で除外されます。出力は親21件・子202件です。`test-carddemo-unload.sh` は無修正 `CBPAUP0C` が親削除時に `DJ` で停止し、変更がロールバックされることを確認します。これは同じPCBで子を読んだ後に親を `DLET` する原本の呼出順序によるものです。レコード本文は EBCDIC、packed decimal、二進数を含めて生バイトを保持します。この読み込みは二次索引 `DBPAUTX0` を実体化しません。
+原本には親22件・子202件が含まれます。`imsdbctl split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT` は同じアンロードを原本 `PAUDBLOD.CBL` 用の固定長入力ファイルに分けます。`test-carddemo-load.sh` は、このロードプログラムを無修正で実行し、親22件・子202件を読み戻します。`test-carddemo-roundtrip.sh` は無修正 `PAUDBUNL.CBL` の出力をバイト単位で照合します。親の最終1件は packed decimal キーが空白のため、原本の `IS NUMERIC` 条件で除外されます。出力は親21件・子202件です。`test-carddemo-unload.sh` は無修正 `CBPAUP0C` が親削除時に `DJ` で停止し、変更がロールバックされることを確認します。これは同じPCBで子を読んだ後に親を `DLET` する原本の呼出順序によるものです。レコード本文は EBCDIC、packed decimal、二進数を含めて生バイトを保持します。
+
+CardDemo の `DBPAUTX0` は、`DBPAUTP0` と `DBPAUTX0` の両DBDを開いたとき、親の `ACCNTID` から二次索引をメモリ上に構築します。挿入・更新・削除の確定時に索引を更新し、WAL再読込時にも再構築します。`imsdbctl get-secondary WAL DBD_DIR DBPAUTX0 KEY_HEX` は対象の親セグメントIDと本文の16進数を出力します。`DBD_DIR` には両DBDを含むディレクトリを指定します。CardDemo の `LCHILD INDEX=ACCNTID` が直接フィールドを指す形に加え、[IBM IMS の XDFLD 定義](https://www.ibm.com/docs/en/ims/15.6.0?topic=indexes-example-defining-secondary)の `SEGMENT`、1～5個の通常の `FIELD` を連結する `SRCH`、省略可能な `SUBSEQ` を扱います。子セグメントのフィールドをキーにして親を照会する場合も、対象の親を返します。
+
+DB PCB の `PROCSEQ=索引DBD名` で、[IBM の二次処理順序 PCB](https://www.ibm.com/docs/en/ims/15.6.0?topic=statements-full-function-fast-path-database-pcb-statement)と同様に対象ルートを索引順で取得できます。現在は対象DBDに対する索引定義が1個、索引対象がルートセグメントの場合に限ります。`GU` は索引フィールド名の等値 SSA、`GN` は索引順の逐次取得を扱います。索引位置付け後の `GNP` は元の階層の子を取得します。`KEYLEN` は `SUBSEQ` を含む索引ポインターキー全長以上に設定してください。例:
+
+```text
+ PCB TYPE=DB,DBDNAME=DBPAUTP0,PROCOPT=G,PROCSEQ=DBPAUTX0,KEYLEN=6
+ SENSEG NAME=PAUTSUM0,PARENT=0
+ PSBGEN PSBNAME=IDXPAUT,LANG=COBOL
+ END
+```
+
+`COB_IMS_DBD_DIR` に対象と索引の両DBDを含むディレクトリ、`COB_IMS_PSB` にこのPSBを指定します。COBOL から `CBLTDLI` の `GU` に `PAUTSUM0(ACCNTID EQ<6バイト値>)` 形式の SSA を渡せます。IBM-037 モードでは SSA の制御文字を復号し、索引値の生バイトを保持します。同じ UOW の未確定更新も索引取得に反映します。
+
+[IBM の索引DBD直接 PCB](https://www.ibm.com/docs/en/ims/15.6.0?topic=indexes-processing-secondary-index-as-separate-database)の読出しも、ポインターセグメントが固定長で**全体がキー**の場合に対応します。CardDemo では次の PSB を指定し、`CBLTDLI` の `GN` で `PAUTINDX` の6バイトのポインター本文を順に取得します。`GU` の修飾 SSA は `PAUTINDX(INDXSEQ EQ<6バイトの完全キー>)` とします。`SRCH` と `SUBSEQ` を持つ索引では両方を連結した完全キーが必要です。直接 PCB からの更新と、ポインター本文にユーザーデータや重複データを持つ索引は未対応です。
+
+```text
+ PCB TYPE=DB,DBDNAME=DBPAUTX0,PROCOPT=G,KEYLEN=6
+ SENSEG NAME=PAUTINDX,PARENT=0
+ PSBGEN PSBNAME=PTRPAUT,LANG=COBOL
+ END
+```
+
+通常の物理順 PCB でも、[IBM の `SENSEG INDICES=`](https://www.ibm.com/docs/en/ims/15.6.0?topic=statements-senseg-statement)で許可したルート索引フィールドの等値 SSA を `GU` に指定できます。この経路の `GN` は物理順を維持します。現在は索引対象がルートである場合の `GU` に限り、索引フィールドで修飾した `GN` は対象外です。
+
+```text
+ PCB TYPE=DB,DBDNAME=DBPAUTP0,PROCOPT=G,KEYLEN=6
+ SENSEG NAME=PAUTSUM0,PARENT=0,INDICES=DBPAUTX0
+ PSBGEN PSBNAME=PHYPAUT,LANG=COBOL
+ END
+```
+
+未確定変更があるときの索引読出しは現在メモリ内の状態を複製して再構築するため、大量更新を挟む逐次読出しの性能は未測定です。`NULLVAL`、システム関連フィールド、複数索引エントリーは未対応です。
 
 原本の `UNLDPADB.JCL` と `LOADPADB.JCL` を続けて動かす場合は `./extras/imsdb/test-carddemo-jcl-cycle.ps1` を実行します。前者が書いた親21件・子202件の固定長ファイルを後者が読み、別の IMS WAL に計223件を投入します。`jclsh` のプロファイルで `COB_IMS_LINKAGE=DB`／`IO,DB` を選びます。`imsdbctl count WAL DBD` は確定済みセグメント総数を出力します。
 
@@ -51,7 +84,7 @@ docker run --rm --network none -v D:\workspace\gnucobol:/src -w /src `
 wsl --exec sh /mnt/d/workspace/gnucobol/extras/imsdb/test-cbltdli.sh
 ```
 
-チェックアウト先が異なる場合は両方のパスを変更します。試験スクリプトは Bank of Z の9 DBD と1,169件を新しい WAL に投入し、`IBSCUDAT` PSB の更新権限を使って COBOL から `GU → GHU → REPL → IMSDBCOM → GU` を実行します。別プロセスで未コミット更新が破棄されることに加え、基本 `CHKP` による確定と `ROLB` による破棄も確認します。
+チェックアウト先が異なる場合は両方のパスを変更します。試験スクリプトは Bank of Z の9 DBD と1,169件を新しい WAL に投入し、`IBSCUDAT` PSB の更新権限を使って COBOL から `GU → GHU → REPL → IMSDBCOM → GU` を実行します。別プロセスで未コミット更新が破棄されることに加え、基本 `CHKP` による確定と `ROLB` による破棄も確認します。`test-carddemo-load.sh` は原本の親22件・子202件をロードした後、COBOL から `PROCSEQ=DBPAUTX0`、`SENSEG INDICES=DBPAUTX0`、`DBDNAME=DBPAUTX0` の3種類の PCB で取得を確認します。
 
 個別プログラムでは [C shim](../../extras/imsdb/cbltdli.c) を `libimsdb`、`libcob` にリンクした共有ライブラリにし、`COB_PRE_LOAD` へ指定します。`COB_IMS_WAL`、`COB_IMS_DBD_DIR`、`COB_IMS_PSB` に WAL、DBD ディレクトリ、PSB ファイルを設定します。呼び出し側は DB PCB 領域の先頭8バイトに DBD 名を設定します。`CBLTDLI` は4バイトの関数名、DB PCB、I/O 領域、および最大16個の SSA を受け取ります。更新の確定には暫定 CALL `IMSDBCOM` も使用できます。通常はプロセス終了時に未確定更新を破棄します。`COB_IMS_AUTOCOMMIT=1` とこのリポジトリで再ビルドした `libcob` を使うと、RC 0 の `STOP RUN` で確定し、非ゼロ RC では破棄します。
 

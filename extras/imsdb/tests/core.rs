@@ -6,6 +6,164 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DBD: &str = " DBD NAME=TEST,ACCESS=(HIDAM,VSAM)\n SEGM NAME=ROOT,PARENT=0,BYTES=6\n FIELD NAME=(ID,SEQ,U),START=1,BYTES=2,TYPE=P\n SEGM NAME=CHILD,PARENT=((ROOT,)),BYTES=5\n FIELD NAME=(SEQNO,SEQ,U),START=1,BYTES=2,TYPE=C\n DBDGEN\n END\n";
 const PSB: &str = "TESTPCB PCB TYPE=DB,DBDNAME=TEST,PROCOPT=AP,KEYLEN=4\n SENSEG NAME=ROOT,PARENT=0\n SENSEG NAME=CHILD,PARENT=ROOT\n PSBGEN PSBNAME=TESTPSB,LANG=COBOL\n END\n";
+const INDEXED_DBD: &str = " DBD NAME=PRIMARY,ACCESS=(HIDAM,VSAM)\n SEGM NAME=ROOT,PARENT=0,BYTES=6\n FIELD NAME=(ID,SEQ,U),START=1,BYTES=2,TYPE=P\n FIELD NAME=ALT,START=3,BYTES=2,TYPE=C\n LCHILD NAME=(PTR,SECOND),POINTER=INDX\n XDFLD NAME=XALT,SRCH=ALT\n DBDGEN\n END\n";
+const INDEX_DBD: &str = " DBD NAME=SECOND,ACCESS=(INDEX,VSAM)\n SEGM NAME=PTR,PARENT=0,BYTES=2\n FIELD NAME=(ALTKEY,SEQ,U),START=1,BYTES=2,TYPE=C\n LCHILD NAME=(ROOT,PRIMARY),INDEX=XALT\n DBDGEN\n END\n";
+const XDFLD_PRIMARY: &str = " DBD NAME=PRIMARY,ACCESS=(HIDAM,VSAM)\n SEGM NAME=ROOT,PARENT=0,BYTES=4\n FIELD NAME=(ID,SEQ,U),START=1,BYTES=2,TYPE=P\n LCHILD NAME=(PTR,SECOND),POINTER=INDX\n XDFLD NAME=XALT,SEGMENT=CHILD,SRCH=(NAME,CITY),SUBSEQ=SEQNO\n SEGM NAME=CHILD,PARENT=ROOT,BYTES=8\n FIELD NAME=(SEQNO,SEQ,U),START=1,BYTES=2,TYPE=C\n FIELD NAME=NAME,START=3,BYTES=2,TYPE=C\n FIELD NAME=CITY,START=5,BYTES=2,TYPE=C\n DBDGEN\n END\n";
+const XDFLD_INDEX: &str = " DBD NAME=SECOND,ACCESS=(INDEX,VSAM)\n SEGM NAME=PTR,PARENT=0,BYTES=6\n FIELD NAME=(ALTKEY,SEQ,U),START=1,BYTES=6,TYPE=C\n LCHILD NAME=(ROOT,PRIMARY),INDEX=XALT\n DBDGEN\n END\n";
+const PROCSEQ_PSB: &str = " PCB TYPE=DB,DBDNAME=PRIMARY,PROCOPT=G,PROCSEQ=SECOND,KEYLEN=2\n SENSEG NAME=ROOT,PARENT=0\n PSBGEN PSBNAME=IDXPSB,LANG=COBOL\n END\n";
+const DIRECT_INDEX_PSB: &str = " PCB TYPE=DB,DBDNAME=SECOND,PROCOPT=G,KEYLEN=6\n SENSEG NAME=PTR,PARENT=0\n PSBGEN PSBNAME=PTRPSB,LANG=COBOL\n END\n";
+const INDICES_PSB: &str = " PCB TYPE=DB,DBDNAME=PRIMARY,PROCOPT=G,KEYLEN=2\n SENSEG NAME=ROOT,PARENT=0,INDICES=SECOND\n PSBGEN PSBNAME=PHYPSB,LANG=COBOL\n END\n";
+
+#[test]
+fn senseg_indices_gu_uses_secondary_key_but_gn_keeps_physical_order() {
+    let wal = path();
+    let db = Database::open(
+        &wal,
+        vec![
+            parse_dbd(INDEXED_DBD).unwrap(),
+            parse_dbd(INDEX_DBD).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut seed = db.begin();
+    let one = seed
+        .insert(
+            "PRIMARY",
+            "ROOT",
+            None,
+            vec![1, 0x0c, b'Z', b'Z', 0, 0],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    let two = seed
+        .insert(
+            "PRIMARY",
+            "ROOT",
+            None,
+            vec![2, 0x0c, b'A', b'A', 0, 0],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    seed.commit().unwrap();
+    let mut session = Session::new(db.clone(), parse_psb(INDICES_PSB).unwrap()).unwrap();
+    assert_eq!(
+        session
+            .read(0, ReadOp::Gu, &[b"ROOT    (XALT    EQZZ)"])
+            .unwrap()
+            .record
+            .unwrap()
+            .id,
+        one
+    );
+    assert_eq!(
+        session.read(0, ReadOp::Gn, &[]).unwrap().record.unwrap().id,
+        two
+    );
+    assert_eq!(
+        session.read(0, ReadOp::Gn, &[]).unwrap().status,
+        Status::End
+    );
+    assert_eq!(
+        session
+            .read(0, ReadOp::Gu, &[b"ROOT    (XALT    EQAA)"])
+            .unwrap()
+            .record
+            .unwrap()
+            .id,
+        two
+    );
+    assert_eq!(
+        session
+            .read(0, ReadOp::Gu, &[b"ROOT    (XALT    EQXX)"])
+            .unwrap()
+            .status,
+        Status::NotFound
+    );
+    let invalid = INDICES_PSB.replace("INDICES=SECOND", "INDICES=MISSING");
+    assert!(Session::new(db.clone(), parse_psb(&invalid).unwrap()).is_err());
+    drop(session);
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
+
+#[test]
+fn direct_index_pcb_reads_complete_pointer_keys_only() {
+    let wal = path();
+    let db = Database::open(
+        &wal,
+        vec![
+            parse_dbd(XDFLD_PRIMARY).unwrap(),
+            parse_dbd(XDFLD_INDEX).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut seed = db.begin();
+    let root = seed
+        .insert(
+            "PRIMARY",
+            "ROOT",
+            None,
+            vec![1, 0x0c, 0, 0],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    seed.insert(
+        "PRIMARY",
+        "CHILD",
+        Some(root),
+        b"01ALNY00".to_vec(),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    seed.insert(
+        "PRIMARY",
+        "CHILD",
+        Some(root),
+        b"02ALNY00".to_vec(),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    seed.commit().unwrap();
+    let mut session = Session::new(db.clone(), parse_psb(DIRECT_INDEX_PSB).unwrap()).unwrap();
+    let first = session.read(0, ReadOp::Gn, &[]).unwrap();
+    assert_eq!(first.record.unwrap().data, b"ALNY01");
+    assert_eq!(first.key_feedback, b"ALNY01");
+    assert_eq!(
+        session
+            .read(0, ReadOp::Gn, &[])
+            .unwrap()
+            .record
+            .unwrap()
+            .data,
+        b"ALNY02"
+    );
+    assert_eq!(
+        session.read(0, ReadOp::Gn, &[]).unwrap().status,
+        Status::End
+    );
+    assert_eq!(
+        session
+            .read(0, ReadOp::Gu, &[b"PTR     (ALTKEY  EQALNY02)"])
+            .unwrap()
+            .record
+            .unwrap()
+            .data,
+        b"ALNY02"
+    );
+    assert!(session
+        .read(0, ReadOp::Gu, &[b"PTR     (ALTKEY  EQALNY)"])
+        .is_err());
+    assert_eq!(
+        session
+            .write(0, WriteOp::Isrt, "PTR", Some(b"ALNY03"), &[])
+            .unwrap()
+            .status,
+        Status::NotAllowed
+    );
+    drop(session);
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
 fn path() -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -15,6 +173,295 @@ fn path() -> PathBuf {
 }
 fn dbd() -> Dbd {
     parse_dbd(DBD).unwrap()
+}
+
+#[test]
+fn procseq_gu_and_gn_use_secondary_order_and_see_pending_changes() {
+    let wal = path();
+    let db = Database::open(
+        &wal,
+        vec![
+            parse_dbd(INDEXED_DBD).unwrap(),
+            parse_dbd(INDEX_DBD).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut seed = db.begin();
+    seed.insert(
+        "PRIMARY",
+        "ROOT",
+        None,
+        vec![1, 0x0c, b'Z', b'Z', 0, 0],
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    seed.insert(
+        "PRIMARY",
+        "ROOT",
+        None,
+        vec![2, 0x0c, b'A', b'A', 0, 0],
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    seed.commit().unwrap();
+    let psb = parse_psb(PROCSEQ_PSB).unwrap();
+    assert_eq!(psb.pcbs[0].procseq.as_deref(), Some("SECOND"));
+    let mut session = Session::new(db.clone(), psb).unwrap();
+    let first = session.read(0, ReadOp::Gn, &[]).unwrap();
+    assert_eq!(first.record.unwrap().data[2..4], *b"AA");
+    assert_eq!(first.key_feedback, b"AA");
+    let second = session.read(0, ReadOp::Gn, &[]).unwrap();
+    assert_eq!(second.record.unwrap().data[2..4], *b"ZZ");
+    assert_eq!(
+        session.read(0, ReadOp::Gn, &[]).unwrap().status,
+        Status::End
+    );
+    let gu = session
+        .read(0, ReadOp::Gu, &[b"ROOT    (XALT    EQZZ)"])
+        .unwrap();
+    assert_eq!(gu.record.unwrap().data[2..4], *b"ZZ");
+    assert_eq!(
+        session.read(0, ReadOp::Gn, &[]).unwrap().status,
+        Status::End
+    );
+    assert_eq!(
+        session
+            .read(0, ReadOp::Gu, &[b"ROOT    (XALT    EQXX)"])
+            .unwrap()
+            .status,
+        Status::NotFound
+    );
+    assert!(session
+        .read(0, ReadOp::Gu, &[b"ROOT    (ID      EQ\x01\x0c)"])
+        .is_err());
+
+    let mut writer = db.begin();
+    writer
+        .insert(
+            "PRIMARY",
+            "ROOT",
+            None,
+            vec![3, 0x0c, b'B', b'B', 0, 0],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    assert_eq!(
+        writer
+            .secondary_entry("SECOND", Some(b"BB"), None)
+            .unwrap()
+            .unwrap()
+            .2
+            .data[2..4],
+        *b"BB"
+    );
+    writer.rollback();
+    assert!(db
+        .secondary_entry("SECOND", Some(b"BB"), None)
+        .unwrap()
+        .is_none());
+    let aa = db.secondary_lookup("SECOND", b"AA").unwrap().unwrap();
+    let mut writer = db.begin();
+    writer
+        .replace(
+            aa.id,
+            vec![2, 0x0c, b'C', b'C', 0, 0],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    assert!(writer
+        .secondary_entry("SECOND", Some(b"AA"), None)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        writer
+            .secondary_entry("SECOND", Some(b"CC"), None)
+            .unwrap()
+            .unwrap()
+            .2
+            .id,
+        aa.id
+    );
+    writer.delete(aa.id, Duration::from_secs(1)).unwrap();
+    assert!(writer
+        .secondary_entry("SECOND", Some(b"CC"), None)
+        .unwrap()
+        .is_none());
+    writer.rollback();
+    drop(session);
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
+
+#[test]
+fn xdfld_child_search_and_subsequence_resolve_parent() {
+    let wal = path();
+    let definitions = || {
+        vec![
+            parse_dbd(XDFLD_PRIMARY).unwrap(),
+            parse_dbd(XDFLD_INDEX).unwrap(),
+        ]
+    };
+    let db = Database::open(&wal, definitions()).unwrap();
+    let mut tx = db.begin();
+    let root = tx
+        .insert(
+            "PRIMARY",
+            "ROOT",
+            None,
+            vec![1, 0x0c, 0, 0],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    let child = tx
+        .insert(
+            "PRIMARY",
+            "CHILD",
+            Some(root),
+            b"01ALNY00".to_vec(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        db.secondary_lookup("SECOND", b"ALNY").unwrap().unwrap().id,
+        root
+    );
+    let psb = PROCSEQ_PSB.replace(
+        " SENSEG NAME=ROOT,PARENT=0\n",
+        " SENSEG NAME=ROOT,PARENT=0\n SENSEG NAME=CHILD,PARENT=ROOT\n",
+    );
+    let mut session = Session::new(db.clone(), parse_psb(&psb).unwrap()).unwrap();
+    let indexed = session
+        .read(0, ReadOp::Gu, &[b"ROOT    (XALT    EQALNY)"])
+        .unwrap();
+    assert_eq!(indexed.record.unwrap().id, root);
+    assert_eq!(indexed.key_feedback, b"ALNY01");
+    // Child access after index positioning follows the primary hierarchy.
+    assert_eq!(
+        session
+            .read(0, ReadOp::Gnp, &[b"CHILD   "])
+            .unwrap()
+            .record
+            .unwrap()
+            .id,
+        child
+    );
+    drop(session);
+    assert!(matches!(
+        db.secondary_lookup("SECOND", b"AL"),
+        Err(StoreError::Definition(_))
+    ));
+    let mut tx = db.begin();
+    tx.replace(child, b"01BONY00".to_vec(), Duration::from_secs(1))
+        .unwrap();
+    tx.commit().unwrap();
+    assert!(db.secondary_lookup("SECOND", b"ALNY").unwrap().is_none());
+    assert_eq!(
+        db.secondary_lookup("SECOND", b"BONY").unwrap().unwrap().id,
+        root
+    );
+    let mut tx = db.begin();
+    let second = tx
+        .insert(
+            "PRIMARY",
+            "CHILD",
+            Some(root),
+            b"02BONY00".to_vec(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    tx.commit().unwrap();
+    drop(db);
+    let db = Database::open(&wal, definitions()).unwrap();
+    assert_eq!(
+        db.secondary_lookup("SECOND", b"BONY").unwrap().unwrap().id,
+        root
+    );
+    let mut tx = db.begin();
+    tx.delete(child, Duration::from_secs(1)).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        db.secondary_lookup("SECOND", b"BONY").unwrap().unwrap().id,
+        root
+    );
+    let mut tx = db.begin();
+    tx.delete(second, Duration::from_secs(1)).unwrap();
+    tx.commit().unwrap();
+    assert!(db.secondary_lookup("SECOND", b"BONY").unwrap().is_none());
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
+
+#[test]
+fn unsupported_xdfld_operand_is_rejected() {
+    let source = XDFLD_PRIMARY.replace("SUBSEQ=SEQNO", "NULLVAL=0");
+    assert!(parse_dbd(&source)
+        .unwrap_err()
+        .contains("unsupported XDFLD operand"));
+}
+
+#[test]
+fn secondary_index_tracks_insert_replace_delete_and_replay() {
+    let wal = path();
+    let definitions = || {
+        vec![
+            parse_dbd(INDEXED_DBD).unwrap(),
+            parse_dbd(INDEX_DBD).unwrap(),
+        ]
+    };
+    let db = Database::open(&wal, definitions()).unwrap();
+    let mut tx = db.begin();
+    let id = tx
+        .insert(
+            "PRIMARY",
+            "ROOT",
+            None,
+            vec![1, 0x0c, b'A', b'A', 0, 0],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        db.secondary_lookup("SECOND", b"AA").unwrap().unwrap().id,
+        id
+    );
+    assert!(db.secondary_lookup("SECOND", b"BB").unwrap().is_none());
+    let mut tx = db.begin();
+    tx.replace(id, vec![1, 0x0c, b'B', b'B', 0, 0], Duration::from_secs(1))
+        .unwrap();
+    tx.commit().unwrap();
+    assert!(db.secondary_lookup("SECOND", b"AA").unwrap().is_none());
+    assert_eq!(
+        db.secondary_lookup("SECOND", b"BB").unwrap().unwrap().id,
+        id
+    );
+    let mut tx = db.begin();
+    tx.insert(
+        "PRIMARY",
+        "ROOT",
+        None,
+        vec![2, 0x0c, b'B', b'B', 0, 0],
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    assert!(matches!(tx.commit(), Err(StoreError::Duplicate(_))));
+    assert_eq!(db.count(), 1);
+    drop(db);
+    let db = Database::open(&wal, definitions()).unwrap();
+    assert_eq!(
+        db.secondary_lookup("SECOND", b"BB").unwrap().unwrap().id,
+        id
+    );
+    let mut tx = db.begin();
+    tx.delete(id, Duration::from_secs(1)).unwrap();
+    tx.commit().unwrap();
+    assert!(db.secondary_lookup("SECOND", b"BB").unwrap().is_none());
+    drop(db);
+    let db = Database::open(&wal, definitions()).unwrap();
+    assert_eq!(db.count(), 0);
+    assert!(db.secondary_lookup("SECOND", b"BB").unwrap().is_none());
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
 }
 
 #[test]

@@ -146,15 +146,37 @@ matches `<DBD-name>.data` in a data directory, and commits all records in one tr
 This imports the 9 Bank of Z DBDs and 1,169 sample records together. `INT` and `LONG` use
 z/OS big-endian binary layout, `DECIMAL` uses signed packed decimal, and text in a `Cp1047`
 DBD uses the GnuCOBOL default EBCDIC translation table. CSV text outside ASCII is rejected
-until an explicit Japanese/multibyte codec is provided. The single-file CLI commands open
-only one DBD per WAL and cannot inspect a multi-DBD bundle; the Rust API can use the
-bundle with multiple PSBs.
+until an explicit Japanese/multibyte codec is provided. Single-file import/export
+commands open one DBD at a time. For a multi-DBD WAL, `count`, `latest-checkpoint`,
+and `get-secondary` accept a DBD directory; the Rust API supports multiple PSBs.
 
 For the original CardDemo `DFSURGU0` VB unload, use `imsdbctl import-dfsurgu0 WAL DBD FILE`.
 The strict reader checks RDWs, header/trailer markers, DFSURGUF segment names and lengths,
 then loads the original bytes and parent-child order in one transaction. The supported
-variant is non-HALDB HDAM/HIDAM with one root and direct children. It does not materialize
-the secondary index DBD. `split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT` creates fixed-length
+variant is non-HALDB HDAM/HIDAM with one root and direct children. When both
+`DBPAUTP0` and `DBPAUTX0` DBDs are opened, the CardDemo `INDEX=ACCNTID`
+relationship materializes as an in-memory B-tree from the committed primary
+records. It is updated on insert, replace, and delete and rebuilt on WAL replay.
+`imsdbctl get-secondary WAL DBD_DIR DBPAUTX0 KEY_HEX` returns the target root.
+An XDFLD with `SEGMENT`, up to five ordinary `SRCH` fields, and optional
+`SUBSEQ` fields also builds a key from an index source segment and returns its
+target ancestor. Searches use the concatenated SRCH bytes; SUBSEQ orders the
+pointer entries. Unsupported XDFLD operands fail while parsing the DBD.
+For one root-target index per primary DBD, a primary DB PCB can specify
+`PROCSEQ=<index DBD>`. `GU` accepts an equality SSA on the indexed field,
+`GN` traverses index order, and `GNP` after positioning reads the primary
+hierarchy. The PCB `KEYLEN` must hold the full pointer key including SUBSEQ.
+Index reads see pending changes in the same transaction. `test-carddemo-load.sh`
+also runs a GnuCOBOL `CBLTDLI` program against a PROCSEQ PCB and checks 22
+indexed roots plus a qualified GU.
+A direct PCB naming the index DBD supports read-only GU/GN when its pointer
+segment is fixed length and consists entirely of the key. Qualified GU must
+use the complete pointer key, including SUBSEQ. The CardDemo load test also
+runs a COBOL program against DBPAUTX0 and reads 22 PAUTINDX pointer segments.
+`SENSEG INDICES=<index DBD>` on a physical PCB permits a root-target indexed
+equality GU while GN keeps physical order. The CardDemo COBOL load test runs
+this PCB mode too. Indexed GN qualifications and non-root targets remain open.
+`split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT` creates fixed-length
 files for the original `PAUDBLOD.CBL` loader. `test-carddemo-load.sh` runs it unchanged and
 reads back 22 roots and 202 children in a separate process. `test-carddemo-unload.sh` checks
 that original `CBPAUP0C` returns DJ for its DLET after an intervening GNP on the same PCB,
@@ -175,7 +197,9 @@ One transaction is limited to a 64 MiB WAL frame; larger imports must be split i
 separately validated batches once a batch loader is available.
 The current root lock manager is in-process and uses ordered acquisition; it does not
 yet support shared locks or deadlock victim selection. The proposal's performance gates
-have not been measured. There is no page cache, secondary-index materialization,
+have not been measured. There is no page cache, XDFLD system-related field or
+NULLVAL support, multiple pointer entries from one source, direct index-DBD PCB
+updates and pointer payload beyond the sequence key,
 general child-segment export utility, complete failed-call PCB positioning, or
 integration with PLITDLI. CICS can call `IMSDB_END_TASK` from its unit-of-work
 coordinator when built with `COBCICS_IMSDB`; the Bank customer commit/rollback

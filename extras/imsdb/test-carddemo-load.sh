@@ -42,3 +42,49 @@ export DD_INFILE1="$tmp/roots.fb"
 export DD_INFILE2="$tmp/children.fb"
 "$tmp/imsbatch" > "$tmp/load.log"
 "$tmp/ims-verify"
+cat > "$tmp/PROCSEQ.PSB" <<'PSB'
+ PCB TYPE=DB,DBDNAME=DBPAUTP0,PROCOPT=G,PROCSEQ=DBPAUTX0,KEYLEN=6
+ SENSEG NAME=PAUTSUM0,PARENT=0
+ PSBGEN PSBNAME=IDXPAUT,LANG=COBOL
+ END
+PSB
+build/cobc/.libs/cobc -x -fdata-codeset=IBM-037 \
+    -fbinary-byteorder=big-endian \
+    -o "$tmp/ims-procseq" extras/imsdb/tests/carddemo-procseq.cob
+export COB_IMS_PSB="$tmp/PROCSEQ.PSB"
+"$tmp/ims-procseq"
+cat > "$tmp/INDICES.PSB" <<'PSB'
+ PCB TYPE=DB,DBDNAME=DBPAUTP0,PROCOPT=G,KEYLEN=6
+ SENSEG NAME=PAUTSUM0,PARENT=0,INDICES=DBPAUTX0
+ PSBGEN PSBNAME=PHYPAUT,LANG=COBOL
+ END
+PSB
+build/cobc/.libs/cobc -x -fdata-codeset=IBM-037 \
+    -fbinary-byteorder=big-endian \
+    -o "$tmp/ims-indices" extras/imsdb/tests/carddemo-indices.cob
+export COB_IMS_PSB="$tmp/INDICES.PSB"
+"$tmp/ims-indices"
+cat > "$tmp/INDEXPCB.PSB" <<'PSB'
+ PCB TYPE=DB,DBDNAME=DBPAUTX0,PROCOPT=G,KEYLEN=6
+ SENSEG NAME=PAUTINDX,PARENT=0
+ PSBGEN PSBNAME=PTRPAUT,LANG=COBOL
+ END
+PSB
+build/cobc/.libs/cobc -x -fdata-codeset=IBM-037 \
+    -fbinary-byteorder=big-endian \
+    -o "$tmp/ims-indexpcb" extras/imsdb/tests/carddemo-indexpcb.cob
+export COB_IMS_PSB="$tmp/INDEXPCB.PSB"
+"$tmp/ims-indexpcb"
+python3 - "$tmp/card.wal" "$card/ims" "$tmp/roots.fb" <<'PY'
+import pathlib
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[3]).read_bytes()[:100]
+result = subprocess.check_output([
+    'build/imsdb-linux/debug/imsdbctl', 'get-secondary',
+    sys.argv[1], sys.argv[2], 'DBPAUTX0', root[:6].hex(),
+], text=True).split()
+assert len(result) == 2 and bytes.fromhex(result[1]) == root, result
+print('IMS CARDDEMO DBPAUTX0 SECONDARY INDEX OK')
+PY

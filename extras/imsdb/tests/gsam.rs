@@ -18,6 +18,8 @@ fn fixed_gsam_gn_gu_rsa_insert_commit_and_rollback() {
     std::env::set_var("DD_IMSGSIN", &input);
     std::env::set_var("DD_IMSGSOUT", &output);
     let pcb_def = Pcb {
+        procseq: None,
+        indices: Vec::new(),
         name: None,
         kind: "GSAM".into(),
         dbd_name: Some("GSAMDB".into()),

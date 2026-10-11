@@ -56,8 +56,26 @@ pub struct Dbd {
     pub access: String,
     pub encoding: Option<String>,
     pub segments: Vec<Segment>,
-    pub logical_children: Vec<(String, String, String)>,
+    pub logical_children: Vec<LogicalChild>,
+    pub indexed_fields: Vec<IndexedField>,
     pub gsam: Option<GsamDefinition>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LogicalChild {
+    pub source_segment: String,
+    pub target_segment: String,
+    pub target_dbd: String,
+    pub index_field: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexedField {
+    pub name: String,
+    pub target_segment: String,
+    pub source_segment: String,
+    pub search_fields: Vec<String>,
+    pub subsequence_fields: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -84,8 +102,10 @@ pub struct Pcb {
     pub kind: String,
     pub dbd_name: Option<String>,
     pub procopt: Option<String>,
+    pub procseq: Option<String>,
     pub keylen: Option<usize>,
     pub sensitive_segments: Vec<String>,
+    pub indices: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +145,17 @@ impl Psb {
                     return Err(format!("{}: {segment} is not in DBD {name}", self.name));
                 }
             }
+            for (segment, indexes) in &pcb.indices {
+                if dbd.segment(segment).is_none()
+                    || !pcb.sensitive_segments.contains(segment)
+                    || indexes.is_empty()
+                {
+                    return Err(format!(
+                        "{}: invalid SENSEG INDICES for {segment}",
+                        self.name
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -140,8 +171,8 @@ struct Statement {
 
 fn statements(source: &str) -> Result<Vec<Statement>, String> {
     const OPS: &[&str] = &[
-        "DBD", "DATASET", "SEGM", "FIELD", "LCHILD", "DBDGEN", "FINISH", "END", "PCB", "SENSEG",
-        "PSBGEN", "TITLE", "PRINT", "EJECT", "SPACE", "DFSMARSH",
+        "DBD", "DATASET", "SEGM", "FIELD", "LCHILD", "XDFLD", "DBDGEN", "FINISH", "END", "PCB",
+        "SENSEG", "PSBGEN", "TITLE", "PRINT", "EJECT", "SPACE", "DFSMARSH",
     ];
     let mut result: Vec<Statement> = Vec::new();
     for (index, full_line) in source.lines().enumerate() {
@@ -235,6 +266,17 @@ fn tuple_head(s: &str) -> &str {
         .unwrap_or(s)
         .trim()
 }
+fn field_names(raw: &str, line: usize) -> Result<Vec<String>, String> {
+    let names: Vec<_> = raw
+        .trim_matches(|c| c == '(' || c == ')')
+        .split(',')
+        .map(|name| name.trim().to_ascii_uppercase())
+        .collect();
+    if names.is_empty() || names.len() > 5 || names.iter().any(String::is_empty) {
+        return Err(format!("line {line}: invalid XDFLD field list"));
+    }
+    Ok(names)
+}
 fn parent_name(s: &str) -> Option<String> {
     let name = tuple_head(s);
     if name == "0" || name.is_empty() {
@@ -265,6 +307,7 @@ pub fn parse_dbd(source: &str) -> Result<Dbd, String> {
                     encoding: value(&p, "ENCODING").map(str::to_string),
                     segments: Vec::new(),
                     logical_children: Vec::new(),
+                    indexed_fields: Vec::new(),
                     gsam: None,
                 });
             }
@@ -368,11 +411,40 @@ pub fn parse_dbd(source: &str) -> Result<Dbd, String> {
                 if names.len() != 2 {
                     return Err(format!("line {}: invalid LCHILD", stmt.line));
                 }
-                dbd.logical_children.push((
+                dbd.logical_children.push(LogicalChild {
                     source_segment,
-                    names[0].to_ascii_uppercase(),
-                    names[1].to_ascii_uppercase(),
-                ));
+                    target_segment: names[0].to_ascii_uppercase(),
+                    target_dbd: names[1].to_ascii_uppercase(),
+                    index_field: value(&p, "INDEX").map(str::to_ascii_uppercase),
+                });
+            }
+            "XDFLD" => {
+                let dbd = dbd
+                    .as_mut()
+                    .ok_or_else(|| format!("line {}: XDFLD before DBD", stmt.line))?;
+                let target_segment = dbd
+                    .segments
+                    .last()
+                    .ok_or_else(|| format!("line {}: XDFLD before SEGM", stmt.line))?
+                    .name
+                    .clone();
+                if p.iter()
+                    .any(|(key, _)| !matches!(key.as_str(), "NAME" | "SEGMENT" | "SRCH" | "SUBSEQ"))
+                {
+                    return Err(format!("line {}: unsupported XDFLD operand", stmt.line));
+                }
+                dbd.indexed_fields.push(IndexedField {
+                    name: required(&p, "NAME", stmt.line)?.to_ascii_uppercase(),
+                    source_segment: value(&p, "SEGMENT")
+                        .unwrap_or(&target_segment)
+                        .to_ascii_uppercase(),
+                    target_segment,
+                    search_fields: field_names(required(&p, "SRCH", stmt.line)?, stmt.line)?,
+                    subsequence_fields: value(&p, "SUBSEQ")
+                        .map(|raw| field_names(raw, stmt.line))
+                        .transpose()?
+                        .unwrap_or_default(),
+                });
             }
             "DBDGEN" | "FINISH" | "END" | "TITLE" | "PRINT" | "EJECT" | "SPACE" | "DFSMARSH" => {}
             other => return Err(format!("line {}: {other} is invalid in DBD", stmt.line)),
@@ -411,6 +483,7 @@ pub fn parse_psb(source: &str) -> Result<Psb, String> {
                 kind: required(&p, "TYPE", stmt.line)?.to_ascii_uppercase(),
                 dbd_name: value(&p, "DBDNAME").map(|s| s.to_ascii_uppercase()),
                 procopt: value(&p, "PROCOPT").map(str::to_string),
+                procseq: value(&p, "PROCSEQ").map(|s| s.to_ascii_uppercase()),
                 keylen: value(&p, "KEYLEN")
                     .map(|s| {
                         s.parse::<usize>()
@@ -418,13 +491,30 @@ pub fn parse_psb(source: &str) -> Result<Psb, String> {
                     })
                     .transpose()?,
                 sensitive_segments: Vec::new(),
+                indices: Vec::new(),
             }),
-            "SENSEG" => psb
-                .pcbs
-                .last_mut()
-                .ok_or_else(|| format!("line {}: SENSEG before PCB", stmt.line))?
-                .sensitive_segments
-                .push(required(&p, "NAME", stmt.line)?.to_ascii_uppercase()),
+            "SENSEG" => {
+                let segment = required(&p, "NAME", stmt.line)?.to_ascii_uppercase();
+                let pcb = psb
+                    .pcbs
+                    .last_mut()
+                    .ok_or_else(|| format!("line {}: SENSEG before PCB", stmt.line))?;
+                pcb.sensitive_segments.push(segment.clone());
+                if let Some(raw) = value(&p, "INDICES") {
+                    let indexes: Vec<String> = raw
+                        .trim_matches(|ch| ch == '(' || ch == ')')
+                        .split(',')
+                        .map(|name| name.trim().to_ascii_uppercase())
+                        .collect();
+                    if indexes.is_empty()
+                        || indexes.len() > 32
+                        || indexes.iter().any(String::is_empty)
+                    {
+                        return Err(format!("line {}: invalid SENSEG INDICES", stmt.line));
+                    }
+                    pcb.indices.push((segment, indexes));
+                }
+            }
             "PSBGEN" => psb.name = required(&p, "PSBNAME", stmt.line)?.to_ascii_uppercase(),
             "END" | "TITLE" | "PRINT" | "EJECT" | "SPACE" => {}
             other => return Err(format!("line {}: {other} is invalid in PSB", stmt.line)),

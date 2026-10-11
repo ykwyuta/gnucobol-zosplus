@@ -64,6 +64,7 @@ pub struct ReadOutcome {
     pub record: Option<Record>,
     pub segment_name: Option<String>,
     pub key_feedback: Vec<u8>,
+    pub secondary_key: bool,
 }
 impl ReadOutcome {
     fn found(record: Record, status: Status) -> Self {
@@ -75,6 +76,7 @@ impl ReadOutcome {
             status,
             segment_name: Some(record.segment.clone()),
             key_feedback,
+            secondary_key: false,
             record: Some(record),
         }
     }
@@ -84,6 +86,7 @@ impl ReadOutcome {
             record: None,
             segment_name: None,
             key_feedback: Vec::new(),
+            secondary_key: false,
         }
     }
 }
@@ -95,6 +98,7 @@ struct Position {
     exhausted: bool,
     held: Option<u64>,
     last_deleted: Option<Record>,
+    secondary: Option<(Vec<u8>, u64)>,
 }
 
 pub struct Session {
@@ -176,6 +180,29 @@ impl Ssa {
 }
 
 impl Session {
+    pub fn indexed_fields(&self, pcb_index: usize) -> Result<Vec<(String, String, usize)>, String> {
+        let pcb = self
+            .psb
+            .pcbs
+            .get(pcb_index)
+            .ok_or("PCB index out of range")?;
+        let dbd = pcb.dbd_name.as_deref().ok_or("DB PCB has no DBDNAME")?;
+        let mut result = Vec::new();
+        if let Some(index) = pcb.procseq.as_deref() {
+            result.push(self.procseq_field(index, dbd)?);
+        }
+        for (_, indexes) in &pcb.indices {
+            for index in indexes {
+                result.push(self.procseq_field(index, dbd)?);
+            }
+        }
+        Ok(result)
+    }
+    pub fn procseq_field(&self, index: &str, dbd: &str) -> Result<(String, String, usize), String> {
+        self.database
+            .procseq_field(index, dbd)
+            .map_err(|error| error.to_string())
+    }
     pub fn new(database: Database, psb: Psb) -> Result<Self, String> {
         let dbds: Vec<Dbd> = psb
             .pcbs
@@ -184,6 +211,45 @@ impl Session {
             .filter_map(|name| database.definition(name))
             .collect();
         psb.validate(&dbds)?;
+        for pcb in &psb.pcbs {
+            if pcb.kind == "DB"
+                && pcb
+                    .dbd_name
+                    .as_deref()
+                    .and_then(|name| database.definition(name))
+                    .is_some_and(|dbd| dbd.access == "INDEX")
+            {
+                if pcb.procseq.is_some() {
+                    return Err("index PCB cannot specify PROCSEQ".into());
+                }
+                database
+                    .index_pointer(pcb.dbd_name.as_deref().unwrap())
+                    .map_err(|error| error.to_string())?;
+            }
+            if let Some(index) = pcb.procseq.as_deref() {
+                if pcb.kind != "DB" {
+                    return Err("PROCSEQ requires a DB PCB".into());
+                }
+                database
+                    .procseq_field(index, pcb.dbd_name.as_deref().ok_or("missing DBDNAME")?)
+                    .map_err(|error| error.to_string())?;
+            }
+            for (segment, indexes) in &pcb.indices {
+                if pcb.kind != "DB" {
+                    return Err("SENSEG INDICES requires a DB PCB".into());
+                }
+                for index in indexes {
+                    let (target, _, _) = database
+                        .procseq_field(index, pcb.dbd_name.as_deref().ok_or("missing DBDNAME")?)
+                        .map_err(|error| error.to_string())?;
+                    if &target != segment {
+                        return Err(format!(
+                            "{index}: SENSEG INDICES target is {target}, not {segment}"
+                        ));
+                    }
+                }
+            }
+        }
         let positions = (0..psb.pcbs.len()).map(|_| Position::default()).collect();
         Ok(Self {
             transaction: database.begin(),
@@ -249,6 +315,9 @@ impl Session {
         }
         let dbd_name = pcb.dbd_name.as_deref().ok_or("DB PCB has no DBDNAME")?;
         let dbd = self.database.definition(dbd_name).ok_or("missing DBD")?;
+        if dbd.access == "INDEX" {
+            return Ok(ReadOutcome::empty(Status::NotAllowed));
+        }
         let def = dbd
             .segment(segment)
             .ok_or_else(|| format!("unknown segment {segment}"))?;
@@ -376,6 +445,51 @@ impl Session {
         }
         let dbd_name = pcb.dbd_name.as_deref().ok_or("DB PCB has no DBDNAME")?;
         let dbd = self.database.definition(dbd_name).ok_or("missing DBD")?;
+        if dbd.access == "INDEX" {
+            let name = dbd_name.to_string();
+            return self.read_index(pcb_index, &name, op, raw_ssas);
+        }
+        if let Some(index) = pcb.procseq.as_ref() {
+            if op.base() != ReadOp::Gnp {
+                let index = index.clone();
+                let dbd_name = dbd_name.to_string();
+                return self.read_procseq(pcb_index, &index, &dbd_name, op, raw_ssas);
+            }
+        }
+        if op.base() == ReadOp::Gu && raw_ssas.len() == 1 && !pcb.indices.is_empty() {
+            let raw = raw_ssas[0];
+            if raw.len() >= 19 && raw[8] == b'(' {
+                let segment = std::str::from_utf8(&raw[..8])
+                    .map_err(|_| "invalid SSA segment")?
+                    .trim()
+                    .to_ascii_uppercase();
+                let field = std::str::from_utf8(&raw[9..17])
+                    .map_err(|_| "invalid SSA field")?
+                    .trim()
+                    .to_ascii_uppercase();
+                let mut selected = None;
+                for (sensitive, indexes) in &pcb.indices {
+                    if *sensitive != segment {
+                        continue;
+                    }
+                    for index in indexes {
+                        let (target, name, length) = self
+                            .database
+                            .procseq_field(index, dbd_name)
+                            .map_err(|error| error.to_string())?;
+                        if target == segment && name == field {
+                            if selected.is_some() {
+                                return Err(format!("ambiguous SENSEG INDICES field {field}"));
+                            }
+                            selected = Some((index.clone(), length));
+                        }
+                    }
+                }
+                if let Some((index, length)) = selected {
+                    return self.read_senseg_index(pcb_index, &index, length, op, raw);
+                }
+            }
+        }
         let ssas: Vec<Ssa> = raw_ssas
             .iter()
             .map(|raw| Ssa::parse(raw, &dbd))
@@ -551,6 +665,251 @@ impl Session {
                 },
             ))
         }
+    }
+
+    fn read_procseq(
+        &mut self,
+        pcb_index: usize,
+        index: &str,
+        dbd_name: &str,
+        op: ReadOp,
+        raw_ssas: &[&[u8]],
+    ) -> Result<ReadOutcome, String> {
+        let (segment, field, length) = self
+            .database
+            .procseq_field(index, dbd_name)
+            .map_err(|error| error.to_string())?;
+        if raw_ssas.len() > 1 {
+            return Err("PROCSEQ GU/GN accepts at most one root SSA".into());
+        }
+        let search = if let Some(raw) = raw_ssas.first() {
+            if raw.len() < 8
+                || std::str::from_utf8(&raw[..8])
+                    .map_err(|_| "invalid SSA segment")?
+                    .trim()
+                    .to_ascii_uppercase()
+                    != segment
+            {
+                return Err(format!("PROCSEQ SSA must name {segment}"));
+            }
+            if raw.get(8).is_none_or(|byte| *byte == b' ') {
+                None
+            } else {
+                if raw.len() != 20 + length
+                    || raw[8] != b'('
+                    || &raw[17..19] != b"= " && &raw[17..19] != b"EQ"
+                    || raw[19 + length] != b')'
+                    || std::str::from_utf8(&raw[9..17])
+                        .map_err(|_| "invalid SSA field")?
+                        .trim()
+                        .to_ascii_uppercase()
+                        != field
+                {
+                    return Err(format!(
+                        "PROCSEQ SSA requires {field} equality with {length} bytes"
+                    ));
+                }
+                Some(&raw[19..19 + length])
+            }
+        } else {
+            None
+        };
+        let pcb = &self.psb.pcbs[pcb_index];
+        if !pcb
+            .procopt
+            .as_deref()
+            .unwrap_or("")
+            .contains(['G', 'R', 'D', 'A'])
+        {
+            return Err(format!("PCB {pcb_index} does not permit get calls"));
+        }
+        if !pcb.sensitive_segments.is_empty() && !pcb.sensitive_segments.contains(&segment) {
+            return Err(format!("PCB is not sensitive to {segment}"));
+        }
+        let position = &mut self.positions[pcb_index];
+        position.held = None;
+        if op.base() == ReadOp::Gu {
+            position.secondary = None;
+            position.current = None;
+            position.parent = None;
+            position.exhausted = false;
+        } else if position.exhausted {
+            position.secondary = None;
+            position.exhausted = false;
+        }
+        let after = if op.base() == ReadOp::Gn {
+            position
+                .secondary
+                .as_ref()
+                .map(|(key, id)| (key.as_slice(), *id))
+        } else {
+            None
+        };
+        let entry = self
+            .transaction
+            .secondary_entry(index, search, after)
+            .map_err(|error| error.to_string())?;
+        let Some((key, source_id, record)) = entry else {
+            if op.base() == ReadOp::Gn {
+                position.exhausted = true;
+            }
+            return Ok(ReadOutcome::empty(
+                if search.is_some() || op.base() == ReadOp::Gu {
+                    Status::NotFound
+                } else {
+                    Status::End
+                },
+            ));
+        };
+        let record = self
+            .transaction
+            .record(record.id)
+            .ok_or("indexed target was deleted")?;
+        let record = if op.is_hold() {
+            self.transaction
+                .hold(record.id, self.lock_timeout)
+                .map_err(|e| e.to_string())?
+        } else {
+            record
+        };
+        position.secondary = Some((key.clone(), source_id));
+        position.current = Some(record.id);
+        position.parent = Some(record.id);
+        position.last_deleted = None;
+        if op.is_hold() {
+            position.held = Some(record.id);
+        }
+        let mut outcome = ReadOutcome::found(record, Status::Ok);
+        outcome.key_feedback = key;
+        outcome.secondary_key = true;
+        Ok(outcome)
+    }
+
+    fn read_index(
+        &mut self,
+        pcb_index: usize,
+        index: &str,
+        op: ReadOp,
+        raw_ssas: &[&[u8]],
+    ) -> Result<ReadOutcome, String> {
+        if op.base() == ReadOp::Gnp {
+            return Ok(ReadOutcome::empty(Status::NotAllowed));
+        }
+        if raw_ssas.len() > 1 {
+            return Err("index PCB GU/GN accepts at most one pointer SSA".into());
+        }
+        let (pointer, key_field, _) = self
+            .database
+            .index_pointer(index)
+            .map_err(|error| error.to_string())?;
+        let pcb = &self.psb.pcbs[pcb_index];
+        if !pcb.sensitive_segments.is_empty() && !pcb.sensitive_segments.contains(&pointer) {
+            return Err(format!("PCB is not sensitive to {pointer}"));
+        }
+        let search = if let Some(raw) = raw_ssas.first() {
+            let dbd = self.database.definition(index).ok_or("missing index DBD")?;
+            let ssa = Ssa::parse(raw, &dbd)?;
+            if ssa.segment != pointer {
+                return Err(format!("index PCB SSA must name {pointer}"));
+            }
+            match ssa.condition {
+                Some((field, value)) if field == key_field => Some(value),
+                Some(_) => return Err(format!("index PCB SSA requires the full {key_field} key")),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let position = &mut self.positions[pcb_index];
+        position.held = None;
+        if op.base() == ReadOp::Gu || position.exhausted {
+            position.secondary = None;
+            position.exhausted = false;
+        }
+        let after = if op.base() == ReadOp::Gn {
+            position
+                .secondary
+                .as_ref()
+                .map(|(key, id)| (key.as_slice(), *id))
+        } else {
+            None
+        };
+        let entry = self
+            .transaction
+            .secondary_pointer_entry(index, search.as_deref(), after)
+            .map_err(|error| error.to_string())?;
+        let Some((key, source_id, _)) = entry else {
+            if op.base() == ReadOp::Gn {
+                position.exhausted = true;
+            }
+            return Ok(ReadOutcome::empty(
+                if search.is_some() || op.base() == ReadOp::Gu {
+                    Status::NotFound
+                } else {
+                    Status::End
+                },
+            ));
+        };
+        position.secondary = Some((key.clone(), source_id));
+        position.current = None;
+        position.parent = None;
+        position.last_deleted = None;
+        let record = Record {
+            id: source_id,
+            dbd: index.to_string(),
+            segment: pointer,
+            parent: None,
+            root_key: key.clone(),
+            key: key.clone(),
+            data: key,
+        };
+        Ok(ReadOutcome::found(record, Status::Ok))
+    }
+
+    fn read_senseg_index(
+        &mut self,
+        pcb_index: usize,
+        index: &str,
+        length: usize,
+        op: ReadOp,
+        raw: &[u8],
+    ) -> Result<ReadOutcome, String> {
+        if raw.len() != 20 + length
+            || (&raw[17..19] != b"EQ" && &raw[17..19] != b"= ")
+            || raw[19 + length] != b')'
+        {
+            return Err(format!("{index}: invalid secondary search SSA"));
+        }
+        let position = &mut self.positions[pcb_index];
+        position.current = None;
+        position.parent = None;
+        position.held = None;
+        position.exhausted = false;
+        position.last_deleted = None;
+        let entry = self
+            .transaction
+            .secondary_entry(index, Some(&raw[19..19 + length]), None)
+            .map_err(|error| error.to_string())?;
+        let Some((_, _, record)) = entry else {
+            return Ok(ReadOutcome::empty(Status::NotFound));
+        };
+        let record = self
+            .transaction
+            .record(record.id)
+            .ok_or("indexed target was deleted")?;
+        let record = if op.is_hold() {
+            self.transaction
+                .hold(record.id, self.lock_timeout)
+                .map_err(|error| error.to_string())?
+        } else {
+            record
+        };
+        position.current = Some(record.id);
+        position.parent = Some(record.id);
+        if op.is_hold() {
+            position.held = Some(record.id);
+        }
+        Ok(ReadOutcome::found(record, Status::Ok))
     }
 }
 

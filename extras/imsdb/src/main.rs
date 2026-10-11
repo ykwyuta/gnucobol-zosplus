@@ -88,6 +88,12 @@ fn run() -> Result<(), String> {
             let record = db.get(&name, None, segment, &hex(key)?).ok_or("record not found")?;
             println!("{} {}", record.id, display_hex(&record.data));
         }
+        [_, command, wal, dbd_dir, index_dbd, key] if command == "get-secondary" => {
+            let db = Database::open(wal, load_dbds(dbd_dir)?).map_err(|e| e.to_string())?;
+            let record = db.secondary_lookup(index_dbd, &hex(key)?).map_err(|e| e.to_string())?
+                .ok_or("secondary key not found")?;
+            println!("{} {}", record.id, display_hex(&record.data));
+        }
         [_, command, wal, dbd_file] if command == "count" => {
             let db = Database::open(wal, load_dbds(dbd_file)?).map_err(|e| e.to_string())?;
             println!("{}", db.count());
@@ -260,7 +266,7 @@ fn run() -> Result<(), String> {
             file.sync_all().map_err(|e| e.to_string())?;
             println!("exported {} records", records.len());
         }
-        _ => return Err("usage: imsdbctl inspect DBD... [PSB...] | put-root WAL DBD SEGMENT RECORD_HEX | get-root WAL DBD SEGMENT KEY_HEX | count WAL DBD | latest-checkpoint WAL DBD | import-fixed WAL DBD SEGMENT FILE | import-dfsurgu0 WAL DBD FILE | split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT | import-csv WAL DBD SEGMENT FILE | import-csv-bundle WAL DBD_DIR DATA_DIR | export-fixed WAL DBD SEGMENT FILE".into()),
+        _ => return Err("usage: imsdbctl inspect DBD... [PSB...] | put-root WAL DBD SEGMENT RECORD_HEX | get-root WAL DBD SEGMENT KEY_HEX | get-secondary WAL DBD_DIR INDEX_DBD KEY_HEX | count WAL DBD | latest-checkpoint WAL DBD | import-fixed WAL DBD SEGMENT FILE | import-dfsurgu0 WAL DBD FILE | split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT | import-csv WAL DBD SEGMENT FILE | import-csv-bundle WAL DBD_DIR DATA_DIR | export-fixed WAL DBD SEGMENT FILE".into()),
     }
     Ok(())
 }

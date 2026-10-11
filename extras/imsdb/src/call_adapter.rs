@@ -262,9 +262,18 @@ impl CallAdapter {
             .iter()
             .find(|d| d.name == dbd_name)
             .ok_or("missing DBD")?;
+        let secondary = self.session.indexed_fields(pcb_index)?;
         let normalized = ssas
             .iter()
-            .map(|ssa| normalize_ssa(ssa, dbd, self.pcb_encoding, self.numeric_byte_order))
+            .map(|ssa| {
+                normalize_ssa(
+                    ssa,
+                    dbd,
+                    &secondary,
+                    self.pcb_encoding,
+                    self.numeric_byte_order,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let refs: Vec<&[u8]> = normalized.iter().map(Vec::as_slice).collect();
         self.call(pcb_index, function, pcb_bytes, io_area, &refs)
@@ -349,7 +358,9 @@ impl CallAdapter {
                 io_area[..record.data.len()].copy_from_slice(&converted);
             }
         }
-        convert_key_feedback(dbd, &mut outcome, self.numeric_byte_order)?;
+        if !outcome.secondary_key {
+            convert_key_feedback(dbd, &mut outcome, self.numeric_byte_order)?;
+        }
         if let Some(name) = &outcome.segment_name {
             self.current_segments[pcb_index] = Some(name.clone());
         } else if function.read().is_some() {
@@ -363,6 +374,7 @@ impl CallAdapter {
 fn normalize_ssa(
     raw: &[u8],
     dbd: &Dbd,
+    secondary: &[(String, String, usize)],
     encoding: PcbEncoding,
     order: NumericByteOrder,
 ) -> Result<Vec<u8>, String> {
@@ -386,18 +398,37 @@ fn normalize_ssa(
         let field = std::str::from_utf8(&normalized[9..17])
             .map_err(|_| "invalid SSA field name")?
             .trim();
-        let field = dbd
+        let physical = dbd
             .segment(segment)
-            .and_then(|segment| segment.fields.iter().find(|f| f.name == field))
-            .ok_or_else(|| format!("unknown SSA field {segment}/{field}"))?;
-        let close = 19 + field.bytes;
+            .and_then(|segment| segment.fields.iter().find(|f| f.name == field));
+        let mut matching = secondary
+            .iter()
+            .filter(|(target, name, _)| target == segment && name == field);
+        let selected = matching.next();
+        if matching.next().is_some() {
+            return Err(format!("ambiguous secondary SSA field {segment}/{field}"));
+        }
+        let (length, numeric) = if let Some((_, _, bytes)) = selected {
+            (
+                *bytes,
+                physical.is_some_and(|def| {
+                    def.bytes == *bytes && matches!(def.datatype.as_deref(), Some("INT" | "LONG"))
+                }),
+            )
+        } else if let Some(def) = physical {
+            (
+                def.bytes,
+                matches!(def.datatype.as_deref(), Some("INT" | "LONG")),
+            )
+        } else {
+            return Err(format!("unknown SSA field {segment}/{field}"));
+        };
+        let close = 19 + length;
         let byte = normalized
             .get_mut(close)
             .ok_or("SSA value is shorter than DBD field")?;
         *byte = encoding.decode_control(*byte);
-        if order == NumericByteOrder::Little
-            && matches!(field.datatype.as_deref(), Some("INT" | "LONG"))
-        {
+        if order == NumericByteOrder::Little && numeric {
             normalized[19..close].reverse();
         }
     }

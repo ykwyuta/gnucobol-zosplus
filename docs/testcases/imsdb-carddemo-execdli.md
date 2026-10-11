@@ -38,6 +38,16 @@ wsl --exec sh /mnt/d/workspace/gnucobol/extras/imsdb/test-carddemo-load.sh
 
 `split-dfsurgu0` が原本アンロードから100バイトの親と、親の6バイトキーを付けた206バイトの子レコードを作る。無修正 `PAUDBLOD.CBL` を起動して全件を投入し、別のCOBOLプログラムで親22件・子202件を読み戻す。期待する表示は `IMS CARDDEMO LOAD 22 ROOTS 202 CHILDREN OK`。
 
+同じスクリプトは先頭の親キーを `imsdbctl get-secondary` に渡し、`DBPAUTX0` から返る親本文が固定長入力の100バイトと一致することを確認する。Rust の参照資材試験は原本224セグメントを投入し、22件の親キーすべてについて二次索引照会とWAL再読込後の照会を確認する。
+
+同じロード試験では、一時 PSB に `DBDNAME=DBPAUTP0,PROCSEQ=DBPAUTX0` を定義し、[COBOL 試験プログラム](../../extras/imsdb/tests/carddemo-procseq.cob)を `CBLTDLI` 経由で実行する。`GN` が索引順で親22件を返し、先頭キーの修飾 `GU` が同じ親を返すことを確認する。期待する表示は `IMS CARDDEMO PROCSEQ 22 ROOTS OK`。Rust の `procseq_gu_and_gn_use_secondary_order_and_see_pending_changes` は検索順序、未確定の挿入・更新・削除、ロールバックを確認する。`procseq_call_boundary_accepts_ebcdic_ssa_controls_and_raw_search_bytes` は IBM-037 の SSA 制御文字と生の索引値を確認する。原本参照試験は22件すべてを `PROCSEQ` の修飾 `GU` で取得し、`GN` の索引順を確認する。
+
+続けて一時 PSB に `DBDNAME=DBPAUTX0` を定義し、[索引 PCB の COBOL 試験](../../extras/imsdb/tests/carddemo-indexpcb.cob)を実行する。`GN` が `PAUTINDX` の6バイトのポインター22件を返し、完全キーの修飾 `GU` が先頭ポインターを返すことを確認する。期待する表示は `IMS CARDDEMO INDEX PCB 22 POINTERS OK`。Rust の `direct_index_pcb_reads_complete_pointer_keys_only` は `SRCH` と `SUBSEQ` を連結した完全キーだけで `GU` でき、短いキーは拒否され、直接 PCB からの書込みは拒否されることを確認する。
+
+物理順 PCB の `SENSEG INDICES=DBPAUTX0` も一時 PSB で定義し、[COBOL 試験](../../extras/imsdb/tests/carddemo-indices.cob)を実行する。親22件の `GN` と索引フィールドを使った修飾 `GU` を確認し、`IMS CARDDEMO INDICES 22 ROOTS OK` を期待する。Rust の `senseg_indices_gu_uses_secondary_key_but_gn_keeps_physical_order` は索引検索後の `GN` が物理順であること、IBM-037 の境界試験は SSA の制御文字と物理キーフィードバックを確認する。
+
+Rust の `xdfld_child_search_and_subsequence_resolve_parent` 試験は、`XDFLD SEGMENT=CHILD,SRCH=(NAME,CITY),SUBSEQ=SEQNO` から子の複合キーを作り、索引照会で親を返す。子の `REPL`、`DLET`、WAL再読込後の索引更新も確認する。
+
 原本アンロードプログラムの出力は次を実行する。
 
 ```powershell

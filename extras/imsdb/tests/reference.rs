@@ -1,7 +1,119 @@
 use imsdb::call_adapter::{CallAdapter, DliFunction, NumericByteOrder, PcbEncoding};
+use imsdb::catalog::parse_psb;
 use imsdb::csv_load::encode_root_csv;
 use imsdb::dli::{ReadOp, Session, Status, WriteOp};
+use imsdb::unload::parse_dfsurgu0;
 use imsdb::{Database, Dbd, Psb};
+
+#[test]
+#[ignore = "requires CardDemo reference assets"]
+fn carddemo_secondary_index_matches_original_unload() {
+    let base = "reference/aws-mainframe-modernization-carddemo/app/app-authorization-ims-db2-mq";
+    let primary = Dbd::from_file(reference(&format!("{base}/ims/DBPAUTP0.dbd"))).unwrap();
+    let index = Dbd::from_file(reference(&format!("{base}/ims/DBPAUTX0.dbd"))).unwrap();
+    let input = std::fs::read(reference(&format!(
+        "{base}/data/EBCDIC/AWS.M2.CARDDEMO.IMSDATA.DBPAUTP0.dat"
+    )))
+    .unwrap();
+    let rows = parse_dfsurgu0(&input, &primary).unwrap();
+    let wal = temporary_wal("card-secondary");
+    let db = Database::open(&wal, vec![primary.clone(), index.clone()]).unwrap();
+    let mut ids = Vec::new();
+    let mut tx = db.begin();
+    let mut root_keys = Vec::new();
+    for row in rows {
+        if row.parent_index.is_none() {
+            root_keys.push(row.data[..6].to_vec());
+        }
+        let parent = row.parent_index.map(|index| ids[index]);
+        ids.push(
+            tx.insert(
+                "DBPAUTP0",
+                &row.segment,
+                parent,
+                row.data,
+                Duration::from_secs(1),
+            )
+            .unwrap(),
+        );
+    }
+    tx.commit().unwrap();
+    assert_eq!(ids.len(), 224);
+    assert_eq!(root_keys.len(), 22);
+    for key in &root_keys {
+        let record = db.secondary_lookup("DBPAUTX0", key).unwrap().unwrap();
+        assert_eq!(record.segment, "PAUTSUM0");
+        assert_eq!(&record.data[..6], key);
+    }
+    let psb = parse_psb(" PCB TYPE=DB,DBDNAME=DBPAUTP0,PROCOPT=G,PROCSEQ=DBPAUTX0,KEYLEN=6\n SENSEG NAME=PAUTSUM0,PARENT=0\n PSBGEN PSBNAME=IDXPAUT,LANG=COBOL\n END\n").unwrap();
+    let mut adapter = CallAdapter::new(db.clone(), psb, PcbEncoding::Ascii).unwrap();
+    let mut pcb = [0u8; 42];
+    let mut io = [0u8; 100];
+    for key in &root_keys {
+        let mut ssa = b"PAUTSUM0(ACCNTID EQ".to_vec();
+        ssa.extend_from_slice(key);
+        ssa.push(b')');
+        assert_eq!(
+            adapter
+                .call(0, DliFunction::Gu, &mut pcb, &mut io, &[&ssa])
+                .unwrap(),
+            Status::Ok
+        );
+        assert_eq!(&io[..6], key);
+        assert_eq!(&pcb[36..42], key);
+    }
+    let mut observed = Vec::new();
+    let mut session = Session::new(db.clone(), parse_psb(" PCB TYPE=DB,DBDNAME=DBPAUTP0,PROCOPT=G,PROCSEQ=DBPAUTX0,KEYLEN=6\n SENSEG NAME=PAUTSUM0,PARENT=0\n PSBGEN PSBNAME=IDXPAUT,LANG=COBOL\n END\n").unwrap()).unwrap();
+    loop {
+        let outcome = session.read(0, ReadOp::Gn, &[]).unwrap();
+        if outcome.status == Status::End {
+            break;
+        }
+        observed.push(outcome.record.unwrap().root_key);
+    }
+    assert_eq!(observed.len(), 22);
+    assert!(observed.windows(2).all(|pair| pair[0] <= pair[1]));
+    let direct_psb = parse_psb(" PCB TYPE=DB,DBDNAME=DBPAUTX0,PROCOPT=G,KEYLEN=6\n SENSEG NAME=PAUTINDX,PARENT=0\n PSBGEN PSBNAME=PTRPAUT,LANG=COBOL\n END\n").unwrap();
+    let mut direct = CallAdapter::new(db.clone(), direct_psb, PcbEncoding::Ascii).unwrap();
+    let mut pointer_pcb = [0u8; 42];
+    let mut pointer_io = [0u8; 6];
+    for key in &root_keys {
+        let mut ssa = b"PAUTINDX(INDXSEQ EQ".to_vec();
+        ssa.extend_from_slice(key);
+        ssa.push(b')');
+        assert_eq!(
+            direct
+                .call(
+                    0,
+                    DliFunction::Gu,
+                    &mut pointer_pcb,
+                    &mut pointer_io,
+                    &[&ssa]
+                )
+                .unwrap(),
+            Status::Ok
+        );
+        assert_eq!(pointer_io.as_slice(), key);
+        assert_eq!(&pointer_pcb[36..42], key);
+    }
+    let mut direct_session = Session::new(db.clone(), parse_psb(" PCB TYPE=DB,DBDNAME=DBPAUTX0,PROCOPT=G,KEYLEN=6\n SENSEG NAME=PAUTINDX,PARENT=0\n PSBGEN PSBNAME=PTRPAUT,LANG=COBOL\n END\n").unwrap()).unwrap();
+    let mut pointer_count = 0;
+    while direct_session.read(0, ReadOp::Gn, &[]).unwrap().status != Status::End {
+        pointer_count += 1;
+    }
+    assert_eq!(pointer_count, 22);
+    drop(direct);
+    drop(direct_session);
+    drop(adapter);
+    drop(session);
+    drop(db);
+    let db = Database::open(&wal, vec![primary, index]).unwrap();
+    for key in &root_keys {
+        assert!(db.secondary_lookup("DBPAUTX0", key).unwrap().is_some());
+    }
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
 
 #[test]
 #[ignore = "requires CardDemo reference assets"]

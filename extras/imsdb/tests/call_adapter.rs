@@ -6,6 +6,126 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DBD: &str = " DBD NAME=TEST,ENCODING=Cp1047,ACCESS=(HIDAM,VSAM)\n SEGM NAME=ROOT,PARENT=0,BYTES=6\n FIELD NAME=(ID,SEQ,U),START=1,BYTES=2,TYPE=P\n DBDGEN\n END\n";
 const PSB: &str = " PCB TYPE=DB,DBDNAME=TEST,PROCOPT=AP,KEYLEN=2\n SENSEG NAME=ROOT,PARENT=0\n PSBGEN PSBNAME=TESTPSB,LANG=COBOL\n END\n";
+const PRIMARY_INDEXED: &str = " DBD NAME=PRIMARY,ACCESS=(HIDAM,VSAM)\n SEGM NAME=ROOT,PARENT=0,BYTES=6\n FIELD NAME=(ID,SEQ,U),START=1,BYTES=2,TYPE=P\n FIELD NAME=ALT,START=3,BYTES=2,TYPE=C\n LCHILD NAME=(PTR,SECOND),POINTER=INDX\n XDFLD NAME=XALT,SRCH=ALT\n DBDGEN\n END\n";
+const SECONDARY: &str = " DBD NAME=SECOND,ACCESS=(INDEX,VSAM)\n SEGM NAME=PTR,PARENT=0,BYTES=2\n FIELD NAME=(ALTKEY,SEQ,U),START=1,BYTES=2,TYPE=C\n LCHILD NAME=(ROOT,PRIMARY),INDEX=XALT\n DBDGEN\n END\n";
+const INDEX_PSB: &str = " PCB TYPE=DB,DBDNAME=PRIMARY,PROCOPT=G,PROCSEQ=SECOND,KEYLEN=2\n SENSEG NAME=ROOT,PARENT=0\n PSBGEN PSBNAME=IDXPSB,LANG=COBOL\n END\n";
+const SENSEG_INDEX_PSB: &str = " PCB TYPE=DB,DBDNAME=PRIMARY,PROCOPT=G,KEYLEN=2\n SENSEG NAME=ROOT,PARENT=0,INDICES=SECOND\n PSBGEN PSBNAME=PHYPSB,LANG=COBOL\n END\n";
+
+#[test]
+fn senseg_indices_decodes_ebcdic_ssa_and_keeps_physical_feedback_key() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let wal =
+        std::env::temp_dir().join(format!("imsdb-indices-{}-{stamp}.wal", std::process::id()));
+    let db = Database::open(
+        &wal,
+        vec![
+            parse_dbd(PRIMARY_INDEXED).unwrap(),
+            parse_dbd(SECONDARY).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut seed = db.begin();
+    seed.insert(
+        "PRIMARY",
+        "ROOT",
+        None,
+        vec![1, 0x0c, 0xc1, 0xc2, 0, 0],
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    seed.commit().unwrap();
+    let mut adapter = CallAdapter::new(
+        db.clone(),
+        parse_psb(SENSEG_INDEX_PSB).unwrap(),
+        PcbEncoding::Cp1047,
+    )
+    .unwrap();
+    let mut pcb = vec![0; 38];
+    let mut io = vec![0; 6];
+    let mut ssa = PcbEncoding::Cp1047
+        .encode_control(b"ROOT    (XALT    EQ")
+        .unwrap();
+    ssa.extend_from_slice(&[0xc1, 0xc2]);
+    ssa.extend(PcbEncoding::Cp1047.encode_control(b")").unwrap());
+    assert_eq!(
+        adapter
+            .call_encoded(
+                0,
+                &PcbEncoding::Cp1047.encode_control(b"GU  ").unwrap(),
+                &mut pcb,
+                &mut io,
+                &[&ssa]
+            )
+            .unwrap(),
+        Status::Ok
+    );
+    assert_eq!(&io[2..4], &[0xc1, 0xc2]);
+    assert_eq!(&pcb[36..38], &[1, 0x0c]);
+    drop(adapter);
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
+
+#[test]
+fn procseq_call_boundary_accepts_ebcdic_ssa_controls_and_raw_search_bytes() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let wal =
+        std::env::temp_dir().join(format!("imsdb-procseq-{}-{stamp}.wal", std::process::id()));
+    let db = Database::open(
+        &wal,
+        vec![
+            parse_dbd(PRIMARY_INDEXED).unwrap(),
+            parse_dbd(SECONDARY).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut seed = db.begin();
+    seed.insert(
+        "PRIMARY",
+        "ROOT",
+        None,
+        vec![1, 0x0c, 0xc1, 0xc2, 0, 0],
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    seed.commit().unwrap();
+    let mut adapter = CallAdapter::new(
+        db.clone(),
+        parse_psb(INDEX_PSB).unwrap(),
+        PcbEncoding::Cp1047,
+    )
+    .unwrap();
+    let mut pcb = vec![0; 38];
+    let mut io = vec![0; 6];
+    let mut ssa = PcbEncoding::Cp1047
+        .encode_control(b"ROOT    (XALT    EQ")
+        .unwrap();
+    ssa.extend_from_slice(&[0xc1, 0xc2]);
+    ssa.extend(PcbEncoding::Cp1047.encode_control(b")").unwrap());
+    assert_eq!(
+        adapter
+            .call_encoded(
+                0,
+                &PcbEncoding::Cp1047.encode_control(b"GU  ").unwrap(),
+                &mut pcb,
+                &mut io,
+                &[&ssa]
+            )
+            .unwrap(),
+        Status::Ok
+    );
+    assert_eq!(&io[2..4], &[0xc1, 0xc2]);
+    assert_eq!(&pcb[36..38], &[0xc1, 0xc2]);
+    drop(adapter);
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
 
 #[test]
 fn call_boundary_writes_pcb_feedback_and_preserves_raw_segment_bytes() {
