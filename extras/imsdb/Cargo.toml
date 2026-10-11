@@ -1,0 +1,15 @@
+[package]
+name = "imsdb"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "imsdb"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "imsdbctl"
+path = "src/main.rs"
+
+[dependencies]

@@ -125,6 +125,7 @@ cobc_print_usage_common_options (void)
 	puts (_("  --db2-sql             translate fixed-format EXEC SQL before compilation"));
 	puts (_("  --postgres-sql        translate fixed-format EXEC SQL for PostgreSQL"));
 	puts (_("  --cics-map=<copybook> translate fixed-format EXEC CICS using a BMS symbolic map"));
+	puts (_("  --ims-dli=<DBD>      translate fixed-format EXEC DLI using an IMS DBD name"));
 	puts (_("  --copy <copybook>     include <copybook> at beginning of file,\n"
                 "                        as would COPY copybook."));
 	puts (_("  -L <directory>        add <directory> to library search path"));

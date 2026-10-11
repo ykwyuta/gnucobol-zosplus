@@ -81,6 +81,37 @@ class CicsPreprocessTests(unittest.TestCase):
         self.assertIn("MOVE WS-FILE", read)
         self.assertIn('CALL STATIC "COBCICS_FILE_READ"', read)
 
+    def test_xctl_passes_commarea_and_does_not_resume_caller(self):
+        translated = "".join(MODULE.statement(
+            "XCTL PROGRAM(NEXT-PROGRAM) COMMAREA(DFHCOMMAREA)",
+            self.maps, False, None, "CURRENT", None))
+        self.assertIn("CALL NEXT-PROGRAM USING DFHCOMMAREA", translated)
+        self.assertIn('CALL STATIC "COBCICS_LINK_EXIT"', translated)
+        self.assertIn('CALL STATIC "COBCICS_RETURN"', translated)
+        self.assertTrue(translated.rstrip().endswith("GOBACK"))
+        self.assertNotIn("COBCICS_REQUIRE_NORMAL", translated)
+        with self.assertRaisesRegex(MODULE.CicsError,
+                                    "unsupported XCTL option: SYNCONRETURN"):
+            MODULE.statement("XCTL PROGRAM('NEXT') COMMAREA(DATA) "
+                             "SYNCONRETURN", self.maps, False)
+
+    def test_carddemo_ims_cics_options(self):
+        received = "".join(MODULE.statement(
+            "RECEIVE MAP('BNK1ME') INTO(BNK1MEI) NOHANDLE",
+            self.maps, False))
+        self.assertIn("COBCICS_RECEIVE_STATUS", received)
+        self.assertNotIn("COBCICS_REQUIRE_NORMAL", received)
+        timestamp = "".join(MODULE.statement(
+            "FORMATTIME ABSTIME(NOW-TIME) YYDDD(DAY) "
+            "TIME(CLOCK) MILLISECONDS(MILLIS)", self.maps, False))
+        self.assertIn("COBCICS_FORMATTIME_YYDDD", timestamp)
+        self.assertIn("MILLIS", timestamp)
+        queue = "".join(MODULE.statement(
+            "WRITEQ TD QUEUE('CSSL') FROM(MSG) NOHANDLE",
+            self.maps, False))
+        self.assertIn('MOVE "CSSL    " TO COBCICS-QUEUE-NAME', queue)
+        self.assertNotIn("COBCICS_REQUIRE_NORMAL", queue)
+
     def test_fixed_columns_preserved_when_rewriting_dfhresp(self):
         line = ("000100     IF EIBRESP = DFHRESP(NORMAL)".ljust(72)
                 + "12345678\n")
@@ -279,6 +310,11 @@ class CicsPreprocessTests(unittest.TestCase):
                         joined.index('COBCICS_SET_IMMEDIATE'))
         self.assertLess(joined.index('COBCICS_SET_IMMEDIATE'),
                         joined.index('COBCICS_RETURN'))
+
+    def test_return_accepts_variable_transid(self):
+        output = MODULE.statement("RETURN TRANSID(WS-CICS-TRANID) COMMAREA(AREA)",
+                                  self.maps, False)
+        self.assertIn("USING WS-CICS-TRANID AREA COBCICS-LENGTH", "".join(output))
 
     def test_bank_menu_all_cics_blocks_translate(self):
         source = (ROOT / "reference" / "Bank-of-Z-main" / "src" /

@@ -31,7 +31,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn unhex(text: &str) -> Result<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return Err("odd SQL hex record".to_string());
     }
     text.as_bytes()
@@ -193,7 +193,7 @@ pub(super) fn replace(
     layout: Layout,
     bytes: &[u8],
 ) -> Result<()> {
-    if layout.lrecl == 0 || bytes.len() % layout.lrecl != 0 {
+    if layout.lrecl == 0 || !bytes.len().is_multiple_of(layout.lrecl) {
         return Err("SQL VSAM input is not fixed-length FB".to_string());
     }
     match profile.vsam_backend.as_str() {

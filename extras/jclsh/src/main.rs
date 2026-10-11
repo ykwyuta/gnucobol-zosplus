@@ -7,6 +7,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod datasets;
+mod ims;
 mod jcl;
 mod records;
 mod utilities;
@@ -71,6 +72,10 @@ struct Profile {
     plan: String,
     library: String,
     programs: HashMap<String, PathBuf>,
+    ims_psbs: HashMap<String, PathBuf>,
+    ims_dbd_dir: Option<PathBuf>,
+    ims_wal: Option<PathBuf>,
+    ims_cbltdli: Option<PathBuf>,
     proclibs: HashMap<String, PathBuf>,
     datasets: HashMap<String, PathBuf>,
     dataset_root: PathBuf,
@@ -90,6 +95,7 @@ fn read_profile(path: &Path) -> Result<Profile> {
         fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut values = HashMap::new();
     let mut programs = HashMap::new();
+    let mut ims_psbs = HashMap::new();
     let mut proclibs = HashMap::new();
     let mut datasets = HashMap::new();
     let mut site = HashMap::new();
@@ -107,6 +113,15 @@ fn read_profile(path: &Path) -> Result<Profile> {
             if programs.insert(name, PathBuf::from(value.trim())).is_some() {
                 return Err(format!(
                     "{}:{}: duplicate program",
+                    path.display(),
+                    index + 1
+                ));
+            }
+        } else if let Some(name) = key.strip_prefix("ims_psb.") {
+            let name = identifier(name, index + 1)?;
+            if ims_psbs.insert(name, PathBuf::from(value.trim())).is_some() {
+                return Err(format!(
+                    "{}:{}: duplicate IMS PSB",
                     path.display(),
                     index + 1
                 ));
@@ -176,11 +191,17 @@ fn read_profile(path: &Path) -> Result<Profile> {
             let name = name.to_ascii_uppercase();
             let table = value.trim();
             if name.is_empty()
-                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b".$#@".contains(&b))
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".$#@".contains(&b))
                 || !vsam_sql::valid_table(table)
                 || vsam_tables.insert(name, table.to_string()).is_some()
             {
-                return Err(format!("{}:{}: invalid VSAM table mapping", path.display(), index + 1));
+                return Err(format!(
+                    "{}:{}: invalid VSAM table mapping",
+                    path.display(),
+                    index + 1
+                ));
             }
         } else if matches!(
             key,
@@ -198,6 +219,9 @@ fn read_profile(path: &Path) -> Result<Profile> {
                 | "vsam_postgres_database"
                 | "vsam_db2_image"
                 | "vsam_db2_helper"
+                | "ims_dbd_dir"
+                | "ims_wal"
+                | "ims_cbltdli"
         ) {
             if values
                 .insert(key.to_string(), value.trim().to_string())
@@ -224,12 +248,21 @@ fn read_profile(path: &Path) -> Result<Profile> {
             .cloned()
             .ok_or_else(|| format!("{}: missing profile key {key}", path.display()))
     };
-    let vsam_backend = values.get("vsam_backend").map(String::as_str).unwrap_or("local");
+    let vsam_backend = values
+        .get("vsam_backend")
+        .map(String::as_str)
+        .unwrap_or("local");
     if !matches!(vsam_backend, "local" | "db2" | "postgres") {
-        return Err(format!("{}: vsam_backend requires local, db2, or postgres", path.display()));
+        return Err(format!(
+            "{}: vsam_backend requires local, db2, or postgres",
+            path.display()
+        ));
     }
     if vsam_backend == "local" && !vsam_tables.is_empty() {
-        return Err(format!("{}: local VSAM cannot use vsam_table mappings", path.display()));
+        return Err(format!(
+            "{}: local VSAM cannot use vsam_table mappings",
+            path.display()
+        ));
     }
     Ok(Profile {
         image: required("image")?,
@@ -239,6 +272,10 @@ fn read_profile(path: &Path) -> Result<Profile> {
         plan: required("dsn_plan")?,
         library: required("dsn_library")?,
         programs,
+        ims_psbs,
+        ims_dbd_dir: values.get("ims_dbd_dir").map(PathBuf::from),
+        ims_wal: values.get("ims_wal").map(PathBuf::from),
+        ims_cbltdli: values.get("ims_cbltdli").map(PathBuf::from),
         proclibs,
         datasets,
         dataset_root: PathBuf::from(
@@ -251,16 +288,28 @@ fn read_profile(path: &Path) -> Result<Profile> {
         ld_library_path: required("ld_library_path")?,
         vsam_backend: vsam_backend.to_string(),
         vsam_tables,
-        vsam_postgres_container: values.get("vsam_postgres_container")
-            .cloned().unwrap_or_else(|| "gnucobol-pgsql-postgres-1".to_string()),
-        vsam_postgres_user: values.get("vsam_postgres_user")
-            .cloned().unwrap_or_else(|| "gcob".to_string()),
-        vsam_postgres_database: values.get("vsam_postgres_database")
-            .cloned().unwrap_or_else(|| "gcobpg".to_string()),
-        vsam_db2_image: values.get("vsam_db2_image")
-            .cloned().unwrap_or_else(|| "gnucobol-db2-build".to_string()),
-        vsam_db2_helper: PathBuf::from(values.get("vsam_db2_helper")
-            .map(String::as_str).unwrap_or("extras/jclsh/vsam_db2.py")),
+        vsam_postgres_container: values
+            .get("vsam_postgres_container")
+            .cloned()
+            .unwrap_or_else(|| "gnucobol-pgsql-postgres-1".to_string()),
+        vsam_postgres_user: values
+            .get("vsam_postgres_user")
+            .cloned()
+            .unwrap_or_else(|| "gcob".to_string()),
+        vsam_postgres_database: values
+            .get("vsam_postgres_database")
+            .cloned()
+            .unwrap_or_else(|| "gcobpg".to_string()),
+        vsam_db2_image: values
+            .get("vsam_db2_image")
+            .cloned()
+            .unwrap_or_else(|| "gnucobol-db2-build".to_string()),
+        vsam_db2_helper: PathBuf::from(
+            values
+                .get("vsam_db2_helper")
+                .map(String::as_str)
+                .unwrap_or("extras/jclsh/vsam_db2.py"),
+        ),
     })
 }
 
@@ -430,6 +479,40 @@ fn checked_file(workspace: &Path, relative: &Path, description: &str) -> Result<
     Ok(resolved)
 }
 
+fn checked_directory(workspace: &Path, relative: &Path, description: &str) -> Result<PathBuf> {
+    let resolved = fs::canonicalize(workspace.join(relative))
+        .map_err(|error| format!("{description} {}: {error}", relative.display()))?;
+    if !resolved.starts_with(workspace) || !resolved.is_dir() {
+        return Err(format!(
+            "{description} must be a directory inside workspace: {}",
+            relative.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+fn checked_output_path(workspace: &Path, relative: &Path, description: &str) -> Result<PathBuf> {
+    let name = relative
+        .file_name()
+        .ok_or_else(|| format!("{description} needs a filename"))?;
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let parent = fs::canonicalize(workspace.join(parent))
+        .map_err(|error| format!("{description} directory {}: {error}", parent.display()))?;
+    if !parent.starts_with(workspace) || !parent.is_dir() {
+        return Err(format!("{description} must be inside workspace"));
+    }
+    let path = parent.join(name);
+    if path.exists() {
+        let resolved = fs::canonicalize(&path)
+            .map_err(|error| format!("{description} {}: {error}", path.display()))?;
+        if !resolved.starts_with(workspace) || !resolved.is_file() {
+            return Err(format!("{description} must be a file inside workspace"));
+        }
+        return Ok(resolved);
+    }
+    Ok(path)
+}
+
 fn container_path(workspace: &Path, path: &Path) -> Result<String> {
     let relative = path
         .strip_prefix(workspace)
@@ -450,6 +533,7 @@ fn docker_host_path(path: &Path) -> String {
 struct PlannedStep {
     step: Step,
     dsn: Option<DsnRun>,
+    ims: Option<ims::ImsRun>,
     executable: Option<PathBuf>,
 }
 
@@ -482,10 +566,19 @@ fn plan_job(job: &Job, profile: &Profile, workspace: &Path) -> Result<Vec<Planne
         } else {
             None
         };
-        let program_name = dsn
-            .as_ref()
-            .map_or(step.pgm.as_str(), |dsn| dsn.program.as_str());
-        let executable = if utilities::is_builtin(program_name) {
+        let ims = if step.pgm == "DFSRRC00" {
+            Some(ims::parse_parm(step.parm.as_deref(), step.line)?)
+        } else {
+            None
+        };
+        let program_name = ims.as_ref().map_or_else(
+            || {
+                dsn.as_ref()
+                    .map_or(step.pgm.as_str(), |dsn| dsn.program.as_str())
+            },
+            |run| run.program.as_str(),
+        );
+        let executable = if ims.is_none() && utilities::is_builtin(program_name) {
             None
         } else {
             let program = profile.programs.get(program_name).ok_or_else(|| {
@@ -494,9 +587,30 @@ fn plan_job(job: &Job, profile: &Profile, workspace: &Path) -> Result<Vec<Planne
             checked_file(workspace, &profile.env_file, "Db2 env file")?;
             Some(checked_file(workspace, program, "registered program")?)
         };
+        if let Some(run) = &ims {
+            let psb = profile
+                .ims_psbs
+                .get(&run.psb)
+                .ok_or_else(|| format!("line {}: unregistered IMS PSB {}", step.line, run.psb))?;
+            checked_file(workspace, psb, "IMS PSB")?;
+            let dbd_dir = profile
+                .ims_dbd_dir
+                .as_ref()
+                .ok_or_else(|| format!("line {}: ims_dbd_dir is required", step.line))?;
+            checked_directory(workspace, dbd_dir, "IMS DBD directory")?;
+            let wal = profile
+                .ims_wal
+                .as_ref()
+                .ok_or_else(|| format!("line {}: ims_wal is required", step.line))?;
+            checked_output_path(workspace, wal, "IMS WAL")?;
+            if let Some(shim) = &profile.ims_cbltdli {
+                checked_file(workspace, shim, "IMS CBLTDLI shim")?;
+            }
+        }
         result.push(PlannedStep {
             step: step.clone(),
             dsn,
+            ims,
             executable,
         });
     }
@@ -521,6 +635,9 @@ fn print_plan(job: &Job, steps: &[PlannedStep], profile: &Profile, workspace: &P
                 "  DSN SYSTEM={} RUN PROGRAM={} PLAN={} LIB={}",
                 dsn.system, dsn.program, dsn.plan, dsn.library
             );
+        }
+        if let Some(ims) = &planned.ims {
+            println!("  IMS {} PROGRAM={} PSB={}", ims.mode, ims.program, ims.psb);
         }
         for condition in &planned.step.conditions {
             println!("  COND {condition:?}");
@@ -649,7 +766,9 @@ fn run_job(
                                 && !(step.pgm == "IEFBR14"
                                     && disposition.to_ascii_uppercase().contains("DELETE"))
                             {
-                                return Err(format!("SQL VSAM DD {name} is supported by IDCAMS/REPRO only"));
+                                return Err(format!(
+                                    "SQL VSAM DD {name} is supported by IDCAMS/REPRO only"
+                                ));
                             }
                         }
                     }
@@ -682,6 +801,43 @@ fn run_job(
             command.args(["-e", &format!("DB2_SCHEMA={}", profile.schema)]);
             if let Some(parm) = &step.parm {
                 command.args(["-e", &format!("JCL_PARM={parm}")]);
+            }
+            if let Some(ims) = &planned.ims {
+                let psb = checked_file(workspace, &profile.ims_psbs[&ims.psb], "IMS PSB")?;
+                let dbd_dir = checked_directory(
+                    workspace,
+                    profile
+                        .ims_dbd_dir
+                        .as_ref()
+                        .expect("planned IMS DBD directory"),
+                    "IMS DBD directory",
+                )?;
+                let wal = checked_output_path(
+                    workspace,
+                    profile.ims_wal.as_ref().expect("planned IMS WAL"),
+                    "IMS WAL",
+                )?;
+                command.args([
+                    "-e",
+                    &format!("COB_IMS_PSB={}", container_path(workspace, &psb)?),
+                ]);
+                command.args([
+                    "-e",
+                    &format!("COB_IMS_DBD_DIR={}", container_path(workspace, &dbd_dir)?),
+                ]);
+                command.args([
+                    "-e",
+                    &format!("COB_IMS_WAL={}", container_path(workspace, &wal)?),
+                ]);
+                command.args(["-e", &format!("COB_IMS_REGION={}", ims.mode)]);
+                command.args(["-e", "COB_IMS_AUTOCOMMIT=1"]);
+                if let Some(shim) = &profile.ims_cbltdli {
+                    let shim = checked_file(workspace, shim, "IMS CBLTDLI shim")?;
+                    command.args([
+                        "-e",
+                        &format!("COB_PRE_LOAD={}", container_path(workspace, &shim)?),
+                    ]);
+                }
             }
             command.args([
                 "-e",

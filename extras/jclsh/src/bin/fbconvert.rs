@@ -142,9 +142,9 @@ fn import(source: &Path, dataset: &Path, layout: Layout) -> Result<u64> {
             .write(true)
             .create_new(true)
             .open(&staged_meta)?;
-        write!(
+        writeln!(
             meta,
-            "FB\t{}\t{}\t{}\n",
+            "FB\t{}\t{}\t{}",
             layout.lrecl, layout.key_len, layout.key_offset
         )?;
         meta.sync_all()?;

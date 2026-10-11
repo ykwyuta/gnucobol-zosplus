@@ -4,6 +4,8 @@ Rust 製 JCL インタプリタ兼対話シェルです。Bank of Z の原本 `B
 
 各ステップの直接 `PGM=` または `IKJEFT01` の `DSN RUN PROGRAM(...)` はプロファイルの `program.NAME=...` に登録します。未登録プログラムと未マッピングのデータセット DD は計画段階でエラーになります。`COND` は比較が真ならステップをスキップします。通常の非ゼロ RC 後も後続ステップを判定します。ABEND 後は通常ステップをスキップし、`COND=EVEN` / `ONLY` と `IF ABEND` を評価します。ジョブ RC は実行した通常ステップの最大 RC と ABEND のローカル表現 16 の最大値です。`result.json` は実行済み／スキップ／ABEND と各 RC・ABEND コードを記録します。
 
+`PGM=DFSRRC00` は `PARM='BMP|DLI|DBB,プログラム名,PSB名'` を解析し、`program.NAME` に登録した実行ファイルを起動します。`ims_psb.NAME`、`ims_dbd_dir`、`ims_wal` と任意の `ims_cbltdli` をプロファイルに設定してください。このリポジトリで再ビルドした `libcob` と `CBLTDLI` shim を使う場合、正常終了で IMS 更新を確定し、非ゼロ RC では破棄します。元の IMS エントリーに PCB ポインターを自動で渡す機能はまだありません。[IMS DB の手順](../../docs/userguide/imsdb.md)に結合試験があります。
+
 DD データセットはジョブ専用の一時ファイルへ割り当て、`DISP` の `NEW` / `OLD` / `SHR` / `MOD` と通常／異常終了時の `PASS` / `KEEP` / `CATLG` / `DELETE` / `UNCATLG` を処理します。永続データセットの変更・削除は `dataset_root` 内に登録したパスに限ります。`JOBLIB` / `STEPLIB` は計画に表示するメタデータです。`IF` は RC、RUN、ABEND、ABENDCC の判定と AND / OR / NOT を扱います。`SYSTEM`、`PLAN`、`LIB` はプロファイルとの照合で、Db2 for z/OS のバインド操作ではありません。`IEFBR14`、`IEBGENER`、`IDCAMS`、`SORT`、`DFHCSDUP` は Rust 内蔵の互換機能を呼び出します。[対象 JCL と制限](../../docs/userguide/jcl-utilities.md)を参照してください。このリポジトリに資材がない IBM 提供 PROC の実行は引き続き対象外です。
 
 プロファイルの `proclib.データセット名=ディレクトリ` は `JCLLIB ORDER` に対応し、そのディレクトリのメンバー名または `メンバー名.jcl` を探索します。`dataset.データセット名=ファイル` は永続 DD の対応付け、`dataset_root=ディレクトリ` は変更可能な領域です。`site.名前=値` または CLI の `--set 名前=値` で原本にある `<名前>` を展開します。値を指定しないプレースホルダーは計画・実行時にエラーです。[設定例](tests/datasets.conf)を参照してください。
@@ -35,3 +37,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File extras/jclsh/test-utilities.
 WSL Ubuntu ではリポジトリのルートから `bash extras/jclsh/test-step-wsl.sh` で試験用アダプターの GCC ビルドと ABEND コードの受け渡しを確認できます。
 
 詳細な期待値は [Bank of Z のテストケース](../../docs/testcases/jcl-bnkstmt.md)、[複数ステップのテストケース](../../docs/testcases/jcl-multistep.md)、[データセット・ABEND のテストケース](../../docs/testcases/jcl-datasets-abend.md)に記載しています。プロファイルのパスはリポジトリのルートからの相対パスです。資格情報は Git 管理対象外の `.runtime.env` から Docker に渡します。
+CardDemo の IMS 原本 `UNLDPADB.JCL` と `LOADPADB.JCL` は
+`extras/imsdb/test-carddemo-jcl-cycle.ps1` で連続実行できます。JCL の
+[IBM の JCL 文フィールド仕様](https://www.ibm.com/docs/en/zos/2.5.0?topic=statements-jcl-statement-fields)に従い、73〜80桁の通し番号は解析対象から除外します。

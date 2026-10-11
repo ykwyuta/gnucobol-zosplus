@@ -322,6 +322,43 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
     formattime = re.fullmatch(r"FORMATTIME\b(.*)", body, re.I | re.S)
     if formattime:
         options = parse_options(formattime.group(1))
+        short_date = "YYDDD" if "YYDDD" in options else (
+            "YYMMDD" if "YYMMDD" in options else None)
+        if short_date:
+            allowed = {"ABSTIME", short_date, "TIME", "RESP", "RESP2"}
+            if short_date == "YYDDD":
+                allowed.add("MILLISECONDS")
+            unsupported = set(options) - allowed
+            if unsupported:
+                raise CicsError(f"unsupported FORMATTIME option: {sorted(unsupported)[0]}")
+            abstime = identifier(options.get("ABSTIME"), "ABSTIME")
+            date = identifier(options.get(short_date), short_date)
+            clock = identifier(options.get("TIME"), "TIME")
+            routine = ("COBCICS_FORMATTIME_YYDDD" if short_date == "YYDDD"
+                       else "COBCICS_FORMATTIME_YYMMDD")
+            lines = [f"           MOVE LENGTH OF {abstime}\n",
+                     "             TO COBCICS-LENGTH\n",
+                     f"           MOVE LENGTH OF {date}\n",
+                     "             TO COBCICS-DATE-CAPACITY\n",
+                     f"           MOVE LENGTH OF {clock}\n",
+                     "             TO COBCICS-TIME-CAPACITY\n",
+                     f'           CALL STATIC "{routine}"\n',
+                     f"             USING {abstime} COBCICS-LENGTH\n",
+                     f"                   {date}\n",
+                     "                   COBCICS-DATE-CAPACITY\n",
+                     f"                   {clock}\n",
+                     "                   COBCICS-TIME-CAPACITY\n"]
+            if short_date == "YYDDD":
+                milli = identifier(options.get("MILLISECONDS"), "MILLISECONDS")
+                lines.append(f"                   {milli}\n")
+            lines.append("                   EIBRESP EIBRESP2\n")
+            if "RESP" not in options and "RESP2" not in options:
+                lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
+                          '             USING EIBRESP\n']
+            lines += response_targets(options)
+            if period:
+                lines[-1] = lines[-1].rstrip() + ".\n"
+            return lines
         unsupported = set(options) - {"ABSTIME", "DDMMYYYY", "MMDDYYYY", "TIME", "DATESEP", "TIMESEP", "RESP", "RESP2"}
         if unsupported:
             raise CicsError(f"unsupported FORMATTIME option: {sorted(unsupported)[0]}")
@@ -388,8 +425,12 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         lines = []
         if "TRANSID" in options:
             raw = options["TRANSID"]
-            if raw is None or not re.fullmatch(r"'[A-Z0-9]{1,4}'", raw, re.I):
-                raise CicsError("TRANSID requires a 1-4 character literal")
+            if raw is None:
+                raise CicsError("TRANSID requires a literal or 4-byte area")
+            if re.fullmatch(r"'[A-Z0-9]{1,4}'", raw, re.I):
+                transid = f'"{raw[1:-1].upper():<4}"'
+            else:
+                transid = identifier(raw, "TRANSID")
             if "LENGTH" in options and "COMMAREA" not in options:
                 raise CicsError("RETURN LENGTH requires COMMAREA")
             area = identifier(options["COMMAREA"], "COMMAREA") if "COMMAREA" in options else "COBCICS-COMMAREA"
@@ -400,7 +441,6 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                 raise CicsError("invalid RETURN LENGTH")
             if length.isdigit() and int(length) > 2048:
                 raise CicsError("RETURN COMMAREA exceeds 2048 bytes")
-            transid = f'"{raw[1:-1].upper():<4}"'
             lines += [f"           MOVE {length} TO COBCICS-LENGTH\n",
                       '           CALL STATIC "COBCICS_SET_RETURN"\n',
                       f"             USING {transid} {area} COBCICS-LENGTH\n"]
@@ -626,7 +666,7 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         options = parse_options(queue.group(3))
         if kind == "TD" and verb != "WRITEQ":
             raise CicsError(f"unsupported {verb} TD")
-        allowed = {"QUEUE", "RESP", "RESP2"}
+        allowed = {"QUEUE", "RESP", "RESP2", "NOHANDLE"}
         if verb == "READQ":
             allowed |= {"INTO", "LENGTH", "ITEM", "NEXT"}
         elif verb == "WRITEQ":
@@ -636,7 +676,13 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         unsupported = set(options) - allowed
         if unsupported:
             raise CicsError(f"unsupported {verb} {kind} option: {sorted(unsupported)[0]}")
-        name = identifier(options.get("QUEUE"), "QUEUE")
+        if "NOHANDLE" in options and options["NOHANDLE"] is not None:
+            raise CicsError("NOHANDLE does not take a value")
+        raw_name = options.get("QUEUE")
+        if raw_name and re.fullmatch(r"'[A-Z0-9]{1,8}'", raw_name, re.I):
+            name = f'"{raw_name[1:-1].upper():<8}"'
+        else:
+            name = identifier(raw_name, "QUEUE")
         lines = [f"           MOVE {name} TO COBCICS-QUEUE-NAME\n"]
         if verb == "DELETEQ":
             lines += ['           CALL STATIC "COBCICS_TSQ_DELETE"\n',
@@ -696,7 +742,8 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                     r"LENGTH\s+OF\s+[A-Z][A-Z0-9-]*", raw_length, re.I):
                 lines += ["           MOVE COBCICS-QUEUE-LENGTH\n",
                           f"             TO {raw_length}\n"]
-        if "RESP" not in options and "RESP2" not in options:
+        if ("RESP" not in options and "RESP2" not in options and
+                "NOHANDLE" not in options):
             lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
                       '             USING EIBRESP\n']
         lines += response_targets(options)
@@ -948,17 +995,23 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         if period:
             lines[-1] = lines[-1].rstrip() + ".\n"
         return lines
-    linking = re.fullmatch(r"LINK\b(.*)", body, re.I | re.S)
+    linking = re.fullmatch(r"(LINK|XCTL)\b(.*)", body, re.I | re.S)
     if linking:
-        options = parse_options(linking.group(1))
-        unsupported = set(options) - {"PROGRAM", "COMMAREA", "LENGTH",
-                                      "RESP", "RESP2", "SYNCONRETURN"}
+        verb = linking.group(1).upper()
+        options = parse_options(linking.group(2))
+        allowed = {"PROGRAM", "COMMAREA", "LENGTH", "RESP", "RESP2",
+                   "NOHANDLE"}
+        if verb == "LINK":
+            allowed.add("SYNCONRETURN")
+        unsupported = set(options) - allowed
         if unsupported:
-            raise CicsError(f"unsupported LINK option: {sorted(unsupported)[0]}")
+            raise CicsError(f"unsupported {verb} option: {sorted(unsupported)[0]}")
         if options.get("SYNCONRETURN") is not None:
             raise CicsError("SYNCONRETURN does not take a value")
+        if options.get("NOHANDLE") is not None:
+            raise CicsError("NOHANDLE does not take a value")
         if "PROGRAM" not in options or "COMMAREA" not in options:
-            raise CicsError("LINK requires PROGRAM and COMMAREA")
+            raise CicsError(f"{verb} requires PROGRAM and COMMAREA")
         raw_program = options["PROGRAM"]
         if raw_program is None:
             raise CicsError("PROGRAM requires a COBOL name or literal")
@@ -990,7 +1043,11 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                   f"           CALL {program} USING {area}\n",
                   '           CALL STATIC "COBCICS_LINK_EXIT"\n',
                   "           MOVE ZERO TO EIBRESP EIBRESP2\n"]
-        lines += response_targets(options)
+        if verb == "XCTL":
+            lines += ['           CALL STATIC "COBCICS_RETURN"\n',
+                      "           GOBACK\n"]
+        else:
+            lines += response_targets(options)
         if period:
             lines[-1] = lines[-1].rstrip() + ".\n"
         if any(len(line.rstrip("\n")) > 72 for line in lines):
@@ -1080,7 +1137,7 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         raise CicsError(f"unsupported EXEC CICS command: {body.strip()}")
     verb = match.group(1).upper()
     options = parse_options("MAP" + match.group(2))
-    allowed = {"MAP", "MAPSET", "RESP", "RESP2",
+    allowed = {"MAP", "MAPSET", "RESP", "RESP2", "NOHANDLE",
                "FROM" if verb == "SEND" else "INTO"}
     if verb == "SEND":
         allowed |= {"ERASE", "DATAONLY", "ALARM", "FREEKB", "CURSOR", "MAPONLY"}
@@ -1089,6 +1146,8 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
     unsupported = set(options) - allowed
     if unsupported:
         raise CicsError(f"unsupported {verb} MAP option: {sorted(unsupported)[0]}")
+    if "NOHANDLE" in options and options["NOHANDLE"] is not None:
+        raise CicsError("NOHANDLE does not take a value")
     name = map_name(options.get("MAP"))
     if (name not in maps and verb == "SEND" and "MAPONLY" in options and
             expected_mapset and name == expected_mapset.upper() and len(maps) == 1):
@@ -1126,11 +1185,12 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                   f"             USING X'{mode}'\n",
                   '           CALL STATIC "COBCICS_RECEIVE_STATUS"\n',
                   '             USING EIBRESP EIBRESP2\n']
-        if mapfail_label:
+        if mapfail_label and "NOHANDLE" not in options:
             lines += ["           IF EIBRESP = 36\n",
                       f"             GO TO {mapfail_label}\n",
                       "           END-IF\n"]
-        if "RESP" not in options and "RESP2" not in options:
+        if ("RESP" not in options and "RESP2" not in options and
+                "NOHANDLE" not in options):
             lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
                       '             USING EIBRESP\n']
     else:

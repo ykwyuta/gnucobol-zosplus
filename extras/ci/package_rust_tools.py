@@ -12,6 +12,7 @@ TOOLS = {
     "jclsh": "jclsh",
     "fbconvert": "jclsh",
     "pl1c": "pl1c",
+    "imsdbctl": "imsdb",
 }
 
 
@@ -37,6 +38,11 @@ def main() -> None:
             files[f"pl1c/runtime/{source.name}"] = source
 
     files["jclsh/vsam_db2.py"] = ROOT / "extras" / "jclsh" / "vsam_db2.py"
+    files["bin/imsdli-preprocess.py"] = ROOT / "bin" / "imsdli-preprocess.py"
+    for name in ("cbltdli.c", "imsdb.h", "imsbatch.c"):
+        files[f"imsdb/{name}"] = ROOT / "extras" / "imsdb" / name
+    library = "imsdb.dll" if args.os == "Windows" else "libimsdb.so"
+    files[f"lib/{library}"] = ROOT / "extras" / "imsdb" / "target" / "release" / library
 
     with ZipFile(output, "w", compression=ZIP_DEFLATED, compresslevel=9) as archive:
         for destination, source in files.items():

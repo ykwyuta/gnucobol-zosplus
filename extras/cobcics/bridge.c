@@ -124,6 +124,9 @@ static struct container *find_container(struct channel *channel,
 #ifdef COBCICS_DB2SQL
 extern int DB2SQL_END_TASK(int commit);
 #endif
+#ifdef COBCICS_IMSDB
+extern int IMSDB_END_TASK(int commit);
+#endif
 #ifdef COBCICS_LOCAL_VSAM
 extern int cobcics_vsam_begin(void);
 extern int cobcics_vsam_prepare(void);
@@ -139,6 +142,9 @@ static int rollback_uow(void) {
 #ifdef COBCICS_DB2SQL
     if (DB2SQL_END_TASK(0) != 0) error = 1;
 #endif
+#ifdef COBCICS_IMSDB
+    if (IMSDB_END_TASK(0) != 0) error = 1;
+#endif
 #ifdef COBCICS_LOCAL_VSAM
     if (cobcics_vsam_finish(0) != 0) error = 1;
 #endif
@@ -151,6 +157,14 @@ static int commit_uow(void) {
 #endif
 #ifdef COBCICS_DB2SQL
     if (DB2SQL_END_TASK(1) != 0) {
+#ifdef COBCICS_LOCAL_VSAM
+        cobcics_vsam_finish(0);
+#endif
+        return 1;
+    }
+#endif
+#ifdef COBCICS_IMSDB
+    if (IMSDB_END_TASK(1) != 0) {
 #ifdef COBCICS_LOCAL_VSAM
         cobcics_vsam_finish(0);
 #endif
@@ -1063,8 +1077,10 @@ void COBCICS_CEELOCT(unsigned char *day_number, unsigned char *seconds,
         (unsigned)local->tm_mday) - days_from_civil(1582, 10, 14)));
     memset(seconds, 0, 8);
     char formatted[9];
-    snprintf(formatted, sizeof formatted, "%04d%02d%02d",
-             local->tm_year + 1900, local->tm_mon + 1, local->tm_mday);
+    if (local->tm_year < 0 || local->tm_year > 8099)
+        failure("CEELOCT year is out of range");
+    if (strftime(formatted, sizeof formatted, "%Y%m%d", local) != 8)
+        failure("CEELOCT formatting failed");
     memcpy(gregorian, formatted, 8);
 }
 
@@ -1223,6 +1239,86 @@ void COBCICS_FORMATTIME_MMDD_TIMESEP(const unsigned char *abstime,
     format_time(abstime, abstime_capacity, date, date_capacity,
                 clock, clock_capacity, separator, resp, resp2, 1,
                 *time_separator);
+}
+
+static void format_time_short(const unsigned char *abstime,
+                              const unsigned char *abstime_capacity,
+                              const unsigned char *date_capacity,
+                              const unsigned char *clock_capacity,
+                              unsigned char *milliseconds_out,
+                              unsigned char *resp, unsigned char *resp2,
+                              int day_of_year) {
+    if (!started || cobol_length(abstime_capacity) != 8 ||
+        cobol_length(date_capacity) < (day_of_year ? 5 : 6) ||
+        cobol_length(clock_capacity) < 6)
+        failure("invalid short FORMATTIME data area length");
+    uint64_t milliseconds;
+    if (!unpack_abstime(abstime, &milliseconds)) {
+        set_cobol_response(resp, 16);
+        set_cobol_response(resp2, 1);
+        return;
+    }
+    uint64_t days = milliseconds / 86400000ULL;
+    uint64_t seconds = milliseconds % 86400000ULL / 1000ULL;
+    int year;
+    unsigned month, day;
+    civil_from_days((int64_t)days - 25567, &year, &month, &day);
+    if (year < 1900 || year > 9999) {
+        set_cobol_response(resp, 16);
+        set_cobol_response(resp2, 1);
+        return;
+    }
+    char formatted_date[7], formatted_clock[7];
+    int written;
+    if (day_of_year) {
+        int ordinal = (int)((int64_t)days - 25567 -
+            days_from_civil(year, 1, 1) + 1);
+        written = snprintf(formatted_date, sizeof formatted_date,
+                           "%02d%03d", year % 100, ordinal);
+    } else {
+        written = snprintf(formatted_date, sizeof formatted_date,
+                           "%02d%02u%02u", year % 100, month, day);
+    }
+    if (written != (day_of_year ? 5 : 6) ||
+        snprintf(formatted_clock, sizeof formatted_clock, "%02llu%02llu%02llu",
+                 (unsigned long long)(seconds / 3600),
+                 (unsigned long long)(seconds / 60 % 60),
+                 (unsigned long long)(seconds % 60)) != 6 ||
+        cob_put_param_str(3, formatted_date) != 0 ||
+        cob_put_param_str(5, formatted_clock) != 0)
+        failure("short FORMATTIME formatting failed");
+    if (milliseconds_out)
+        set_cobol_response(milliseconds_out,
+                           (uint32_t)(milliseconds % 1000ULL));
+    set_cobol_response(resp, 0);
+    set_cobol_response(resp2, 0);
+}
+
+void COBCICS_FORMATTIME_YYDDD(const unsigned char *abstime,
+                               const unsigned char *abstime_capacity,
+                               unsigned char *date,
+                               const unsigned char *date_capacity,
+                               unsigned char *clock,
+                               const unsigned char *clock_capacity,
+                               unsigned char *milliseconds,
+                               unsigned char *resp, unsigned char *resp2) {
+    (void)date;
+    (void)clock;
+    format_time_short(abstime, abstime_capacity, date_capacity,
+                      clock_capacity, milliseconds, resp, resp2, 1);
+}
+
+void COBCICS_FORMATTIME_YYMMDD(const unsigned char *abstime,
+                                const unsigned char *abstime_capacity,
+                                unsigned char *date,
+                                const unsigned char *date_capacity,
+                                unsigned char *clock,
+                                const unsigned char *clock_capacity,
+                                unsigned char *resp, unsigned char *resp2) {
+    (void)date;
+    (void)clock;
+    format_time_short(abstime, abstime_capacity, date_capacity,
+                      clock_capacity, NULL, resp, resp2, 0);
 }
 
 void COBCICS_ABEND(const char *abcode, const unsigned char *length) {

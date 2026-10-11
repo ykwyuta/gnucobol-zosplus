@@ -125,6 +125,7 @@ enum compile_level {
 #define CB_FLAG_GETOPT_SOURCE_CODESET       29
 #define CB_FLAG_GETOPT_NSYMBOL              30
 #define CB_FLAG_GETOPT_CICS_MAP             31
+#define CB_FLAG_GETOPT_IMS_DLI              32
 
 /* Info display limits */
 #define	CB_IMSG_SIZE		24
@@ -486,6 +487,7 @@ static int		save_temps = 0;
 static int		cb_flag_db2_sql = 0;
 static int		cb_flag_postgres_sql = 0;
 static const char	*cb_cics_map = NULL;
+static const char	*cb_ims_dbd = NULL;
 static int		save_all_src = 0;
 static signed int	save_c_src = 0;
 static signed int	verbose_output = 0;
@@ -643,6 +645,7 @@ static const struct option long_options[] = {
 	{"db2-sql",		CB_NO_ARG, &cb_flag_db2_sql, 1},
 	{"postgres-sql",		CB_NO_ARG, &cb_flag_postgres_sql, 1},
 	{"cics-map",		CB_RQ_ARG, NULL, CB_FLAG_GETOPT_CICS_MAP},
+	{"ims-dli",		CB_RQ_ARG, NULL, CB_FLAG_GETOPT_IMS_DLI},
 	{"std",			CB_RQ_ARG, NULL, '$'},
 	{"conf",		CB_RQ_ARG, NULL, '&'},
 	{"copy",                CB_RQ_ARG, NULL, CB_FLAG_GETOPT_COPY_FILE},
@@ -4153,6 +4156,9 @@ process_command_line (const int argc, char **argv)
 		case CB_FLAG_GETOPT_CICS_MAP:
 			cb_cics_map = cob_optarg;
 			break;
+		case CB_FLAG_GETOPT_IMS_DLI:
+			cb_ims_dbd = cob_optarg;
+			break;
 
 		case 'A':
 			/* -A <xx> : Add options to C compile phase */
@@ -5569,6 +5575,55 @@ cics_transform (struct filename *fn, const char **translated)
 }
 
 static int
+ims_dli_transform (struct filename *fn, const char *source,
+		   const char **translated)
+{
+	const char *python = getenv ("COB_IMS_DLI_PYTHON");
+	const char *script = getenv ("COB_IMS_DLI_PREPROCESSOR");
+	char *target;
+	char *args[7];
+	size_t length;
+
+	if (fn->file_is_stdin || CB_SF_FREE (cobc_get_source_format ())) {
+		cobc_err_msg (_("--ims-dli requires a fixed-format source file"));
+		return 1;
+	}
+	if (!python || !*python) python = "python3";
+	if (!script || !*script) script = "imsdli-preprocess.py";
+	script = find_translation_script (script);
+	if (save_temps) {
+		const char *base = file_basename (fn->source, NULL);
+		length = strlen (base) + 10;
+		if (save_temps_dir) length += strlen (save_temps_dir) + 1;
+		target = cobc_main_malloc (length);
+		if (save_temps_dir)
+			snprintf (target, length, "%s%c%s.ims.cbl",
+			          save_temps_dir, SLASH_CHAR, base);
+		else
+			snprintf (target, length, "%s.ims.cbl", base);
+	} else {
+		target = cobc_main_malloc (COB_FILE_MAX);
+		cob_temp_name (target, ".cbl");
+	}
+	args[0] = (char *)python;
+	args[1] = (char *)script;
+	args[2] = (char *)source;
+	args[3] = target;
+	args[4] = (char *)"--dbd";
+	args[5] = (char *)cb_ims_dbd;
+	args[6] = NULL;
+	if (verbose_output)
+		fprintf (stderr, "IMS DLI translation: %s -> %s\n", source, target);
+	if (run_python_translation (python, args)) {
+		if (!save_temps) (void)unlink (target);
+		cobc_err_msg (_("IMS DLI translation failed for %s"), fn->source);
+		return 1;
+	}
+	*translated = target;
+	return 0;
+}
+
+static int
 embedded_sql_transform (struct filename *fn, const char *source,
 			const char **translated, int postgres)
 {
@@ -5650,6 +5705,7 @@ preprocess (struct filename *fn)
 {
 	const char		*sourcename;
 	const char		*cics_source = NULL;
+	const char		*ims_source = NULL;
 	const char		*db2_source = NULL;
 	struct cb_exception	save_exception_table[COB_EC_MAX];
 	const size_t exception_table_size = sizeof (struct cb_exception) * COB_EC_MAX;
@@ -5667,15 +5723,22 @@ preprocess (struct filename *fn)
 
 	if (cb_cics_map && cics_transform (fn, &cics_source))
 		return 1;
-	if (cb_flag_db2_sql && cb_flag_postgres_sql) {
-		cobc_err_msg (_("--db2-sql and --postgres-sql cannot be used together"));
+	if (cb_ims_dbd && ims_dli_transform (fn,
+		cics_source ? cics_source : fn->source, &ims_source)) {
 		if (cics_source && !save_temps) (void)unlink (cics_source);
 		return 1;
 	}
+	if (cb_flag_db2_sql && cb_flag_postgres_sql) {
+		cobc_err_msg (_("--db2-sql and --postgres-sql cannot be used together"));
+		if (cics_source && !save_temps) (void)unlink (cics_source);
+		if (ims_source && !save_temps) (void)unlink (ims_source);
+		return 1;
+	}
 	if ((cb_flag_db2_sql || cb_flag_postgres_sql) && embedded_sql_transform (fn,
-		cics_source ? cics_source : fn->source, &db2_source,
+		ims_source ? ims_source : cics_source ? cics_source : fn->source, &db2_source,
 		cb_flag_postgres_sql)) {
 		if (cics_source && !save_temps) (void)unlink (cics_source);
+		if (ims_source && !save_temps) (void)unlink (ims_source);
 		return 1;
 	}
 
@@ -5698,6 +5761,7 @@ preprocess (struct filename *fn)
 		sourcename = COB_DASH;
 	} else {
 		sourcename = db2_source ? db2_source :
+		             ims_source ? ims_source :
 		             cics_source ? cics_source : fn->source;
 	}
 	save_source_format = cobc_get_source_format ();
@@ -5761,6 +5825,8 @@ preprocess (struct filename *fn)
 		(void)unlink (db2_source);
 	if (cics_source && !save_temps)
 		(void)unlink (cics_source);
+	if (ims_source && !save_temps)
+		(void)unlink (ims_source);
 
 	if (cobc_gen_listing && !cobc_list_file) {
 		if (unlikely (fclose (cb_listing_file) != 0)) {

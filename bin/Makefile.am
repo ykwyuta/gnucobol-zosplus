@@ -19,8 +19,8 @@
 # You should have received a copy of the GNU General Public License
 # along with GnuCOBOL.  If not, see <https://www.gnu.org/licenses/>.
 
-bin_SCRIPTS = cob-config db2sql-preprocess.py cics-preprocess.py cobcov
-EXTRA_DIST = db2sql-preprocess.py cics-preprocess.py cobcov
+bin_SCRIPTS = cob-config db2sql-preprocess.py cics-preprocess.py imsdli-preprocess.py cobcov
+EXTRA_DIST = db2sql-preprocess.py cics-preprocess.py imsdli-preprocess.py cobcov
 bin_PROGRAMS = cobcrun
 cobcrun_SOURCES = cobcrun.c
 dist_man_MANS = cobcrun.1 cob-config.1

@@ -140,6 +140,14 @@ fn cards(source: &str) -> Result<Vec<Card>> {
     for (index, raw) in source.lines().enumerate() {
         let line = index + 1;
         let raw = raw.trim_end_matches('\r');
+        // JCL columns 73-80 are optional sequence characters, not operands.
+        let raw = if raw.starts_with("//") {
+            raw.char_indices()
+                .nth(72)
+                .map_or(raw, |(end, _)| &raw[..end])
+        } else {
+            raw
+        };
         if let Some(delimiter) = &inline {
             if raw.trim() == delimiter {
                 inline = None;
@@ -1195,5 +1203,24 @@ fn evaluate_if(
         "<" | "LT" => Ok(value < right),
         "<=" | "LE" => Ok(value <= right),
         other => Err(format!("unsupported IF operator {other}")),
+    }
+}
+
+#[cfg(test)]
+mod sequence_columns_tests {
+    use super::cards;
+
+    #[test]
+    fn continuation_ignores_sequence_columns() {
+        let first = "//            DCB=(LRECL=100,RECFM=FB),";
+        let second = "//            UNIT=3390";
+        let source = format!(
+            "//JOB JOB 'X'\n//STEP EXEC PGM=IEFBR14\n//OUT DD DSN=DATA,\n{first:<72}00640019\n{second:<72}00650019\n"
+        );
+        let parsed = cards(&source).unwrap();
+        assert_eq!(
+            parsed[2].operands,
+            "DSN=DATA,DCB=(LRECL=100,RECFM=FB),UNIT=3390"
+        );
     }
 }

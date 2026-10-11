@@ -26,17 +26,21 @@ jobs:
         run: cargo test --locked --manifest-path extras/jclsh/Cargo.toml --bin fbconvert
       - name: PL/I compiler unit tests
         run: cargo test --locked --manifest-path extras/pl1c/Cargo.toml
+      - name: IMS DB unit tests
+        run: cargo test --locked --manifest-path extras/imsdb/Cargo.toml
       - name: COBOL preprocess regression tests
         run: |
           python extras/cobcics/test_cics_preprocess.py
           python tests/test_db2sql_preprocess.py
           python tests/test_cobcov.py
           python tests/test_cics_genapp_preprocess.py
+          python extras/imsdb/tests/test_execdli.py
       - name: Build release tools
         run: |
           cargo build --locked --release --manifest-path extras/cobcics/Cargo.toml --bins
           cargo build --locked --release --manifest-path extras/jclsh/Cargo.toml --bins
           cargo build --locked --release --manifest-path extras/pl1c/Cargo.toml
+          cargo build --locked --release --manifest-path extras/imsdb/Cargo.toml
       - name: Package release tools as ZIP
         run: python extras/ci/package_rust_tools.py --os ${{ runner.os }}
       - name: Upload release tools ZIP

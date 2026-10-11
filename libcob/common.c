@@ -3281,8 +3281,10 @@ cob_stop_run (const int status)
 	if (!cob_initialized) {
 		cob_hard_failure ();
 	}
-	call_exit_handlers_and_terminate ();
+	/* Exit handlers and unload callbacks need the final program status before
+	   termination begins (for example, to commit or roll back a batch UOW). */
 	exit_code = status;
+	call_exit_handlers_and_terminate ();
 #ifndef COB_WITHOUT_JMP
 	if (return_jmp_buffer_set) {
 		longjmp (return_jmp_buf, 1);
