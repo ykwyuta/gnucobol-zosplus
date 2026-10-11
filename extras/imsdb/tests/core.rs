@@ -164,6 +164,138 @@ fn direct_index_pcb_reads_complete_pointer_keys_only() {
     drop(db);
     std::fs::remove_file(wal).unwrap();
 }
+
+#[test]
+fn transaction_secondary_overlay_merges_child_changes_and_updated_target() {
+    let wal = path();
+    let db = Database::open(
+        &wal,
+        vec![
+            parse_dbd(XDFLD_PRIMARY).unwrap(),
+            parse_dbd(XDFLD_INDEX).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut seed = db.begin();
+    let root = seed
+        .insert(
+            "PRIMARY",
+            "ROOT",
+            None,
+            vec![1, 0x0c, b'A', b'A'],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    let first = seed
+        .insert(
+            "PRIMARY",
+            "CHILD",
+            Some(root),
+            b"01ALNY00".to_vec(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    let removed = seed
+        .insert(
+            "PRIMARY",
+            "CHILD",
+            Some(root),
+            b"03BONY00".to_vec(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    seed.commit().unwrap();
+    let mut tx = db.begin();
+    tx.replace(root, vec![1, 0x0c, b'B', b'B'], Duration::from_secs(1))
+        .unwrap();
+    tx.replace(first, b"01BONY00".to_vec(), Duration::from_secs(1))
+        .unwrap();
+    tx.delete(removed, Duration::from_secs(1)).unwrap();
+    tx.insert(
+        "PRIMARY",
+        "CHILD",
+        Some(root),
+        b"02ALNY00".to_vec(),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    assert!(tx
+        .secondary_entry("SECOND", Some(b"ALNY"), Some((b"ALNY01", first)))
+        .unwrap()
+        .is_some());
+    let (key, source, target) = tx.secondary_entry("SECOND", None, None).unwrap().unwrap();
+    assert_eq!(key, b"ALNY02");
+    assert_eq!(&target.data[2..4], b"BB");
+    assert_eq!(
+        tx.secondary_pointer_entry("SECOND", Some(b"ALNY02"), None)
+            .unwrap()
+            .unwrap()
+            .1,
+        source
+    );
+    assert!(tx
+        .secondary_pointer_entry("SECOND", Some(b"ALNY01"), None)
+        .unwrap()
+        .is_none());
+    let (next_key, _, _) = tx
+        .secondary_entry("SECOND", None, Some((&key, source)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(next_key, b"BONY01");
+    assert!(tx
+        .secondary_entry("SECOND", None, Some((&next_key, first)))
+        .unwrap()
+        .is_none());
+    tx.rollback();
+    assert_eq!(
+        db.secondary_entry("SECOND", Some(b"ALNY"), None)
+            .unwrap()
+            .unwrap()
+            .0,
+        b"ALNY01"
+    );
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
+
+#[test]
+fn secondary_overlay_rejects_duplicate_pending_unique_key() {
+    let wal = path();
+    let db = Database::open(
+        &wal,
+        vec![
+            parse_dbd(INDEXED_DBD).unwrap(),
+            parse_dbd(INDEX_DBD).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut seed = db.begin();
+    seed.insert(
+        "PRIMARY",
+        "ROOT",
+        None,
+        vec![1, 0x0c, b'A', b'A', 0, 0],
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    seed.commit().unwrap();
+    let mut tx = db.begin();
+    tx.insert(
+        "PRIMARY",
+        "ROOT",
+        None,
+        vec![2, 0x0c, b'A', b'A', 0, 0],
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    assert!(matches!(
+        tx.secondary_entry("SECOND", Some(b"AA"), None),
+        Err(StoreError::Duplicate(_))
+    ));
+    tx.rollback();
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
 fn path() -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

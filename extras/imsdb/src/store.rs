@@ -73,6 +73,13 @@ impl SecondaryDef {
         record: &Record,
         records: &BTreeMap<u64, Record>,
     ) -> Result<Option<(SecondaryKey, u64)>, StoreError> {
+        self.key_with(record, |id| records.get(&id).cloned())
+    }
+    fn key_with(
+        &self,
+        record: &Record,
+        mut get_record: impl FnMut(u64) -> Option<Record>,
+    ) -> Result<Option<(SecondaryKey, u64)>, StoreError> {
         if record.dbd != self.target_dbd || record.segment != self.source_segment {
             return Ok(None);
         }
@@ -89,7 +96,7 @@ impl SecondaryDef {
                 })?;
             key.extend_from_slice(bytes);
         }
-        let mut target = record;
+        let mut target = record.clone();
         while target.segment != self.target_segment {
             let parent = target.parent.ok_or_else(|| {
                 StoreError::Corrupt(format!(
@@ -97,7 +104,7 @@ impl SecondaryDef {
                     self.index_dbd
                 ))
             })?;
-            target = records.get(&parent).ok_or_else(|| {
+            target = get_record(parent).ok_or_else(|| {
                 StoreError::Corrupt(format!(
                     "{}: index source parent {parent} is missing",
                     self.index_dbd
@@ -108,7 +115,7 @@ impl SecondaryDef {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct State {
     records: BTreeMap<u64, Record>,
     // BTreeMap lets GU and same-parent sequential access avoid full scans.
@@ -330,11 +337,15 @@ impl Transaction {
             let state = self.database.0.state.lock().unwrap();
             return secondary_entry_in_state(&state, index_dbd, search, after, complete_key);
         }
-        let mut view = self.database.0.state.lock().unwrap().clone();
-        for change in &self.changes {
-            apply(&mut view, change, false)?;
-        }
-        secondary_entry_in_state(&view, index_dbd, search, after, complete_key)
+        let state = self.database.0.state.lock().unwrap();
+        secondary_entry_with_changes(
+            &state,
+            &self.changes,
+            index_dbd,
+            search,
+            after,
+            complete_key,
+        )
     }
     fn release(&mut self) {
         let mut locks = self.database.0.locks.lock().unwrap();
@@ -1168,32 +1179,165 @@ fn secondary_entry_in_state(
             "{index_dbd}: search key has the wrong length"
         )));
     }
-    let start = if let Some((key, id)) = after {
-        (index_dbd.to_string(), key.to_vec(), id.saturating_add(1))
-    } else {
-        (
-            index_dbd.to_string(),
-            search.unwrap_or_default().to_vec(),
-            0,
-        )
-    };
-    for ((dbd, key, source_id), target_id) in state.secondary_index.range(start..) {
-        if dbd != index_dbd
-            || search.is_some_and(|needle| {
-                if complete_key {
-                    key != needle
-                } else {
-                    !key.starts_with(needle)
-                }
-            })
-        {
+    let start = secondary_start(index_dbd, search, after);
+    for (key, target_id) in state.secondary_index.range(start..) {
+        if key.0 != index_dbd {
+            break;
+        }
+        if after.is_some_and(|(cursor, id)| (key.1.as_slice(), key.2) <= (cursor, id)) {
+            continue;
+        }
+        if !secondary_matches(key, search, complete_key) {
             break;
         }
         if let Some(record) = state.records.get(target_id) {
-            return Ok(Some((key.clone(), *source_id, record.clone())));
+            return Ok(Some((key.1.clone(), key.2, record.clone())));
         }
     }
     Ok(None)
+}
+
+fn secondary_start(
+    index_dbd: &str,
+    search: Option<&[u8]>,
+    after: Option<(&[u8], u64)>,
+) -> SecondaryKey {
+    let search_start = (
+        index_dbd.to_string(),
+        search.unwrap_or_default().to_vec(),
+        0,
+    );
+    let after_start = after.map(|(key, id)| (index_dbd.to_string(), key.to_vec(), id));
+    after_start.map_or(search_start.clone(), |cursor| search_start.max(cursor))
+}
+
+fn secondary_matches(key: &SecondaryKey, search: Option<&[u8]>, complete_key: bool) -> bool {
+    search.is_none_or(|needle| {
+        if complete_key {
+            key.1 == needle
+        } else {
+            key.1.starts_with(needle)
+        }
+    })
+}
+
+fn secondary_entry_with_changes(
+    state: &State,
+    changes: &[Change],
+    index_dbd: &str,
+    search: Option<&[u8]>,
+    after: Option<(&[u8], u64)>,
+    complete_key: bool,
+) -> Result<Option<(Vec<u8>, u64, Record)>, StoreError> {
+    let definition = state
+        .secondary_defs
+        .iter()
+        .find(|def| def.index_dbd == index_dbd)
+        .ok_or_else(|| StoreError::Definition(format!("{index_dbd}: no secondary index")))?;
+    let required_length = if complete_key {
+        definition.key_parts.iter().map(|part| part.bytes).sum()
+    } else {
+        definition.search_bytes
+    };
+    if search.is_some_and(|key| key.len() != required_length) {
+        return Err(StoreError::Definition(format!(
+            "{index_dbd}: search key has the wrong length"
+        )));
+    }
+    let mut overlay: HashMap<u64, Option<Record>> = HashMap::new();
+    for change in changes {
+        match change {
+            Change::Insert(record) | Change::Replace { record, .. } => {
+                overlay.insert(record.id, Some(record.clone()));
+            }
+            Change::Delete { record } => {
+                overlay.insert(record.id, None);
+            }
+        }
+    }
+    let effective = |id: u64| -> Option<Record> {
+        overlay
+            .get(&id)
+            .map_or_else(|| state.records.get(&id).cloned(), Clone::clone)
+    };
+    let mut changed: BTreeMap<SecondaryKey, u64> = BTreeMap::new();
+    let mut unique_keys: HashMap<Vec<u8>, u64> = HashMap::new();
+    for record in overlay.values().filter_map(Option::as_ref) {
+        let Some((key, target_id)) = definition.key_with(record, &effective)? else {
+            continue;
+        };
+        if definition.unique {
+            if unique_keys.insert(key.1.clone(), key.2).is_some() {
+                return Err(StoreError::Duplicate(format!(
+                    "{index_dbd}: duplicate secondary key"
+                )));
+            }
+            let lower = (index_dbd.to_string(), key.1.clone(), 0);
+            if state
+                .secondary_index
+                .range(lower..)
+                .next()
+                .is_some_and(|(existing, _)| {
+                    existing.0 == index_dbd
+                        && existing.1 == key.1
+                        && !overlay.contains_key(&existing.2)
+                })
+            {
+                return Err(StoreError::Duplicate(format!(
+                    "{index_dbd}: duplicate secondary key"
+                )));
+            }
+        }
+        changed.insert(key, target_id);
+    }
+    let start = secondary_start(index_dbd, search, after);
+    let mut committed = None;
+    for (key, target_id) in state.secondary_index.range(start.clone()..) {
+        if key.0 != index_dbd {
+            break;
+        }
+        if after.is_some_and(|(cursor, id)| (key.1.as_slice(), key.2) <= (cursor, id)) {
+            continue;
+        }
+        if !secondary_matches(key, search, complete_key) {
+            if search.is_some() && key.1.as_slice() >= search.unwrap() {
+                break;
+            }
+            continue;
+        }
+        if overlay.contains_key(&key.2) {
+            continue;
+        }
+        if let Some(record) = effective(*target_id) {
+            committed = Some((key.clone(), record));
+            break;
+        }
+    }
+    let mut staged = None;
+    for (key, target_id) in changed.range(start..) {
+        if key.0 != index_dbd {
+            break;
+        }
+        if after.is_some_and(|(cursor, id)| (key.1.as_slice(), key.2) <= (cursor, id)) {
+            continue;
+        }
+        if !secondary_matches(key, search, complete_key) {
+            if search.is_some() && key.1.as_slice() >= search.unwrap() {
+                break;
+            }
+            continue;
+        }
+        if let Some(record) = effective(*target_id) {
+            staged = Some((key.clone(), record));
+            break;
+        }
+    }
+    let winner = match (committed, staged) {
+        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+        (Some(entry), None) | (None, Some(entry)) => Some(entry),
+        (None, None) => None,
+    };
+    Ok(winner.map(|(key, record)| (key.1, key.2, record)))
 }
 
 fn checksum(data: &[u8]) -> u32 {

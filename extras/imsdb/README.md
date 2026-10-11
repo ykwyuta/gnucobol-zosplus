@@ -169,6 +169,10 @@ hierarchy. The PCB `KEYLEN` must hold the full pointer key including SUBSEQ.
 Index reads see pending changes in the same transaction. `test-carddemo-load.sh`
 also runs a GnuCOBOL `CBLTDLI` program against a PROCSEQ PCB and checks 22
 indexed roots plus a qualified GU.
+For reads with pending changes, the transaction overlays changed source and
+target records on the committed B-tree without copying the entire database.
+The child-source and target-update overlay is covered by a focused regression
+test; throughput under large uncommitted batches is not measured yet.
 A direct PCB naming the index DBD supports read-only GU/GN when its pointer
 segment is fixed length and consists entirely of the key. Qualified GU must
 use the complete pointer key, including SUBSEQ. The CardDemo load test also

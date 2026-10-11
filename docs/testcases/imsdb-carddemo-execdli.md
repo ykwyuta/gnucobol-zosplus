@@ -48,6 +48,8 @@ wsl --exec sh /mnt/d/workspace/gnucobol/extras/imsdb/test-carddemo-load.sh
 
 Rust の `xdfld_child_search_and_subsequence_resolve_parent` 試験は、`XDFLD SEGMENT=CHILD,SRCH=(NAME,CITY),SUBSEQ=SEQNO` から子の複合キーを作り、索引照会で親を返す。子の `REPL`、`DLET`、WAL再読込後の索引更新も確認する。
 
+`transaction_secondary_overlay_merges_child_changes_and_updated_target` は同一UOW内で子の索引キー変更・削除・挿入と親本文の変更を組み合わせる。部分キー検索、完全キー検索、次エントリーへの位置付け、ロールバック後の確定済み索引を確認する。
+
 原本アンロードプログラムの出力は次を実行する。
 
 ```powershell
