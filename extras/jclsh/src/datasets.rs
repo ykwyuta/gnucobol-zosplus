@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::{DdKind, Profile, Result, Step};
+use super::records;
+use super::{Dd, DdKind, Profile, Result, Step};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
@@ -37,11 +38,14 @@ pub(super) struct Allocation {
     disp: Disp,
 }
 
+type Prepared = (Vec<(String, PathBuf)>, Vec<Allocation>);
+
 pub(super) struct DataSets<'a> {
     workspace: &'a Path,
     root: PathBuf,
     profile: &'a Profile,
     passed: HashMap<String, PathBuf>,
+    created_gdg: HashMap<String, PathBuf>,
 }
 
 fn disposition(value: &str) -> Result<Disp> {
@@ -95,14 +99,33 @@ fn dataset_name(name: &str) -> Result<String> {
     }
     if !name
         .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b".$#@_&()".contains(&b))
+        .all(|b| b.is_ascii_alphanumeric() || b".$#@_&()+-".contains(&b))
     {
         return Err(format!("invalid DSN {name:?}"));
     }
     Ok(name.to_ascii_uppercase())
 }
 
+fn gdg_base(name: &str) -> Option<&str> {
+    let (base, relative) = name.split_once('(')?;
+    let relative = relative.strip_suffix(')')?;
+    if relative == "0" || relative.starts_with('+') || relative.starts_with('-') {
+        Some(base)
+    } else {
+        None
+    }
+}
+
 impl<'a> DataSets<'a> {
+    pub(super) fn catalog_names(&self, prefix: &str) -> Vec<String> {
+        self.profile
+            .datasets
+            .iter()
+            .filter(|(name, path)| name.starts_with(prefix) && self.workspace.join(path).is_file())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     pub(super) fn new(workspace: &'a Path, profile: &'a Profile) -> Result<Self> {
         let root = workspace.join(&profile.dataset_root);
         fs::create_dir_all(&root).map_err(|error| format!("{}: {error}", root.display()))?;
@@ -115,10 +138,11 @@ impl<'a> DataSets<'a> {
             root,
             profile,
             passed: HashMap::new(),
+            created_gdg: HashMap::new(),
         })
     }
 
-    fn target(&self, dsn: &str, writable: bool) -> Result<Option<PathBuf>> {
+    pub(super) fn target(&self, dsn: &str, writable: bool) -> Result<Option<PathBuf>> {
         if dsn.starts_with("&&") {
             return Ok(None);
         }
@@ -141,14 +165,81 @@ impl<'a> DataSets<'a> {
             .ok_or_else(|| format!("dataset {base} is not mapped in profile"))?;
         let mut target = self.workspace.join(relative);
         if let Some(member) = member {
-            if member.is_empty()
+            if let Some(generation) = member
+                .strip_prefix('+')
+                .or_else(|| member.strip_prefix('-'))
+            {
+                let offset: i32 = generation
+                    .parse()
+                    .map_err(|_| format!("invalid GDG relative generation {dsn}"))?;
+                if offset > 1
+                    || member.starts_with('+') && offset == 0
+                    || member.starts_with('-') && offset == 0
+                {
+                    return Err(format!("unsupported GDG relative generation {dsn}"));
+                }
+                let parent = target
+                    .parent()
+                    .ok_or_else(|| format!("invalid GDG path {dsn}"))?;
+                let stem = target
+                    .file_name()
+                    .ok_or_else(|| format!("invalid GDG path {dsn}"))?
+                    .to_string_lossy();
+                let prefix = format!("{stem}.G");
+                let latest = fs::read_dir(parent)
+                    .map_err(|error| format!("GDG parent {}: {error}", parent.display()))?
+                    .filter_map(|entry| entry.ok())
+                    .filter_map(|entry| {
+                        entry
+                            .file_name()
+                            .to_str()
+                            .and_then(|name| name.strip_prefix(&prefix))
+                            .and_then(|suffix| suffix.strip_suffix("V00"))
+                            .and_then(|number| number.parse::<i32>().ok())
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let number = if member.starts_with('+') {
+                    latest + offset
+                } else {
+                    latest - offset
+                };
+                if number <= 0 || number > 9999 {
+                    return Err(format!("GDG generation {dsn} does not exist"));
+                }
+                target = parent.join(format!("{stem}.G{number:04}V00"));
+            } else if member == "0" {
+                let parent = target
+                    .parent()
+                    .ok_or_else(|| format!("invalid GDG path {dsn}"))?;
+                let stem = target
+                    .file_name()
+                    .ok_or_else(|| format!("invalid GDG path {dsn}"))?
+                    .to_string_lossy();
+                let prefix = format!("{stem}.G");
+                let latest = fs::read_dir(parent)
+                    .map_err(|error| error.to_string())?
+                    .filter_map(|entry| entry.ok())
+                    .filter_map(|entry| {
+                        entry
+                            .file_name()
+                            .to_str()
+                            .and_then(|name| name.strip_prefix(&prefix))
+                            .and_then(|suffix| suffix.strip_suffix("V00"))
+                            .and_then(|number| number.parse::<i32>().ok())
+                    })
+                    .max()
+                    .ok_or_else(|| format!("GDG generation {dsn} does not exist"))?;
+                target = parent.join(format!("{stem}.G{latest:04}V00"));
+            } else if member.is_empty()
                 || !member
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"$#@_".contains(&b))
             {
                 return Err(format!("invalid PDS member {dsn}"));
+            } else {
+                target.push(member);
             }
-            target.push(member);
         }
         let parent = target
             .parent()
@@ -196,12 +287,16 @@ impl<'a> DataSets<'a> {
                             dd.line, dd.name
                         ));
                     }
-                    self.target(
-                        &dsn,
-                        disp.status != Status::Shared
-                            || disp.normal == Action::Delete
-                            || disp.abnormal == Action::Delete,
-                    )?;
+                    if let Some(base) = gdg_base(&dsn) {
+                        self.target(base, false)?;
+                    } else {
+                        self.target(
+                            &dsn,
+                            disp.status != Status::Shared
+                                || disp.normal == Action::Delete
+                                || disp.abnormal == Action::Delete,
+                        )?;
+                    }
                 }
             }
         }
@@ -209,27 +304,39 @@ impl<'a> DataSets<'a> {
     }
 
     fn allocate(
-        &self,
+        &mut self,
         step: &Step,
-        dd_name: &str,
+        dd: &Dd,
         index: usize,
         raw_name: &str,
         raw_disp: &str,
         step_dir: &Path,
     ) -> Result<Allocation> {
         let name = if raw_name.is_empty() {
-            format!("&&{}.{}.{}", step.name, dd_name, index)
+            format!("&&{}.{}.{}", step.name, dd.name, index)
         } else {
             dataset_name(raw_name)?
         };
         let disp = disposition(raw_disp)?;
         let temporary = name.starts_with("&&");
-        let target = self.target(
-            &name,
-            disp.status != Status::Shared
-                || disp.normal == Action::Delete
-                || disp.abnormal == Action::Delete,
-        )?;
+        let target = if disp.status != Status::New && self.created_gdg.contains_key(&name) {
+            self.created_gdg.get(&name).cloned()
+        } else {
+            self.target(
+                &name,
+                disp.status != Status::Shared
+                    || disp.normal == Action::Delete
+                    || disp.abnormal == Action::Delete,
+            )?
+        };
+        if let Some(base) = gdg_base(&name) {
+            let marker = self.target(base, true)?.ok_or("GDG base is not mapped")?;
+            let content = fs::read_to_string(&marker)
+                .map_err(|_| format!("GDG base {base} is not defined"))?;
+            if !content.starts_with("#JCLSH-GDG\t") {
+                return Err(format!("GDG base {base} is not defined"));
+            }
+        }
         let prior = self.passed.get(&name).or(target.as_ref());
         match disp.status {
             Status::New if prior.is_some_and(|path| path.exists()) => {
@@ -243,11 +350,29 @@ impl<'a> DataSets<'a> {
             }
             _ => {}
         }
-        let path = step_dir.join(format!("dataset-{dd_name}-{index}.dat"));
+        let path = step_dir.join(format!("dataset-{}-{index}.dat", dd.name));
         if let Some(prior) = prior.filter(|path| path.exists()) {
             fs::copy(prior, &path).map_err(|error| format!("{}: {error}", path.display()))?;
+            records::copy_layout(prior, &path)?;
         } else {
             fs::write(&path, []).map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        if let Some(dcb) = dd.dcb.as_deref() {
+            if let Some(layout) = records::dcb_layout(dcb)? {
+                if let Some(existing) = records::read_layout(&path)? {
+                    if existing.lrecl != layout.lrecl {
+                        return Err(format!("dataset {name} DCB LRECL conflicts with catalog"));
+                    }
+                } else {
+                    records::write_layout(&path, layout)?;
+                }
+            }
+        }
+        if disp.status == Status::New && name.ends_with("(+1)") {
+            self.created_gdg.insert(
+                name.clone(),
+                target.clone().ok_or("GDG generation has no target")?,
+            );
         }
         Ok(Allocation {
             name,
@@ -258,11 +383,7 @@ impl<'a> DataSets<'a> {
         })
     }
 
-    pub(super) fn prepare(
-        &self,
-        step: &Step,
-        step_dir: &Path,
-    ) -> Result<(Vec<(String, PathBuf)>, Vec<Allocation>)> {
+    pub(super) fn prepare(&mut self, step: &Step, step_dir: &Path) -> Result<Prepared> {
         let mut env = Vec::new();
         let mut allocations = Vec::new();
         for dd in &step.dds {
@@ -274,7 +395,7 @@ impl<'a> DataSets<'a> {
                 DdKind::Dataset(entries) => {
                     let mut parts = Vec::new();
                     for (index, (name, disp)) in entries.iter().enumerate() {
-                        let alloc = self.allocate(step, &dd.name, index, name, disp, step_dir)?;
+                        let alloc = self.allocate(step, dd, index, name, disp, step_dir)?;
                         parts.push(alloc.path.clone());
                         allocations.push(alloc);
                     }
@@ -284,6 +405,18 @@ impl<'a> DataSets<'a> {
                         let concat = step_dir.join(format!("concat-{}.dat", dd.name));
                         let mut bytes = Vec::new();
                         for part in parts {
+                            if let Some(layout) = records::read_layout(&part)? {
+                                match records::read_layout(&concat)? {
+                                    Some(prior) if prior != layout => {
+                                        return Err(format!(
+                                            "DD {} concatenates different FB layouts",
+                                            dd.name
+                                        ))
+                                    }
+                                    None => records::write_layout(&concat, layout)?,
+                                    _ => {}
+                                }
+                            }
                             bytes.extend(fs::read(part).map_err(|error| error.to_string())?);
                         }
                         fs::write(&concat, bytes).map_err(|error| error.to_string())?;
@@ -313,7 +446,8 @@ impl<'a> DataSets<'a> {
                 Action::Pass => {
                     if let Some(old) = self.passed.insert(alloc.name, alloc.path.clone()) {
                         if old != alloc.path && old.exists() {
-                            fs::remove_file(old).map_err(|error| error.to_string())?;
+                            fs::remove_file(&old).map_err(|error| error.to_string())?;
+                            records::remove_layout(&old)?;
                         }
                     }
                 }
@@ -321,18 +455,25 @@ impl<'a> DataSets<'a> {
                     if let Some(target) = &alloc.target {
                         fs::copy(&alloc.path, target)
                             .map_err(|error| format!("{}: {error}", target.display()))?;
+                        records::copy_layout(&alloc.path, target)?;
+                        if action == Action::Catalog && alloc.name.ends_with("(+1)") {
+                            self.trim_gdg(gdg_base(&alloc.name).ok_or("invalid GDG name")?)?;
+                        }
                     }
                     if let Some(old) = self.passed.remove(&alloc.name) {
                         if old != alloc.path && old.exists() {
-                            fs::remove_file(old).map_err(|error| error.to_string())?;
+                            fs::remove_file(&old).map_err(|error| error.to_string())?;
+                            records::remove_layout(&old)?;
                         }
                     }
                     fs::remove_file(&alloc.path).map_err(|error| error.to_string())?;
+                    records::remove_layout(&alloc.path)?;
                 }
                 Action::Delete => {
                     if let Some(old) = self.passed.remove(&alloc.name) {
                         if old != alloc.path && old.exists() {
-                            fs::remove_file(old).map_err(|error| error.to_string())?;
+                            fs::remove_file(&old).map_err(|error| error.to_string())?;
+                            records::remove_layout(&old)?;
                         }
                     }
                     if let Some(target) = &alloc.target {
@@ -340,8 +481,10 @@ impl<'a> DataSets<'a> {
                             fs::remove_file(target)
                                 .map_err(|error| format!("{}: {error}", target.display()))?;
                         }
+                        records::remove_layout(target)?;
                     }
                     fs::remove_file(&alloc.path).map_err(|error| error.to_string())?;
+                    records::remove_layout(&alloc.path)?;
                 }
                 Action::Uncatalog => {
                     self.passed.remove(&alloc.name);
@@ -355,7 +498,9 @@ impl<'a> DataSets<'a> {
                         if target.exists() {
                             fs::remove_file(target).map_err(|error| error.to_string())?;
                         }
+                        records::remove_layout(target)?;
                         fs::remove_file(&alloc.path).map_err(|error| error.to_string())?;
+                        records::remove_layout(&alloc.path)?;
                     }
                 }
             }
@@ -363,10 +508,50 @@ impl<'a> DataSets<'a> {
         Ok(())
     }
 
+    fn trim_gdg(&self, base: &str) -> Result<()> {
+        let marker = self.target(base, true)?.ok_or("GDG base is not mapped")?;
+        let text = fs::read_to_string(&marker).map_err(|error| error.to_string())?;
+        let limit: usize = text
+            .trim()
+            .strip_prefix("#JCLSH-GDG\t")
+            .ok_or_else(|| format!("GDG base {base} is invalid"))?
+            .parse()
+            .map_err(|_| format!("GDG base {base} has invalid LIMIT"))?;
+        let parent = marker.parent().ok_or("GDG base has no parent")?;
+        let stem = marker
+            .file_name()
+            .ok_or("GDG base has no file name")?
+            .to_string_lossy();
+        let prefix = format!("{stem}.G");
+        let mut generations: Vec<_> = fs::read_dir(parent)
+            .map_err(|error| error.to_string())?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.strip_prefix(&prefix)
+                    .and_then(|suffix| suffix.strip_suffix("V00"))
+                    .is_some_and(|number| {
+                        number.len() == 4 && number.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                    && entry.path().is_file()
+            })
+            .map(|entry| entry.path())
+            .collect();
+        generations.sort();
+        let excess = generations.len().saturating_sub(limit);
+        for path in generations.into_iter().take(excess) {
+            fs::remove_file(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            records::remove_layout(&path)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn end_job(&mut self) -> Result<()> {
         for (_, path) in self.passed.drain() {
             if path.exists() {
-                fs::remove_file(path).map_err(|error| error.to_string())?;
+                fs::remove_file(&path).map_err(|error| error.to_string())?;
+                records::remove_layout(&path)?;
             }
         }
         Ok(())

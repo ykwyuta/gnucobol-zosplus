@@ -16,7 +16,7 @@ fi
 libcob_dir=${LIBCOB_DIR:-$root/build/libcob/.libs}
 export COB_CONFIG_DIR=${COB_CONFIG_DIR:-$root/config}
 export COB_COPY_DIR=${COB_COPY_DIR:-$root/copy}
-export COB_CFLAGS="-I$root ${COB_CFLAGS:-}"
+export COB_CFLAGS="-I$root ${COB_CFLAGS:-} -DCOBCICS_LOCAL_VSAM"
 export COB_LDFLAGS="-L$libcob_dir ${COB_LDFLAGS:-}"
 export LD_LIBRARY_PATH="$libcob_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -35,10 +35,10 @@ done
 
 "$cobc" -x -I extras/mq/copy -I extras/cobcics/copy \
     -o "$output/CODATE01" "$output/CODATE01.cob" \
-    extras/cobcics/bridge.c
+    extras/cobcics/bridge.c extras/cobcics/local_vsam.c
 "$cobc" -x -I extras/mq/copy -I extras/cobcics/copy \
     -I reference/aws-mainframe-modernization-carddemo/app/cpy \
     -o "$output/COACCT01" "$output/COACCT01.cob" \
-    extras/cobcics/bridge.c extras/mq/carddemo_file.c
+    extras/cobcics/bridge.c extras/mq/carddemo_file.c extras/cobcics/local_vsam.c
 
 printf 'Built MQ demo and CardDemo MQ programs in %s\n' "$output"

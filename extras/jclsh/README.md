@@ -4,7 +4,7 @@ Rust 製 JCL インタプリタ兼対話シェルです。Bank of Z の原本 `B
 
 各ステップの直接 `PGM=` または `IKJEFT01` の `DSN RUN PROGRAM(...)` はプロファイルの `program.NAME=...` に登録します。未登録プログラムと未マッピングのデータセット DD は計画段階でエラーになります。`COND` は比較が真ならステップをスキップします。通常の非ゼロ RC 後も後続ステップを判定します。ABEND 後は通常ステップをスキップし、`COND=EVEN` / `ONLY` と `IF ABEND` を評価します。ジョブ RC は実行した通常ステップの最大 RC と ABEND のローカル表現 16 の最大値です。`result.json` は実行済み／スキップ／ABEND と各 RC・ABEND コードを記録します。
 
-DD データセットはジョブ専用の一時ファイルへ割り当て、`DISP` の `NEW` / `OLD` / `SHR` / `MOD` と通常／異常終了時の `PASS` / `KEEP` / `CATLG` / `DELETE` / `UNCATLG` を処理します。永続データセットの変更・削除は `dataset_root` 内に登録したパスに限ります。`JOBLIB` / `STEPLIB` は計画に表示するメタデータです。`IF` は RC、RUN、ABEND、ABENDCC の判定と AND / OR / NOT を扱います。`SYSTEM`、`PLAN`、`LIB` はプロファイルとの照合で、Db2 for z/OS のバインド操作ではありません。未登録の z/OS ユーティリティーと、このリポジトリに資材がない IBM 提供 PROC の実行は引き続き対象外です。
+DD データセットはジョブ専用の一時ファイルへ割り当て、`DISP` の `NEW` / `OLD` / `SHR` / `MOD` と通常／異常終了時の `PASS` / `KEEP` / `CATLG` / `DELETE` / `UNCATLG` を処理します。永続データセットの変更・削除は `dataset_root` 内に登録したパスに限ります。`JOBLIB` / `STEPLIB` は計画に表示するメタデータです。`IF` は RC、RUN、ABEND、ABENDCC の判定と AND / OR / NOT を扱います。`SYSTEM`、`PLAN`、`LIB` はプロファイルとの照合で、Db2 for z/OS のバインド操作ではありません。`IEFBR14`、`IEBGENER`、`IDCAMS`、`SORT`、`DFHCSDUP` は Rust 内蔵の互換機能を呼び出します。[対象 JCL と制限](../../docs/userguide/jcl-utilities.md)を参照してください。このリポジトリに資材がない IBM 提供 PROC の実行は引き続き対象外です。
 
 プロファイルの `proclib.データセット名=ディレクトリ` は `JCLLIB ORDER` に対応し、そのディレクトリのメンバー名または `メンバー名.jcl` を探索します。`dataset.データセット名=ファイル` は永続 DD の対応付け、`dataset_root=ディレクトリ` は変更可能な領域です。`site.名前=値` または CLI の `--set 名前=値` で原本にある `<名前>` を展開します。値を指定しないプレースホルダーは計画・実行時にエラーです。[設定例](tests/datasets.conf)を参照してください。
 
@@ -29,6 +29,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File extras/jclsh/test-bank-jcl.p
 powershell -NoProfile -ExecutionPolicy Bypass -File extras/jclsh/test-multistep-jcl.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File extras/jclsh/test-datasets-jcl.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File extras/jclsh/test-genapp-lint.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File extras/jclsh/test-utilities.ps1
 ```
 
 WSL Ubuntu ではリポジトリのルートから `bash extras/jclsh/test-step-wsl.sh` で試験用アダプターの GCC ビルドと ABEND コードの受け渡しを確認できます。

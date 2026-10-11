@@ -448,16 +448,16 @@ fn add_dd(target: &mut Vec<RawDd>, card: Card) -> Result<()> {
     Ok(())
 }
 
-fn raw_job(
-    cards: Vec<Card>,
-) -> Result<(
+type RawJob = (
     String,
     String,
     Option<CondSpec>,
     Vec<RawDd>,
     Vec<RawStep>,
     HashMap<String, Procedure>,
-)> {
+);
+
+fn raw_job(cards: Vec<Card>) -> Result<RawJob> {
     let mut job_name = None;
     let mut attributes = String::new();
     let mut job_condition = None;
@@ -559,7 +559,7 @@ fn raw_job(
             }
             "DD" => {
                 if current_proc.is_none() && steps.is_empty() {
-                    if card.name != "JOBLIB" && !(card.name.is_empty() && !joblib.is_empty()) {
+                    if card.name != "JOBLIB" && (joblib.is_empty() || !card.name.is_empty()) {
                         return Err(format!("line {}: DD before EXEC", card.line));
                     }
                     add_dd(&mut joblib, card)?;
@@ -674,10 +674,9 @@ fn parse_cond(input: &str, line: usize) -> Result<CondSpec> {
     Ok(spec)
 }
 
-fn parse_exec(
-    operands: &str,
-    line: usize,
-) -> Result<(String, bool, HashMap<String, String>, Option<CondSpec>)> {
+type ExecSpec = (String, bool, HashMap<String, String>, Option<CondSpec>);
+
+fn parse_exec(operands: &str, line: usize) -> Result<ExecSpec> {
     let parts = split_top(operands)?;
     let first = parts
         .first()
@@ -735,23 +734,24 @@ fn merge_dd(base: &RawDd, override_dd: &RawDd) -> Result<RawDd> {
     Ok(result)
 }
 
-fn parse_dd(card: &Card, symbols: &HashMap<String, String>) -> Result<DdKind> {
+fn parse_dd(card: &Card, symbols: &HashMap<String, String>) -> Result<(DdKind, Option<String>)> {
     let operands = substitute(&card.operands, symbols, card.line)?;
     let parts = split_top(&operands)?;
     if parts
         .first()
         .is_some_and(|part| part == "*" || part == "DATA")
     {
-        return Ok(DdKind::Inline(card.data.clone()));
+        return Ok((DdKind::Inline(card.data.clone()), None));
     }
     if parts.first().is_some_and(|part| part == "DUMMY") {
-        return Ok(DdKind::Dummy);
+        return Ok((DdKind::Dummy, None));
     }
     if parts.iter().any(|part| part.starts_with("SYSOUT=")) {
-        return Ok(DdKind::Sysout);
+        return Ok((DdKind::Sysout, None));
     }
     let mut dsn = String::new();
     let mut disp = None;
+    let mut dcb = None;
     for part in parts {
         let Some((key, value)) = part.split_once('=') else {
             return Err(format!("line {}: unsupported DD operand {part}", card.line));
@@ -759,8 +759,8 @@ fn parse_dd(card: &Card, symbols: &HashMap<String, String>) -> Result<DdKind> {
         match key {
             "DSN" | "DSNAME" => dsn = value.to_string(),
             "DISP" => disp = Some(value.to_string()),
-            "UNIT" | "SPACE" | "DCB" | "VOL" | "LABEL" | "AMP" | "STORCLAS" | "DATACLAS"
-            | "MGMTCLAS" => {}
+            "DCB" => dcb = Some(value.to_string()),
+            "UNIT" | "SPACE" | "VOL" | "LABEL" | "AMP" | "STORCLAS" | "DATACLAS" | "MGMTCLAS" => {}
             _ => return Err(format!("line {}: unsupported DD operand {key}", card.line)),
         }
     }
@@ -771,14 +771,20 @@ fn parse_dd(card: &Card, symbols: &HashMap<String, String>) -> Result<DdKind> {
             "SHR".to_string()
         }
     });
-    Ok(DdKind::Dataset(vec![(dsn, disp)]))
+    Ok((DdKind::Dataset(vec![(dsn, disp)]), dcb))
 }
 
 fn expand_dd(raw: &RawDd, symbols: &HashMap<String, String>) -> Result<Dd> {
     let first = raw.cards.first().unwrap();
-    let mut kind = parse_dd(first, symbols)?;
+    let (mut kind, dcb) = parse_dd(first, symbols)?;
     for card in raw.cards.iter().skip(1) {
-        let next = parse_dd(card, symbols)?;
+        let (next, next_dcb) = parse_dd(card, symbols)?;
+        if next_dcb != dcb && next_dcb.is_some() {
+            return Err(format!(
+                "line {}: concatenated DD has conflicting DCB",
+                card.line
+            ));
+        }
         match (&mut kind, next) {
             (DdKind::Dataset(entries), DdKind::Dataset(mut more)) => entries.append(&mut more),
             _ => return Err(format!("line {}: unsupported DD concatenation", card.line)),
@@ -788,6 +794,7 @@ fn expand_dd(raw: &RawDd, symbols: &HashMap<String, String>) -> Result<Dd> {
         name: raw.name.clone(),
         line: first.line,
         kind,
+        dcb,
     })
 }
 

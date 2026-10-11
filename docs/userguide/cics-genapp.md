@@ -45,6 +45,42 @@ docker logs genapp-terminal
 
 `SSC1` で顧客番号 `1`、選択 `1` を送ると Andrew Pandy を照会できる。`SSP1` では保険番号 `1`、顧客番号 `2`、選択 `1` で FORD の自動車保険を照会できる。`SSP2` は保険4/顧客8、`SSP3` は保険6/顧客4、`SSP4` は保険9/顧客5が初期データにある。終了後は `docker stop genapp-terminal` を実行する。
 
+## jclsh の CSD・FB VSAM を使う
+
+`jclsh` で原本 JCL を実行すると、CSD の FILE/TRANSACTION 定義と固定長 FB の KSDS を `cobcicsd` と共有できる。次の回帰試験は `cdef121`～`cdef125` と `adef121` を無編集で実行し、CSD の `SSC1`→`LGTESTC1`、FILE 2 件と、225/64 バイトのレコードを検証する。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File extras/jclsh/test-utilities.ps1
+```
+
+上記の `genapp-terminal` 起動例で、`--route SSC1=build/genapp/lgtestc1` の代わりに以下を指定できる。`--route` で明示した経路は CSD より優先する。`--map-route` は従来どおり画面切り替えに指定する。
+
+```text
+--csd build/jclsh/genapp-csd/catalog.dat
+--csd-list GENALIST
+--dataset-profile extras/jclsh/tests/genapp-vsam.conf
+--program LGTESTC1=build/genapp/lgtestc1
+--program LGTESTP1=build/genapp/lgtestp1
+--program LGTESTP2=build/genapp/lgtestp2
+--program LGTESTP3=build/genapp/lgtestp3
+--program LGTESTP4=build/genapp/lgtestp4
+```
+
+`--check-csd` を付けると待受けせずに解決結果の件数を表示する。起動時には CSD の FILE `DSNAME` とプロファイルの `dataset.<DSN>` を照合し、`dataset_root` 内の実ファイルだけをワーカーに渡す。GenApp の CICS FILE ブリッジは `KSDSCUST` / `KSDSPOLY` に加え、`COBCICS_VSAM_<FILE>` と FB メタデータを持つ任意のキー付きファイルを扱う。非ゼロのキー位置にも対応する。CICS ワーカー間の書き込みは作業単位の終わりまでファイル単位で排他する。更新は同じ作業単位の読み取りにだけ反映し、`EXEC CICS SYNCPOINT` または正常終了で Db2 とともに確定する。`SYNCPOINT ROLLBACK`・ABEND・Db2 確定失敗ではファイル変更を破棄する。現行のローカルバックエンドはファイル全体をメモリへ読み込み、64 MiB を上限とする。Db2 確定後のファイル置換失敗やプロセス・ホスト障害をまたぐ原子的な回復はまだ保証しない。分散二相コミットと回復ログは未実装である。
+
+JCL 生成物を用いた CICS FILE ABI の試験は、`gnucobol-db2-build` イメージで `libgenapp_file.so` をビルドした後に `python3 extras/cobcics/test-genapp-local-vsam.py build/genapp/libgenapp_file.so` を実行する。元データは一時ディレクトリにコピーし、未確定データの読み取り、取り消し、確定を検証する。`test-vsam-db2-uow.c` は Db2 確定失敗時のファイル破棄を、`test-vsam-db2-real.c` は Docker Compose の実 Db2 と FB ファイルを同時に更新する確定・取り消しを検証する。
+
+これらの作業単位試験は、上記の jclsh 回帰試験で FB ファイルを生成した後にまとめて実行できる。
+
+```powershell
+$ws = (Resolve-Path .).Path
+docker compose --env-file extras/db2sql/.env -f extras/db2sql/compose.yaml up -d
+docker run --rm --env-file extras/db2sql/.runtime.env -e DB2_SCHEMA=DB2INST1 `
+  -v "${ws}:/src" -w /src --entrypoint sh gnucobol-db2-build `
+  extras/cobcics/test-local-vsam-uow.sh
+docker compose --env-file extras/db2sql/.env -f extras/db2sql/compose.yaml stop
+```
+
 ## HTTP から業務 COBOL を呼ぶ
 
 HTTP アダプターは `GENAPP-API` ワーカーに元の32,500バイト COMMAREA を渡し、顧客と自動車・生命・住宅・商業保険の元 COBOL を呼び出す。既定はループバック待受け。Docker のポートを公開する場合もホスト側を `127.0.0.1` に限定する。

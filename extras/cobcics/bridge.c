@@ -124,20 +124,52 @@ static struct container *find_container(struct channel *channel,
 #ifdef COBCICS_DB2SQL
 extern int DB2SQL_END_TASK(int commit);
 #endif
+#ifdef COBCICS_LOCAL_VSAM
+extern int cobcics_vsam_begin(void);
+extern int cobcics_vsam_prepare(void);
+extern int cobcics_vsam_finish(int commit);
+#endif
 #ifdef COBCICS_GENAPP
 extern int COBCICS_START_FLUSH(void);
 extern void COBCICS_START_CANCEL(void);
 #endif
+
+static int rollback_uow(void) {
+    int error = 0;
+#ifdef COBCICS_DB2SQL
+    if (DB2SQL_END_TASK(0) != 0) error = 1;
+#endif
+#ifdef COBCICS_LOCAL_VSAM
+    if (cobcics_vsam_finish(0) != 0) error = 1;
+#endif
+    return error;
+}
+
+static int commit_uow(void) {
+#ifdef COBCICS_LOCAL_VSAM
+    if (cobcics_vsam_prepare() != 0) return 1;
+#endif
+#ifdef COBCICS_DB2SQL
+    if (DB2SQL_END_TASK(1) != 0) {
+#ifdef COBCICS_LOCAL_VSAM
+        cobcics_vsam_finish(0);
+#endif
+        return 1;
+    }
+#endif
+#ifdef COBCICS_LOCAL_VSAM
+    if (cobcics_vsam_finish(1) != 0) return 1;
+#endif
+    return 0;
+}
 
 static void failure(const char *message) {
     fprintf(stderr, "cobcics bridge: %s\n", message);
 #ifdef COBCICS_GENAPP
     COBCICS_START_CANCEL();
 #endif
-#ifdef COBCICS_DB2SQL
-    if (DB2SQL_END_TASK(0) != 0)
-        fprintf(stderr, "cobcics bridge: Db2 rollback failed\n");
-#endif
+    if (rollback_uow() != 0)
+        fprintf(stderr, "cobcics bridge: rollback failed\n");
     exit(2);
 }
 
@@ -307,6 +339,10 @@ void COBCICS_START(unsigned char *aid, unsigned char *calen,
         }
     }
     started = 1;
+#ifdef COBCICS_LOCAL_VSAM
+    if (cobcics_vsam_begin() != 0)
+        failure("local VSAM task begin failed");
+#endif
 }
 
 void COBCICS_LINK_ENTER(const unsigned char *length,
@@ -898,10 +934,8 @@ void COBCICS_SYNCPOINT(const unsigned char *mode, unsigned char *resp,
                        unsigned char *resp2) {
     if (!started || (*mode != 0 && *mode != 1))
         failure("invalid SYNCPOINT call");
-#ifdef COBCICS_DB2SQL
-    if (DB2SQL_END_TASK(*mode == 0) != 0)
-        failure("Db2 SYNCPOINT failed");
-#endif
+    if ((*mode == 0 ? commit_uow() : rollback_uow()) != 0)
+        failure("SYNCPOINT failed");
 #ifdef COBCICS_GENAPP
     if (*mode == 0) {
         if (COBCICS_START_FLUSH() != 0)
@@ -909,6 +943,10 @@ void COBCICS_SYNCPOINT(const unsigned char *mode, unsigned char *resp,
     } else {
         COBCICS_START_CANCEL();
     }
+#endif
+#ifdef COBCICS_LOCAL_VSAM
+    if (cobcics_vsam_begin() != 0)
+        failure("local VSAM next unit of work failed");
 #endif
     set_cobol_response(resp, 0);
     set_cobol_response(resp2, 0);
@@ -1202,10 +1240,8 @@ void COBCICS_ABEND(const char *abcode, const unsigned char *length) {
 #ifdef COBCICS_GENAPP
     COBCICS_START_CANCEL();
 #endif
-#ifdef COBCICS_DB2SQL
-    if (DB2SQL_END_TASK(0) != 0)
-        fprintf(stderr, "cobcics bridge: Db2 rollback failed\n");
-#endif
+    if (rollback_uow() != 0)
+        fprintf(stderr, "cobcics bridge: rollback failed\n");
     exit(12);
 }
 
@@ -1216,7 +1252,7 @@ void COBCICS_REQUIRE_NORMAL(const unsigned char *resp) {
         uint32_t code = (uint32_t)resp[0] << 24 | (uint32_t)resp[1] << 16 |
                         (uint32_t)resp[2] << 8 | resp[3];
         fprintf(stderr, "cobcics bridge: unhandled CICS condition %u\n", code);
-        exit(2);
+        failure("unhandled CICS condition");
     }
 }
 
@@ -1377,10 +1413,8 @@ void COBCICS_SET_IMMEDIATE(void) {
 void COBCICS_FINISH(void) {
     if (!started)
         failure("FINISH before START");
-#ifdef COBCICS_DB2SQL
-    if (DB2SQL_END_TASK(1) != 0)
-        failure("Db2 task commit failed");
-#endif
+    if (commit_uow() != 0)
+        failure("task commit failed");
 #ifdef COBCICS_GENAPP
     if (COBCICS_START_FLUSH() != 0)
         failure("CICS START scheduling failed");

@@ -123,6 +123,7 @@ cobc_print_usage_common_options (void)
 #endif
 	puts (_("  -I <directory>        add <directory> to copy/include search path"));
 	puts (_("  --db2-sql             translate fixed-format EXEC SQL before compilation"));
+	puts (_("  --postgres-sql        translate fixed-format EXEC SQL for PostgreSQL"));
 	puts (_("  --cics-map=<copybook> translate fixed-format EXEC CICS using a BMS symbolic map"));
 	puts (_("  --copy <copybook>     include <copybook> at beginning of file,\n"
                 "                        as would COPY copybook."));

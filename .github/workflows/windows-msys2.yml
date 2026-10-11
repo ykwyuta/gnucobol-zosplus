@@ -123,6 +123,7 @@ jobs:
           update: true
           msystem: ${{ matrix.sys }}
           install: autoconf automake make libtool flex bison
+                   zip unzip
                    mingw-w64-${{ matrix.env }}-cc
                    mingw-w64-${{ matrix.env }}-gmp
                    mingw-w64-${{ matrix.env }}-ncurses
@@ -215,11 +216,12 @@ jobs:
         shell: msys2 {0}
         run: |
           make -C _build distmingw
-          tar -cvf GnuCOBOL_msys2-${{ matrix.sys }}-${{ matrix.target }}.tar _build/$DISTDIR
+          (cd _build && zip -qr ../GnuCOBOL_msys2-${{ matrix.sys }}-${{ matrix.target }}.zip "$DISTDIR")
+          unzip -Z -1 GnuCOBOL_msys2-${{ matrix.sys }}-${{ matrix.target }}.zip | grep -Eq "^${DISTDIR}/bin/cobc[.]exe$"
 
-      - name: Upload GnuCOBOL_msys2.tar
+      - name: Upload GnuCOBOL_msys2.zip
         uses: actions/upload-artifact@v7
         with:
-          path: GnuCOBOL_msys2-${{ matrix.sys }}-${{ matrix.target }}.tar
+          path: GnuCOBOL_msys2-${{ matrix.sys }}-${{ matrix.target }}.zip
           if-no-files-found: error
           archive: false

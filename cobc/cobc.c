@@ -484,6 +484,7 @@ static int		cobc_flag_run = 0;
 static char		*cobc_run_args = NULL;
 static int		save_temps = 0;
 static int		cb_flag_db2_sql = 0;
+static int		cb_flag_postgres_sql = 0;
 static const char	*cb_cics_map = NULL;
 static int		save_all_src = 0;
 static signed int	save_c_src = 0;
@@ -640,6 +641,7 @@ static const struct option long_options[] = {
 	{"Os",			CB_NO_ARG, NULL, 's'},
 	{"save-temps",		CB_OP_ARG, NULL, '_'},
 	{"db2-sql",		CB_NO_ARG, &cb_flag_db2_sql, 1},
+	{"postgres-sql",		CB_NO_ARG, &cb_flag_postgres_sql, 1},
 	{"cics-map",		CB_RQ_ARG, NULL, CB_FLAG_GETOPT_CICS_MAP},
 	{"std",			CB_RQ_ARG, NULL, '$'},
 	{"conf",		CB_RQ_ARG, NULL, '&'},
@@ -5567,7 +5569,8 @@ cics_transform (struct filename *fn, const char **translated)
 }
 
 static int
-db2_sql_transform (struct filename *fn, const char *source, const char **translated)
+embedded_sql_transform (struct filename *fn, const char *source,
+			const char **translated, int postgres)
 {
 	const char *python = getenv ("COB_DB2_SQL_PYTHON");
 	const char *script = getenv ("COB_DB2_SQL_PREPROCESSOR");
@@ -5578,7 +5581,7 @@ db2_sql_transform (struct filename *fn, const char *source, const char **transla
 	size_t count = 0, index = 0;
 
 	if (fn->file_is_stdin || CB_SF_FREE (cobc_get_source_format ())) {
-		cobc_err_msg (_("--db2-sql requires a fixed-format source file"));
+		cobc_err_msg (_("--db2-sql/--postgres-sql requires a fixed-format source file"));
 		return 1;
 	}
 	if (!python || !*python) python = "python3";
@@ -5590,10 +5593,12 @@ db2_sql_transform (struct filename *fn, const char *source, const char **transla
 		if (save_temps_dir) length += strlen (save_temps_dir) + 1;
 		target = cobc_main_malloc (length);
 		if (save_temps_dir)
-			snprintf (target, length, "%s%c%s.db2.cbl",
-			          save_temps_dir, SLASH_CHAR, base);
+			snprintf (target, length, "%s%c%s.%s.cbl",
+			          save_temps_dir, SLASH_CHAR, base,
+			          postgres ? "pg" : "db2");
 		else
-			snprintf (target, length, "%s.db2.cbl", base);
+			snprintf (target, length, "%s.%s.cbl", base,
+			          postgres ? "pg" : "db2");
 	} else {
 		target = cobc_main_malloc (COB_FILE_MAX);
 		cob_temp_name (target, ".cbl");
@@ -5626,11 +5631,12 @@ db2_sql_transform (struct filename *fn, const char *source, const char **transla
 	args[index++] = target;
 	args[index] = NULL;
 	if (verbose_output)
-		fprintf (stderr, "Db2 SQL translation: %s -> %s\n",
-		         source, target);
+		fprintf (stderr, "%s SQL translation: %s -> %s\n",
+		         postgres ? "PostgreSQL" : "Db2", source, target);
 	if (run_python_translation (python, args)) {
 		if (!save_temps) (void)unlink (target);
-		cobc_err_msg (_("Db2 SQL translation failed for %s"), fn->source);
+		cobc_err_msg (_("%s SQL translation failed for %s"),
+		              postgres ? "PostgreSQL" : "Db2", fn->source);
 		return 1;
 	}
 	*translated = target;
@@ -5661,8 +5667,14 @@ preprocess (struct filename *fn)
 
 	if (cb_cics_map && cics_transform (fn, &cics_source))
 		return 1;
-	if (cb_flag_db2_sql && db2_sql_transform (fn,
-		cics_source ? cics_source : fn->source, &db2_source)) {
+	if (cb_flag_db2_sql && cb_flag_postgres_sql) {
+		cobc_err_msg (_("--db2-sql and --postgres-sql cannot be used together"));
+		if (cics_source && !save_temps) (void)unlink (cics_source);
+		return 1;
+	}
+	if ((cb_flag_db2_sql || cb_flag_postgres_sql) && embedded_sql_transform (fn,
+		cics_source ? cics_source : fn->source, &db2_source,
+		cb_flag_postgres_sql)) {
 		if (cics_source && !save_temps) (void)unlink (cics_source);
 		return 1;
 	}

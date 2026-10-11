@@ -24,6 +24,7 @@ Makefile
 !/.github/
 !extras/db2sql/.gitignore
 !extras/db2sql/.env.example
+!extras/pgsql/.gitignore
 
 # generated releases
 /*.7z

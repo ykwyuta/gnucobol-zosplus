@@ -2,7 +2,9 @@
    Record and key columns are binary, so no CCSID conversion changes bytes. */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include "local_vsam.h"
 #include <libcob.h>
 #include <sqlcli.h>
 #include <sqlcli1.h>
@@ -14,17 +16,31 @@ struct file_def {
     const char *table;
     uint32_t key_size;
     uint32_t record_size;
+    uint32_t key_offset;
 };
 
 static const struct file_def files[] = {
-    {{'K','S','D','S','C','U','S','T'}, "KSDSCUST", 10, 225},
-    {{'K','S','D','S','P','O','L','Y'}, "KSDSPOLY", 21, 64},
+    {{'K','S','D','S','C','U','S','T'}, "KSDSCUST", 10, 225, 0},
+    {{'K','S','D','S','P','O','L','Y'}, "KSDSPOLY", 21, 64, 0},
 };
 
-static struct {
-    const struct file_def *file;
-    unsigned char key[21];
+static _Thread_local struct {
+    char name[8];
+    unsigned char *key;
+    size_t key_size;
+    int active;
 } held_update;
+
+static int hold_update(const struct file_def *file, const unsigned char *key) {
+    unsigned char *buffer = realloc(held_update.key, file->key_size);
+    if (!buffer) return 0;
+    held_update.key = buffer;
+    held_update.key_size = file->key_size;
+    memcpy(held_update.name, file->name, 8);
+    memcpy(held_update.key, key, file->key_size);
+    held_update.active = 1;
+    return 1;
+}
 
 static uint32_t number(const unsigned char *value) {
     return (uint32_t)value[0] << 24 | (uint32_t)value[1] << 16 |
@@ -48,18 +64,46 @@ static int success(SQLRETURN result) {
     return result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO;
 }
 
+static const char *path_for_name(const char *name) {
+    char variable[32];
+    size_t length = 8;
+    while (length && name[length - 1] == ' ') --length;
+    if (!length || length > 8) return NULL;
+    for (size_t index = 0; index < length; ++index)
+        if (!((name[index] >= 'A' && name[index] <= 'Z') ||
+              (name[index] >= '0' && name[index] <= '9'))) return NULL;
+    snprintf(variable, sizeof variable, "COBCICS_VSAM_%.*s", (int)length, name);
+    const char *path = getenv(variable);
+    return path && *path ? path : NULL;
+}
+
 static const struct file_def *file_for(const char *name) {
+    char host_name[9];
+    memcpy(host_name, name, 8);
+    host_name[8] = '\0';
+    if (cob_is_initialized() && (unsigned char)name[0] >= 0x80 &&
+        !cob_get_param_str(1, host_name, sizeof host_name)) return NULL;
     for (size_t index = 0; index < sizeof files / sizeof files[0]; ++index)
-        if (memcmp(name, files[index].name, 8) == 0)
+        if (memcmp(host_name, files[index].name, 8) == 0)
             return &files[index];
-    if (cob_is_initialized() && (unsigned char)name[0] >= 0x80) {
-        char host_name[9];
-        if (cob_get_param_str(1, host_name, sizeof host_name))
-            for (size_t index = 0; index < sizeof files / sizeof files[0]; ++index)
-                if (memcmp(host_name, files[index].name, 8) == 0)
-                    return &files[index];
-    }
-    return NULL;
+    const char *path = path_for_name(host_name);
+    if (!path) return NULL;
+    size_t record_size, key_size, key_offset;
+    if (cobcics_vsam_layout(path, &record_size, &key_size, &key_offset) ||
+        !key_size || record_size > UINT32_MAX || key_size > UINT32_MAX ||
+        key_offset > UINT32_MAX)
+        return NULL;
+    static _Thread_local struct file_def local_file;
+    memcpy(local_file.name, host_name, 8);
+    local_file.table = NULL;
+    local_file.record_size = (uint32_t)record_size;
+    local_file.key_size = (uint32_t)key_size;
+    local_file.key_offset = (uint32_t)key_offset;
+    return &local_file;
+}
+
+static const char *local_path(const struct file_def *file) {
+    return file ? path_for_name(file->name) : NULL;
 }
 
 static const cob_charset *current_data_charset(void) {
@@ -147,6 +191,34 @@ void COBCICS_FILE_READ(const char *name, unsigned char *destination,
     }
     if (available > storage)
         available = storage;
+    const char *path = local_path(file);
+    if (path) {
+        unsigned char *host_key = malloc(key_size);
+        unsigned char *host_record = malloc(file->record_size);
+        if (!host_key || !host_record) {
+            free(host_key); free(host_record);
+            response(resp, resp2, 17, 5); return;
+        }
+        copy_to_host(host_key, ridfld, key_size);
+        int result = (*mode & 4 ? cobcics_vsam_read_update : cobcics_vsam_read)(
+            path, file->record_size, file->key_size, file->key_offset,
+            host_key, key_size, *mode & 1, host_record);
+        free(host_key);
+        if (result) { free(host_record); response(resp, resp2, result, 0); return; }
+        put_number(length, file->record_size);
+        if (available < file->record_size) {
+            free(host_record); response(resp, resp2, 22, 1); return;
+        }
+        copy_from_host(destination, host_record, file->record_size);
+        if (number(key_capacity) >= file->key_size)
+            copy_from_host(ridfld, host_record + file->key_offset, file->key_size);
+        if ((*mode & 4) && !hold_update(file, host_record + file->key_offset)) {
+            free(host_record); response(resp, resp2, 17, 5); return;
+        }
+        free(host_record);
+        response(resp, resp2, 0, 0);
+        return;
+    }
     SQLHDBC connection = DB2SQL_CONNECTION();
     if (!connection) {
         response(resp, resp2, 17, 2);
@@ -212,8 +284,10 @@ void COBCICS_FILE_READ(const char *name, unsigned char *destination,
             sql_error(statement, "READ UPDATE lock", resp, resp2);
             goto finish;
         }
-        held_update.file = file;
-        memcpy(held_update.key, found_key, file->key_size);
+        if (!hold_update(file, found_key)) {
+            response(resp, resp2, 17, 5);
+            goto finish;
+        }
     }
     response(resp, resp2, 0, 0);
 finish:
@@ -232,8 +306,19 @@ void COBCICS_FILE_WRITE(const char *name, const unsigned char *source,
     if (!file || number(length) != file->record_size ||
         number(key_length) != file->key_size ||
         number(key_capacity) < file->key_size ||
-        memcmp(source, ridfld, file->key_size) != 0) {
+        memcmp(source + file->key_offset, ridfld, file->key_size) != 0) {
         response(resp, resp2, 16, 1);
+        return;
+    }
+    const char *path = local_path(file);
+    if (path) {
+        unsigned char *host_record = malloc(file->record_size);
+        if (!host_record) { response(resp, resp2, 17, 5); return; }
+        copy_to_host(host_record, source, file->record_size);
+        int result = cobcics_vsam_write(path, file->record_size,
+                                       file->key_size, file->key_offset, host_record);
+        free(host_record);
+        response(resp, resp2, result, 0);
         return;
     }
     SQLHDBC connection = DB2SQL_CONNECTION();
@@ -266,14 +351,32 @@ void COBCICS_FILE_REWRITE(const char *name, const unsigned char *source,
                           unsigned char *resp, unsigned char *resp2) {
     const struct file_def *file = file_for(name);
     (void)capacity;
-    unsigned char host_record[225];
-    if (file)
-        copy_to_host(host_record, source, file->record_size);
-    if (!file || held_update.file != file ||
-        number(length) != file->record_size ||
-        memcmp(host_record, held_update.key, file->key_size) != 0) {
+    if (!file || !held_update.active ||
+        memcmp(held_update.name, file->name, 8) ||
+        held_update.key_size != file->key_size ||
+        number(length) != file->record_size) {
         response(resp, resp2, 16, 1);
         return;
+    }
+    const char *path = local_path(file);
+    if (path) {
+        unsigned char *host_record = malloc(file->record_size);
+        if (!host_record) { response(resp, resp2, 17, 5); return; }
+        copy_to_host(host_record, source, file->record_size);
+        if (memcmp(host_record + file->key_offset, held_update.key, file->key_size)) {
+            free(host_record); response(resp, resp2, 16, 1); return;
+        }
+        int result = cobcics_vsam_rewrite(path, file->record_size,
+                     file->key_size, file->key_offset, held_update.key, host_record);
+        free(host_record);
+        if (!result) held_update.active = 0;
+        response(resp, resp2, result, 0);
+        return;
+    }
+    unsigned char host_record[225];
+    copy_to_host(host_record, source, file->record_size);
+    if (memcmp(host_record, held_update.key, file->key_size)) {
+        response(resp, resp2, 16, 1); return;
     }
     SQLHDBC connection = DB2SQL_CONNECTION();
     if (!connection) {
@@ -293,7 +396,7 @@ void COBCICS_FILE_REWRITE(const char *name, const unsigned char *source,
         !success(SQLExecute(statement)))
         sql_error(statement, "REWRITE", resp, resp2);
     else {
-        held_update.file = NULL;
+        held_update.active = 0;
         response(resp, resp2, 0, 0);
     }
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
@@ -307,6 +410,17 @@ void COBCICS_FILE_DELETE(const char *name, const unsigned char *ridfld,
     if (!file || number(key_length) != file->key_size ||
         number(key_capacity) < file->key_size) {
         response(resp, resp2, 16, 1);
+        return;
+    }
+    const char *path = local_path(file);
+    if (path) {
+        unsigned char *host_key = malloc(file->key_size);
+        if (!host_key) { response(resp, resp2, 17, 5); return; }
+        copy_to_host(host_key, ridfld, file->key_size);
+        int result = cobcics_vsam_delete(path, file->record_size,
+                                        file->key_size, file->key_offset, host_key);
+        free(host_key);
+        response(resp, resp2, result, 0);
         return;
     }
     SQLHDBC connection = DB2SQL_CONNECTION();

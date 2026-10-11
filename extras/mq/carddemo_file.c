@@ -1,8 +1,9 @@
-/* CardDemo's ACCTDAT CICS READ for the supplied ASCII fixed-record sample. */
+/* CardDemo's ACCTDAT CICS READ from a local FB data set or sample text. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../cobcics/local_vsam.h"
 
 static uint32_t
 number(const unsigned char *p)
@@ -35,13 +36,24 @@ COBCICS_FILE_READ(const char *name, unsigned char *destination,
                   const unsigned char *key_capacity, const unsigned char *mode,
                   unsigned char *resp, unsigned char *resp2)
 {
+    const char *vsam = getenv("COBCICS_VSAM_ACCTDAT");
     const char *path = getenv("CARDDEMO_ACCTDATA_FILE");
     FILE *file;
     char line[320];
     if (memcmp(name, "ACCTDAT ", 8) != 0 || number(key_length) != 11 ||
         number(key_capacity) < 11 || number(length) < 300 ||
-        number(capacity) < 300 || *mode != 0 || !path || !*path) {
+        number(capacity) < 300 || *mode != 0) {
         response(resp, resp2, 16, 1); /* INVREQ */
+        return;
+    }
+    if (vsam && *vsam) {
+        int result = cobcics_vsam_read(vsam, 300, 11, 0, ridfld, 11, 0, destination);
+        if (!result) put_number(length, 300);
+        response(resp, resp2, (uint32_t)result, 0);
+        return;
+    }
+    if (!path || !*path) {
+        response(resp, resp2, 16, 1);
         return;
     }
     file = fopen(path, "rb");

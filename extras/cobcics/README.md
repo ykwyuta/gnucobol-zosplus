@@ -23,6 +23,8 @@ Connect c3270 or wc3270 to `N:127.0.0.1:3270` with model `3279-2` for
 legacy TN3270, or add `--tn3270e` to the host and connect without `N:`.
 For TLS, NVT, IND$FILE, 3287 printing and oversize screens, see the
 [wc3270 host guide](../../docs/userguide/wc3270-host.md).
+For jclsh-generated CSD transaction routes and fixed FB VSAM files, see the
+[GenApp CSD/VSAM guide](../../docs/userguide/cics-genapp.md#jclsh-の-csd・fb-vsam-を使う).
 
 ### Bank of Z syntax audit
 
@@ -173,10 +175,13 @@ the code, and cancellation at runtime. Dump creation and trapping failures
 that originate outside an explicit `EXEC CICS ABEND` are not implemented.
 Db2 rollback on an unhandled ABEND is verified in the local link test
 ([IBM ABEND](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-abend)).
-`SYNCPOINT` commits the active Db2 unit of work and `SYNCPOINT ROLLBACK`
-backs it out. Both close the current Db2 connection so later SQL starts a new
-unit of work; `RESP` and `RESP2` receive the result. The Db2 test covers both
-forms, including a commit that survives a later ABEND. `DELAY FOR SECONDS(n)`
+`SYNCPOINT` commits the active Db2 unit of work and staged local FB VSAM changes;
+`SYNCPOINT ROLLBACK` backs both out. Normal task completion commits, while
+ABEND discards pending changes. Both syncpoint forms close the current Db2
+connection so later SQL starts a new unit of work; `RESP` and `RESP2` receive
+the result. The local VSAM test covers a Db2 commit failure, rollback, and
+commit. Crash recovery across Db2 and local files is not implemented.
+`DELAY FOR SECONDS(n)`
 supports literal values from 0 through 60. The Bank error handler's
 `WRITE FILE('ABNDFILE') FROM(...) RIDFLD(...)` appends a two-byte big-endian
 length followed by the record to the path in `COBCICS_ABEND_LOG`. It checks

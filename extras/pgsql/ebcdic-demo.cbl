@@ -1,0 +1,37 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PGEBCDICDEMO.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 HV-TEXT PIC X(8) VALUE '日本語'.
+       01 HV-RESULT PIC X(8).
+       01 HV-SHORT PIC X(4).
+       01 HV-HEX PIC X(64).
+           EXEC SQL INCLUDE SQLCA END-EXEC.
+       PROCEDURE DIVISION.
+           EXEC SQL SELECT CAST(:HV-TEXT AS VARCHAR(32))
+             INTO :HV-RESULT FROM (VALUES (1)) AS D(N)
+           END-EXEC.
+           IF SQLCODE NOT = 0 OR HV-RESULT NOT = HV-TEXT
+               PERFORM FAILED
+           END-IF.
+           EXEC SQL SELECT ENCODE(CONVERT_TO(
+             RTRIM(CAST(:HV-TEXT AS VARCHAR(32))), 'UTF8'), 'hex')
+             INTO :HV-HEX FROM (VALUES (1)) AS D(N)
+           END-EXEC.
+           IF SQLCODE NOT = 0 OR
+              HV-HEX NOT = 'e697a5e69cace8aa9e'
+               PERFORM FAILED
+           END-IF.
+           EXEC SQL SELECT CAST(:HV-TEXT AS VARCHAR(32))
+             INTO :HV-SHORT FROM (VALUES (1)) AS D(N)
+           END-EXEC.
+           IF SQLCODE NOT = -99992 OR SQLSTATE NOT = '22001'
+               PERFORM FAILED
+           END-IF.
+           DISPLAY 'POSTGRES EBCDIC OK'.
+           MOVE 0 TO RETURN-CODE.
+           STOP RUN.
+       FAILED.
+           DISPLAY 'POSTGRES EBCDIC FAILED ' SQLCODE ' ' SQLSTATE.
+           MOVE 1 TO RETURN-CODE.
+           STOP RUN.

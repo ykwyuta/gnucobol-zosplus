@@ -22,6 +22,8 @@ jobs:
         run: cargo test --locked --manifest-path extras/cobcics/Cargo.toml
       - name: JCL interpreter unit tests
         run: cargo test --locked --manifest-path extras/jclsh/Cargo.toml
+      - name: Fixed-block converter unit tests
+        run: cargo test --locked --manifest-path extras/jclsh/Cargo.toml --bin fbconvert
       - name: PL/I compiler unit tests
         run: cargo test --locked --manifest-path extras/pl1c/Cargo.toml
       - name: COBOL preprocess regression tests
@@ -30,3 +32,16 @@ jobs:
           python tests/test_db2sql_preprocess.py
           python tests/test_cobcov.py
           python tests/test_cics_genapp_preprocess.py
+      - name: Build release tools
+        run: |
+          cargo build --locked --release --manifest-path extras/cobcics/Cargo.toml --bins
+          cargo build --locked --release --manifest-path extras/jclsh/Cargo.toml --bins
+          cargo build --locked --release --manifest-path extras/pl1c/Cargo.toml
+      - name: Package release tools as ZIP
+        run: python extras/ci/package_rust_tools.py --os ${{ runner.os }}
+      - name: Upload release tools ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/zosplus-tools-${{ runner.os }}.zip
+          archive: false
+          if-no-files-found: error

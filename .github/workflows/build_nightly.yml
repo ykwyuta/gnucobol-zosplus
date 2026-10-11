@@ -36,6 +36,7 @@ jobs:
           sudo apt -y update
           sudo apt -y install autoconf automake make libtool flex bison \
                               autopoint gettext help2man texinfo texlive \
+                              zip unzip \
                               gcc libgmp-dev libncurses-dev \
                               libdb5.3-dev libxml2-dev libcjson-dev
 
@@ -137,6 +138,20 @@ jobs:
                          TESTSUITEFLAGS="--recheck --verbose"
           make -C _build --jobs=$(($(nproc)+1)) dist DIST_TARGETS="dist-gzip distwin-zip"
           make -C _build --jobs=$(($(nproc)+1)) distbin DISTBIN_TARGETS="distbin-xz"
+
+      - name: Package Linux binaries as ZIP
+        run: |
+          mkdir -p _build/binary-zip
+          tar -xf _build/gnucobol*.tar.xz -C _build/binary-zip
+          (cd _build/binary-zip && zip -qr ../gnucobol-linux-${{ matrix.isam }}.zip .)
+          unzip -Z -1 _build/gnucobol-linux-${{ matrix.isam }}.zip | grep -Eq '/bin/cobc$'
+
+      - name: Upload Linux binaries ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          path: _build/gnucobol-linux-${{ matrix.isam }}.zip
+          archive: false
+          if-no-files-found: error
 
       - name: Upload testsuite.log
         if: ${{ !cancelled() }}

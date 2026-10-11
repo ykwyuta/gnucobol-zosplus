@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod datasets;
 mod jcl;
+mod records;
+mod utilities;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -24,6 +26,7 @@ struct Dd {
     name: String,
     line: usize,
     kind: DdKind,
+    dcb: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -403,11 +406,10 @@ fn docker_host_path(path: &Path) -> String {
 struct PlannedStep {
     step: Step,
     dsn: Option<DsnRun>,
-    executable: PathBuf,
+    executable: Option<PathBuf>,
 }
 
 fn plan_job(job: &Job, profile: &Profile, workspace: &Path) -> Result<Vec<PlannedStep>> {
-    checked_file(workspace, &profile.env_file, "Db2 env file")?;
     let datasets = datasets::DataSets::new(workspace, profile)?;
     let mut result = Vec::new();
     for step in &job.steps {
@@ -439,11 +441,15 @@ fn plan_job(job: &Job, profile: &Profile, workspace: &Path) -> Result<Vec<Planne
         let program_name = dsn
             .as_ref()
             .map_or(step.pgm.as_str(), |dsn| dsn.program.as_str());
-        let program = profile
-            .programs
-            .get(program_name)
-            .ok_or_else(|| format!("line {}: unregistered program {}", step.line, program_name))?;
-        let executable = checked_file(workspace, program, "registered program")?;
+        let executable = if utilities::is_builtin(program_name) {
+            None
+        } else {
+            let program = profile.programs.get(program_name).ok_or_else(|| {
+                format!("line {}: unregistered program {}", step.line, program_name)
+            })?;
+            checked_file(workspace, &profile.env_file, "Db2 env file")?;
+            Some(checked_file(workspace, program, "registered program")?)
+        };
         result.push(PlannedStep {
             step: step.clone(),
             dsn,
@@ -478,10 +484,11 @@ fn print_plan(job: &Job, steps: &[PlannedStep], profile: &Profile, workspace: &P
         for guard in &planned.step.guards {
             println!("  IF {} THEN={}", guard.expression, guard.then_branch);
         }
-        println!(
-            "  adapter {}",
-            container_path(workspace, &planned.executable)?
-        );
+        if let Some(executable) = &planned.executable {
+            println!("  adapter {}", container_path(workspace, executable)?);
+        } else {
+            println!("  Rust utility {}", planned.step.pgm);
+        }
         for dd in &planned.step.dds {
             match &dd.kind {
                 DdKind::Inline(lines) => {
@@ -540,7 +547,6 @@ fn run_job(
     let spool = workspace.join("build/jclsh/spool").join(&id);
     fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
     let mount = format!("{}:/src", docker_host_path(workspace));
-    let env_file = checked_file(workspace, &profile.env_file, "Db2 env file")?;
     let mut datasets = datasets::DataSets::new(workspace, profile)?;
     let mut final_rc = 0;
     let mut results = Vec::new();
@@ -586,31 +592,9 @@ fn run_job(
             previous.push((step.name.clone(), None));
             continue;
         }
-        let mut command = Command::new("docker");
-        command.args(["run", "--rm", "--env-file"]);
-        command.arg(docker_host_path(&env_file));
-        command.args(["-e", &format!("DB2_SCHEMA={}", profile.schema)]);
-        if let Some(parm) = &step.parm {
-            command.args(["-e", &format!("JCL_PARM={parm}")]);
-        }
-        command.args([
-            "-e",
-            &format!("LD_LIBRARY_PATH={}", profile.ld_library_path),
-        ]);
         let abend_file = step_dir.join("abend.txt");
-        command.args([
-            "-e",
-            &format!("JCL_ABEND_FILE={}", container_path(workspace, &abend_file)?),
-        ]);
         let (dataset_env, allocations) = datasets.prepare(step, &step_dir)?;
-        for (name, path) in dataset_env {
-            let value = if path == Path::new("/dev/null") {
-                "/dev/null".to_string()
-            } else {
-                container_path(workspace, &path)?
-            };
-            command.args(["-e", &format!("DD_{name}={value}")]);
-        }
+        let mut dd_paths: HashMap<String, PathBuf> = dataset_env.into_iter().collect();
         for dd in &step.dds {
             if let DdKind::Inline(lines) = &dd.kind {
                 if dd.name == "SYSTSIN" {
@@ -624,26 +608,53 @@ fn run_job(
                 };
                 fs::write(&path, records)
                     .map_err(|error| format!("{}: {error}", path.display()))?;
-                command.args([
-                    "-e",
-                    &format!("DD_{}={}", dd.name, container_path(workspace, &path)?),
-                ]);
+                dd_paths.insert(dd.name.clone(), path);
             }
         }
-        command.args(["-v", &mount, "-w", "/src", "--entrypoint"]);
-        command.arg(container_path(workspace, &planned.executable)?);
-        command.arg(&profile.image);
-        let output = command
-            .output()
-            .map_err(|error| format!("docker run for {}: {error}", step.name))?;
-        let rc = output.status.code().unwrap_or(1);
-        if matches!(rc, 125..=127) {
-            return Err(format!(
-                "docker failed to start step {}: {}",
-                step.name,
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+        let (rc, stdout, stderr) = if let Some(executable) = &planned.executable {
+            let mut command = Command::new("docker");
+            command.args(["run", "--rm", "--env-file"]);
+            let env_file = checked_file(workspace, &profile.env_file, "Db2 env file")?;
+            command.arg(docker_host_path(&env_file));
+            command.args(["-e", &format!("DB2_SCHEMA={}", profile.schema)]);
+            if let Some(parm) = &step.parm {
+                command.args(["-e", &format!("JCL_PARM={parm}")]);
+            }
+            command.args([
+                "-e",
+                &format!("LD_LIBRARY_PATH={}", profile.ld_library_path),
+            ]);
+            command.args([
+                "-e",
+                &format!("JCL_ABEND_FILE={}", container_path(workspace, &abend_file)?),
+            ]);
+            for (name, path) in &dd_paths {
+                let value = if path == Path::new("/dev/null") {
+                    "/dev/null".to_string()
+                } else {
+                    container_path(workspace, path)?
+                };
+                command.args(["-e", &format!("DD_{name}={value}")]);
+            }
+            command.args(["-v", &mount, "-w", "/src", "--entrypoint"]);
+            command.arg(container_path(workspace, executable)?);
+            command.arg(&profile.image);
+            let output = command
+                .output()
+                .map_err(|error| format!("docker run for {}: {error}", step.name))?;
+            let rc = output.status.code().unwrap_or(1);
+            if matches!(rc, 125..=127) {
+                return Err(format!(
+                    "docker failed to start step {}: {}",
+                    step.name,
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            (rc, output.stdout, output.stderr)
+        } else {
+            let output = utilities::run(&step.pgm, &dd_paths, &datasets)?;
+            (output.rc, output.stdout, output.stderr)
+        };
         let abend = if abend_file.exists() {
             let code = fs::read_to_string(&abend_file)
                 .map_err(|error| error.to_string())?
@@ -671,18 +682,18 @@ fn run_job(
         for dd in &step.dds {
             if dd.kind == DdKind::Sysout {
                 let content: &[u8] = match dd.name.as_str() {
-                    "SYSTSPRT" => &output.stderr,
-                    _ => &output.stdout,
+                    "SYSTSPRT" => &stderr,
+                    _ => &stdout,
                 };
                 fs::write(step_dir.join(format!("{}.txt", dd.name)), content)
                     .map_err(|error| format!("spool write: {error}"))?;
             }
         }
         io::stdout()
-            .write_all(&output.stdout)
+            .write_all(&stdout)
             .map_err(|error| error.to_string())?;
         io::stderr()
-            .write_all(&output.stderr)
+            .write_all(&stderr)
             .map_err(|error| error.to_string())?;
         if let Some(code) = abend {
             println!("JCLSH STEP {} ABEND={code}", step.name);

@@ -1,5 +1,6 @@
 pub mod bms;
 pub mod codec;
+pub mod csd;
 pub mod indfile;
 pub mod printer;
 pub mod schedule;
