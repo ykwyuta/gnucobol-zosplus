@@ -20,8 +20,13 @@ export COB_CFLAGS="-I$root ${COB_CFLAGS:-} -DCOBCICS_LOCAL_VSAM"
 export COB_LDFLAGS="-L$libcob_dir ${COB_LDFLAGS:-}"
 export LD_LIBRARY_PATH="$libcob_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+mq_client_home=${MQ_CLIENT_HOME:-/opt/mqm}
+if [ ! -f "$mq_client_home/inc/cmqc.h" ]; then
+    echo "IBM MQ C headers not found: $mq_client_home/inc/cmqc.h" >&2
+    exit 1
+fi
 gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-    extras/mq/mqbridge.c $(pkg-config --cflags --libs libcurl) \
+    -I"$mq_client_home/inc" extras/mq/mqbridge.c -ldl \
     -o "$output/libcobmq.so"
 
 "$cobc" -x -I extras/mq/copy \

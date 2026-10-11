@@ -7,7 +7,6 @@ services:
       MQ_CONNAUTH_USE_HTP: "true"
     ports:
       - "127.0.0.1:1415:1414"
-      - "127.0.0.1:9444:9443"
     secrets:
       - mqAppPassword
       - mqAdminPassword

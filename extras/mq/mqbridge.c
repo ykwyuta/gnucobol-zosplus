@@ -1,86 +1,73 @@
-/* COBOL MQI subset backed by IBM MQ's messaging REST API.
- * The companion copybooks define the ABI; IBM MQ files are not redistributed.
+/* SPDX-License-Identifier: MIT
+ * COBOL's compact MQ copybooks are translated to IBM MQ's C MQI.
+ * IBM headers and runtime are supplied separately by IBM and are not vendored.
  */
-#include <curl/curl.h>
-#include <ctype.h>
+#define MQCONN MQ_NATIVE_DECL_CONN
+#define MQCONNX MQ_NATIVE_DECL_CONNX
+#define MQDISC MQ_NATIVE_DECL_DISC
+#define MQOPEN MQ_NATIVE_DECL_OPEN
+#define MQCLOSE MQ_NATIVE_DECL_CLOSE
+#define MQPUT MQ_NATIVE_DECL_PUT
+#define MQPUT1 MQ_NATIVE_DECL_PUT1
+#define MQGET MQ_NATIVE_DECL_GET
+#include <cmqc.h>
+#include <cmqxc.h>
+#undef MQCONN
+#undef MQCONNX
+#undef MQDISC
+#undef MQOPEN
+#undef MQCLOSE
+#undef MQPUT
+#undef MQPUT1
+#undef MQGET
+
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
-#include <strings.h>
-#endif
-
-#ifdef _WIN32
-#define strcasecmp _stricmp
-#define strncasecmp _strnicmp
-#endif
-
-#define MQ_OK 0
-#define MQ_FAILED 2
-#define MQRC_NO_MSG_AVAILABLE 2033
-#define MQRC_NOT_AUTHORIZED 2035
-#define MQRC_UNKNOWN_OBJECT_NAME 2085
-#define MQRC_CONNECTION_BROKEN 2009
-#define MQRC_TRUNCATED_MSG_FAILED 2080
-#define MQRC_HOBJ_ERROR 2019
-#define MQRC_OPTIONS_ERROR 2046
 
 #pragma pack(push, 1)
 typedef struct {
     char id[4];
-    int32_t version;
-    int32_t object_type;
-    char object_name[48];
-    char object_qmgr_name[48];
-} mqod;
+    int32_t version, object_type;
+    char object_name[48], object_qmgr_name[48];
+} cob_mqod;
 typedef struct {
     char id[4];
-    int32_t version;
-    int32_t msg_type;
-    int32_t expiry;
-    int32_t persistence;
-    int32_t coded_char_set_id;
-    char format[8];
-    char msg_id[24];
-    char correl_id[24];
-    char reply_to_q[48];
-    char reply_to_qmgr[48];
-} mqmd;
+    int32_t version, msg_type, expiry, persistence, coded_char_set_id;
+    char format[8], msg_id[24], correl_id[24];
+    char reply_to_q[48], reply_to_qmgr[48];
+} cob_mqmd;
 typedef struct {
     char id[4];
-    int32_t version;
-    int32_t options;
-    int32_t wait_interval;
-} mqgmo;
+    int32_t version, options, wait_interval;
+} cob_mqgmo;
 typedef struct {
     char id[4];
-    int32_t version;
-    int32_t options;
-} mqpmo;
+    int32_t version, options;
+} cob_mqpmo;
 #pragma pack(pop)
 
-typedef struct {
-    char *data;
-    size_t size;
-    char msg_id[24];
-    char correl_id[24];
-    char reply_to_q[48];
-} mq_response;
+static void *client_library;
+static PMQ_CONNX_CALL native_connx;
+static PMQ_DISC_CALL native_disc;
+static PMQ_OPEN_CALL native_open;
+static PMQ_CLOSE_CALL native_close;
+static PMQ_PUT_CALL native_put;
+static PMQ_PUT1_CALL native_put1;
+static PMQ_GET_CALL native_get;
+static MQHCONN implicit_hconn = MQHC_UNUSABLE_HCONN;
 
-static char handles[64][49];
-
-/* IBM-style COBOL BINARY fields are stored most-significant byte first. */
-static int32_t
-read_i(const int32_t *field)
+/* The z/OS-compatible COBOL BINARY fields in our copybooks are big endian. */
+static int32_t read_i(const int32_t *field)
 {
     const unsigned char *p = (const unsigned char *)field;
     return (int32_t)((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 |
                      (uint32_t)p[2] << 8 | (uint32_t)p[3]);
 }
 
-static void
-write_i(int32_t *field, int32_t value)
+static void write_i(int32_t *field, int32_t value)
 {
     unsigned char *p = (unsigned char *)field;
     uint32_t n = (uint32_t)value;
@@ -90,379 +77,343 @@ write_i(int32_t *field, int32_t value)
     p[3] = (unsigned char)n;
 }
 
-static void
-result(int32_t *cc, int32_t *reason, int32_t code)
+static void result(int32_t *cc, int32_t *reason, MQLONG native_cc,
+                   MQLONG native_reason)
 {
-    write_i(cc, code == 0 ? MQ_OK : MQ_FAILED);
-    write_i(reason, code);
+    write_i(cc, native_cc);
+    write_i(reason, native_reason);
 }
 
-static void
-trim_field(char *out, size_t out_size, const char *field, size_t field_size)
-{
-    size_t n = field_size;
-    while (n && (field[n - 1] == ' ' || field[n - 1] == 0)) --n;
-    if (n >= out_size) n = out_size - 1;
-    memcpy(out, field, n);
-    out[n] = 0;
-}
-
-static int
-has_id(const char *bytes, size_t size)
+static int has_value(const char *value, size_t length)
 {
     size_t i;
-    for (i = 0; i < size; ++i)
-        if (bytes[i] != 0 && bytes[i] != ' ') return 1;
+    for (i = 0; i < length; ++i)
+        if (value[i] != 0 && value[i] != ' ') return 1;
     return 0;
 }
 
-static void
-hex_id(char *out, const char *bytes)
+static void copy_field(char *to, size_t to_size, const char *from, size_t from_size)
 {
-    static const char digits[] = "0123456789abcdef";
-    size_t i;
-    for (i = 0; i < 24; ++i) {
-        unsigned char c = (unsigned char)bytes[i];
-        out[i * 2] = digits[c >> 4];
-        out[i * 2 + 1] = digits[c & 15];
-    }
-    out[48] = 0;
+    size_t n = from_size < to_size ? from_size : to_size;
+    memset(to, ' ', to_size);
+    memcpy(to, from, n);
 }
 
-static void
-decode_id(char *out, const char *value)
+static void make_od(MQOD *to, const cob_mqod *from)
 {
-    size_t i;
-    if (!strncasecmp(value, "ID:", 3)) value += 3;
-    if (strlen(value) < 48) return;
-    for (i = 0; i < 24; ++i) {
-        unsigned int byte;
-        if (sscanf(value + i * 2, "%2x", &byte) != 1) return;
-        out[i] = (char)byte;
-    }
+    MQOD defaults = {MQOD_DEFAULT};
+    *to = defaults;
+    to->ObjectType = read_i(&from->object_type);
+    if (!to->ObjectType) to->ObjectType = MQOT_Q;
+    copy_field(to->ObjectName, sizeof(to->ObjectName),
+               from->object_name, sizeof(from->object_name));
+    copy_field(to->ObjectQMgrName, sizeof(to->ObjectQMgrName),
+               from->object_qmgr_name, sizeof(from->object_qmgr_name));
 }
 
-static size_t
-body_callback(char *ptr, size_t size, size_t nmemb, void *context)
+static void make_md(MQMD *to, const cob_mqmd *from)
 {
-    mq_response *response = (mq_response *)context;
-    size_t count = size * nmemb;
-    char *next = (char *)realloc(response->data, response->size + count + 1);
-    if (!next) return 0;
-    response->data = next;
-    memcpy(response->data + response->size, ptr, count);
-    response->size += count;
-    response->data[response->size] = 0;
-    return count;
+    MQMD defaults = {MQMD_DEFAULT};
+    *to = defaults;
+    to->MsgType = read_i(&from->msg_type);
+    to->Expiry = read_i(&from->expiry);
+    to->Persistence = read_i(&from->persistence);
+    to->CodedCharSetId = read_i(&from->coded_char_set_id);
+    if (has_value(from->format, sizeof(from->format)))
+        memcpy(to->Format, from->format, sizeof(from->format));
+    if (has_value(from->msg_id, sizeof(from->msg_id)))
+        memcpy(to->MsgId, from->msg_id, sizeof(from->msg_id));
+    if (has_value(from->correl_id, sizeof(from->correl_id)))
+        memcpy(to->CorrelId, from->correl_id, sizeof(from->correl_id));
+    copy_field(to->ReplyToQ, sizeof(to->ReplyToQ),
+               from->reply_to_q, sizeof(from->reply_to_q));
+    copy_field(to->ReplyToQMgr, sizeof(to->ReplyToQMgr),
+               from->reply_to_qmgr, sizeof(from->reply_to_qmgr));
 }
 
-static size_t
-header_callback(char *ptr, size_t size, size_t nmemb, void *context)
+static void save_md(cob_mqmd *to, const MQMD *from)
 {
-    mq_response *response = (mq_response *)context;
-    size_t count = size * nmemb;
-    char value[160];
-    const char *start = NULL;
-    size_t n;
-    if (count > 21 && !strncasecmp(ptr, "ibm-mq-md-messageId:", 20)) {
-        start = ptr + 20;
-    } else if (count > 23 && !strncasecmp(ptr, "ibm-mq-md-correlationId:", 24)) {
-        start = ptr + 24;
-    } else if (count > 18 && !strncasecmp(ptr, "ibm-mq-md-replyTo:", 18)) {
-        start = ptr + 18;
-    }
-    if (!start) return count;
-    while (start < ptr + count && isspace((unsigned char)*start)) ++start;
-    n = (size_t)(ptr + count - start);
-    while (n && isspace((unsigned char)start[n - 1])) --n;
-    if (n >= sizeof(value)) n = sizeof(value) - 1;
-    memcpy(value, start, n);
-    value[n] = 0;
-    if (!strncasecmp(ptr, "ibm-mq-md-messageId:", 20))
-        decode_id(response->msg_id, value);
-    else if (!strncasecmp(ptr, "ibm-mq-md-correlationId:", 24))
-        decode_id(response->correl_id, value);
-    else {
-        char *at = strchr(value, '@');
-        if (at) *at = 0;
-        memset(response->reply_to_q, ' ', sizeof(response->reply_to_q));
-        n = strlen(value);
-        if (n > sizeof(response->reply_to_q)) n = sizeof(response->reply_to_q);
-        memcpy(response->reply_to_q, value, n);
-    }
-    return count;
+    write_i(&to->msg_type, from->MsgType);
+    write_i(&to->expiry, from->Expiry);
+    write_i(&to->persistence, from->Persistence);
+    write_i(&to->coded_char_set_id, from->CodedCharSetId);
+    memcpy(to->format, from->Format, sizeof(to->format));
+    memcpy(to->msg_id, from->MsgId, sizeof(to->msg_id));
+    memcpy(to->correl_id, from->CorrelId, sizeof(to->correl_id));
+    memcpy(to->reply_to_q, from->ReplyToQ, sizeof(to->reply_to_q));
+    memcpy(to->reply_to_qmgr, from->ReplyToQMgr, sizeof(to->reply_to_qmgr));
 }
 
-static int
-read_password(char *out, size_t size)
+static int load_native(void)
+{
+    const char *path = getenv("MQ_CLIENT_LIB");
+    if (client_library) return 1;
+    client_library = dlopen(path && *path ? path : "libmqic_r.so",
+                            RTLD_NOW | RTLD_LOCAL);
+    if (!client_library) {
+        fprintf(stderr, "cobmq: IBM MQ client library: %s\n", dlerror());
+        return 0;
+    }
+#define LOAD(name, variable) do { \
+    variable = (PMQ_##name##_CALL)dlsym(client_library, "MQ" #name); \
+    if (!variable) { \
+        fprintf(stderr, "cobmq: missing MQ%s in client library\n", #name); \
+        dlclose(client_library); \
+        client_library = NULL; \
+        return 0; \
+    } \
+} while (0)
+    LOAD(CONNX, native_connx);
+    LOAD(DISC, native_disc);
+    LOAD(OPEN, native_open);
+    LOAD(CLOSE, native_close);
+    LOAD(PUT, native_put);
+    LOAD(PUT1, native_put1);
+    LOAD(GET, native_get);
+#undef LOAD
+    return 1;
+}
+
+static int read_password(char *out, size_t capacity)
 {
     const char *env = getenv("MQ_PASSWORD");
     const char *path = getenv("MQ_PASSWORD_FILE");
     FILE *file;
     size_t n;
     if (env && *env) {
-        if (strlen(env) >= size) return 0;
+        if (strlen(env) >= capacity) return -1;
         strcpy(out, env);
         return 1;
     }
     if (!path || !*path) return 0;
     file = fopen(path, "rb");
-    if (!file) return 0;
-    n = fread(out, 1, size - 1, file);
+    if (!file) return -1;
+    n = fread(out, 1, capacity - 1, file);
     fclose(file);
     while (n && (out[n - 1] == '\n' || out[n - 1] == '\r')) --n;
     out[n] = 0;
-    return n > 0;
+    return n ? 1 : -1;
 }
 
-static int32_t
-request(const char *method, const char *queue, mqmd *md,
-        const char *body, int32_t body_size, int32_t wait_ms,
-        mq_response *response)
+static void connect_native(MQHCONN *hconn, MQLONG *cc, MQLONG *reason)
 {
-    CURL *curl = NULL;
-    struct curl_slist *headers = NULL;
-    CURLcode curl_code;
-    const char *base = getenv("MQ_REST_URL");
+    MQCD cd = {MQCD_CLIENT_CONN_DEFAULT};
+    MQCNO cno = {MQCNO_DEFAULT};
+    MQCSP csp = {MQCSP_DEFAULT};
+    const char *channel = getenv("MQ_CHANNEL");
+    const char *conn = getenv("MQ_CONN_NAME");
     const char *qmgr = getenv("MQ_QMGR_NAME");
     const char *user = getenv("MQ_USER");
-    char password[256], url[1024], header[180], id[49];
-    char *escaped_qmgr = NULL, *escaped_queue = NULL;
-    long http_code = 0;
-    int32_t reason = MQRC_CONNECTION_BROKEN;
-    size_t length;
-    memset(response, 0, sizeof(*response));
-    if (!base || !*base) base = "https://localhost:9444";
+    char password[256] = {0};
+    int has_password;
+
+    *hconn = MQHC_UNUSABLE_HCONN;
+    if (!load_native()) {
+        *cc = MQCC_FAILED;
+        *reason = MQRC_CONNECTION_BROKEN;
+        return;
+    }
+    if (!channel || !*channel) channel = "DEV.APP.SVRCONN";
+    if (!conn || !*conn) conn = "localhost(1415)";
     if (!qmgr || !*qmgr) qmgr = "QM1";
     if (!user || !*user) user = "app";
-    if (!read_password(password, sizeof(password))) return MQRC_NOT_AUTHORIZED;
-    curl = curl_easy_init();
-    if (!curl) return reason;
-    escaped_qmgr = curl_easy_escape(curl, qmgr, 0);
-    escaped_queue = curl_easy_escape(curl, queue, 0);
-    if (!escaped_qmgr || !escaped_queue) goto done;
-    length = strlen(base);
-    while (length && base[length - 1] == '/') --length;
-    if (snprintf(url, sizeof(url), "%.*s/ibmmq/rest/v2/messaging/qmgr/%s/queue/%s/message",
-                 (int)length, base, escaped_qmgr, escaped_queue) >= (int)sizeof(url))
-        goto done;
-    if (!strcmp(method, "DELETE")) {
-        size_t used = strlen(url);
-        if (wait_ms > 0) {
-            snprintf(url + used, sizeof(url) - used, "?wait=%d", wait_ms);
-            used = strlen(url);
-        }
-        if (md && has_id(md->correl_id, 24)) {
-            hex_id(id, md->correl_id);
-            snprintf(url + used, sizeof(url) - used, "%ccorrelationId=%s",
-                     strchr(url, '?') ? '&' : '?', id);
-            used = strlen(url);
-        }
-        if (md && has_id(md->msg_id, 24)) {
-            hex_id(id, md->msg_id);
-            snprintf(url + used, sizeof(url) - used, "%cmessageId=%s",
-                     strchr(url, '?') ? '&' : '?', id);
-        }
+    if (strlen(channel) > sizeof(cd.ChannelName) ||
+        strlen(conn) > sizeof(cd.ConnectionName) ||
+        strlen(qmgr) > MQ_Q_MGR_NAME_LENGTH) {
+        *cc = MQCC_FAILED;
+        *reason = MQRC_OPTIONS_ERROR;
+        return;
     }
-    headers = curl_slist_append(headers, "ibm-mq-rest-csrf-token: cobmq");
-    headers = curl_slist_append(headers, "Accept: text/plain");
-    if (!strcmp(method, "POST")) {
-        headers = curl_slist_append(headers, "Content-Type: text/plain; charset=utf-8");
-        if (md && has_id(md->correl_id, 24)) {
-            hex_id(id, md->correl_id);
-            snprintf(header, sizeof(header), "ibm-mq-md-correlationId: %s", id);
-            headers = curl_slist_append(headers, header);
-        }
-        if (md && has_id(md->reply_to_q, 48)) {
-            char reply[49];
-            trim_field(reply, sizeof(reply), md->reply_to_q, 48);
-            snprintf(header, sizeof(header), "ibm-mq-md-replyTo: %s", reply);
-            headers = curl_slist_append(headers, header);
-        }
+    has_password = read_password(password, sizeof(password));
+    if (has_password < 0) {
+        *cc = MQCC_FAILED;
+        *reason = MQRC_NOT_AUTHORIZED;
+        return;
     }
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_USERNAME, user);
-    curl_easy_setopt(curl, CURLOPT_PASSWORD, password);
-    curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, body_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, wait_ms > 0 ? (long)wait_ms + 10000L : 10000L);
-    if (getenv("MQ_TLS_INSECURE") && !strcmp(getenv("MQ_TLS_INSECURE"), "1")) {
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    } else if (getenv("MQ_CA_BUNDLE")) {
-        curl_easy_setopt(curl, CURLOPT_CAINFO, getenv("MQ_CA_BUNDLE"));
+    copy_field(cd.ChannelName, sizeof(cd.ChannelName), channel, strlen(channel));
+    copy_field(cd.ConnectionName, sizeof(cd.ConnectionName), conn, strlen(conn));
+    cd.TransportType = MQXPT_TCP;
+    cno.Version = MQCNO_VERSION_5;
+    cno.Options = MQCNO_CLIENT_BINDING;
+    cno.ClientConnPtr = &cd;
+    if (has_password) {
+        csp.AuthenticationType = MQCSP_AUTH_USER_ID_AND_PWD;
+        csp.CSPUserIdPtr = (void *)user;
+        csp.CSPUserIdLength = (MQLONG)strlen(user);
+        csp.CSPPasswordPtr = password;
+        csp.CSPPasswordLength = (MQLONG)strlen(password);
+        cno.SecurityParmsPtr = &csp;
     }
-    if (!strcmp(method, "POST")) {
-        curl_easy_setopt(curl, CURLOPT_POST, 1L);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_size);
-    } else {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    }
-    curl_code = curl_easy_perform(curl);
-    if (curl_code != CURLE_OK) goto done;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    if (http_code == 204 && !strcmp(method, "DELETE"))
-        reason = MQRC_NO_MSG_AVAILABLE;
-    else if (http_code >= 200 && http_code < 300) reason = 0;
-    else if (http_code == 401 || http_code == 403) reason = MQRC_NOT_AUTHORIZED;
-    else if (http_code == 404)
-        reason = !strcmp(method, "DELETE") ? MQRC_NO_MSG_AVAILABLE : MQRC_UNKNOWN_OBJECT_NAME;
-    else if (http_code == 400) reason = MQRC_OPTIONS_ERROR;
-done:
-    if (escaped_qmgr) curl_free(escaped_qmgr);
-    if (escaped_queue) curl_free(escaped_queue);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+    native_connx((char *)qmgr, &cno, hconn, cc, reason);
     memset(password, 0, sizeof(password));
-    return reason;
 }
 
-int
-MQCONN(char *qmgr, int32_t *hconn, int32_t *cc, int32_t *reason)
+static int connection(int32_t *field, MQHCONN *hconn,
+                      MQLONG *cc, MQLONG *reason)
 {
-    (void)qmgr;
-    write_i(hconn, 1);
-    result(cc, reason, 0);
-    return 0;
-}
-
-int
-MQDISC(int32_t *hconn, int32_t *cc, int32_t *reason)
-{
-    write_i(hconn, 0);
-    result(cc, reason, 0);
-    return 0;
-}
-
-int
-MQOPEN(int32_t *hconn, mqod *od, int32_t *options, int32_t *hobj,
-       int32_t *cc, int32_t *reason)
-{
-    char queue[49];
-    int i;
-    (void)hconn;
-    (void)options;
-    trim_field(queue, sizeof(queue), od->object_name, 48);
-    if (!*queue) {
-        result(cc, reason, MQRC_UNKNOWN_OBJECT_NAME);
+    MQHCONN value = read_i(field);
+    if (!load_native()) {
+        *cc = MQCC_FAILED;
+        *reason = MQRC_CONNECTION_BROKEN;
         return 0;
     }
-    for (i = 1; i < 64; ++i) {
-        if (!handles[i][0]) {
-            strcpy(handles[i], queue);
-            write_i(hobj, i);
-            result(cc, reason, 0);
-            return 0;
+    if (value != 0) {
+        *hconn = value;
+        return 1;
+    }
+    if (implicit_hconn == MQHC_UNUSABLE_HCONN)
+        connect_native(&implicit_hconn, cc, reason);
+    if (implicit_hconn == MQHC_UNUSABLE_HCONN) return 0;
+    *hconn = implicit_hconn;
+    return 1;
+}
+
+int MQCONN(char *qmgr, int32_t *hconn, int32_t *cc, int32_t *reason)
+{
+    MQHCONN handle;
+    MQLONG native_cc, native_reason;
+    (void)qmgr; /* A literal need not be padded; MQ_QMGR_NAME selects QM1. */
+    connect_native(&handle, &native_cc, &native_reason);
+    write_i(hconn, native_cc == MQCC_OK ? handle : 0);
+    result(cc, reason, native_cc, native_reason);
+    return 0;
+}
+
+int MQDISC(int32_t *hconn, int32_t *cc, int32_t *reason)
+{
+    MQHCONN handle = read_i(hconn);
+    MQLONG native_cc = MQCC_FAILED, native_reason = MQRC_HCONN_ERROR;
+    if (load_native() && handle != 0) {
+        native_disc(&handle, &native_cc, &native_reason);
+        if (native_cc == MQCC_OK) write_i(hconn, 0);
+    }
+    result(cc, reason, native_cc, native_reason);
+    return 0;
+}
+
+int MQOPEN(int32_t *hconn, cob_mqod *od, int32_t *options,
+           int32_t *hobj, int32_t *cc, int32_t *reason)
+{
+    MQOD native_od;
+    MQHCONN handle;
+    MQHOBJ object = MQHO_UNUSABLE_HOBJ;
+    MQLONG native_cc = MQCC_FAILED, native_reason = MQRC_HCONN_ERROR;
+    MQLONG flags = read_i(options);
+    if (connection(hconn, &handle, &native_cc, &native_reason)) {
+        make_od(&native_od, od);
+        if (!has_value(native_od.ObjectName, sizeof(native_od.ObjectName))) {
+            native_reason = MQRC_UNKNOWN_OBJECT_NAME;
+        } else {
+            /* Context belongs to the CICS unit of work, unavailable here. */
+            flags &= ~(MQOO_SAVE_ALL_CONTEXT | MQOO_PASS_ALL_CONTEXT);
+            if (!(flags & (MQOO_INPUT_SHARED | MQOO_INPUT_EXCLUSIVE |
+                           MQOO_OUTPUT | MQOO_BROWSE)))
+                flags |= MQOO_INPUT_SHARED | MQOO_OUTPUT;
+            native_open(handle, &native_od, flags, &object,
+                        &native_cc, &native_reason);
         }
     }
-    result(cc, reason, MQRC_HOBJ_ERROR);
+    write_i(hobj, native_cc == MQCC_OK ? object : 0);
+    result(cc, reason, native_cc, native_reason);
     return 0;
 }
 
-int
-MQCLOSE(int32_t *hconn, int32_t *hobj, int32_t *options,
-        int32_t *cc, int32_t *reason)
+int MQCLOSE(int32_t *hconn, int32_t *hobj, int32_t *options,
+            int32_t *cc, int32_t *reason)
 {
-    (void)hconn;
-    (void)options;
-    int32_t object = read_i(hobj);
-    if (object <= 0 || object >= 64 || !handles[object][0])
-        result(cc, reason, MQRC_HOBJ_ERROR);
-    else {
-        handles[object][0] = 0;
-        write_i(hobj, 0);
-        result(cc, reason, 0);
+    MQHCONN handle;
+    MQHOBJ object = read_i(hobj);
+    MQLONG native_cc = MQCC_FAILED, native_reason = MQRC_HCONN_ERROR;
+    if (connection(hconn, &handle, &native_cc, &native_reason)) {
+        native_close(handle, &object, read_i(options),
+                     &native_cc, &native_reason);
+        if (native_cc == MQCC_OK) write_i(hobj, 0);
     }
+    result(cc, reason, native_cc, native_reason);
     return 0;
 }
 
-int
-MQPUT(int32_t *hconn, int32_t *hobj, mqmd *md, mqpmo *pmo,
-      int32_t *buffer_length, char *buffer, int32_t *cc, int32_t *reason)
+static MQPMO make_pmo(const cob_mqpmo *from)
 {
-    mq_response response;
-    int32_t code;
-    (void)hconn;
-    (void)pmo;
-    int32_t object = read_i(hobj);
-    int32_t length = read_i(buffer_length);
-    if (object <= 0 || object >= 64 || !handles[object][0])
-        code = MQRC_HOBJ_ERROR;
-    else if (length < 0)
-        code = MQRC_OPTIONS_ERROR;
-    else {
-        code = request("POST", handles[object], md, buffer,
-                       length, 0, &response);
-        if (code == 0 && has_id(response.msg_id, 24))
-            memcpy(md->msg_id, response.msg_id, 24);
-        free(response.data);
+    MQPMO defaults = {MQPMO_DEFAULT};
+    MQLONG options = read_i(&from->options);
+    defaults.Options = (options & ~MQPMO_SYNCPOINT) | MQPMO_NO_SYNCPOINT;
+    return defaults;
+}
+
+int MQPUT(int32_t *hconn, int32_t *hobj, cob_mqmd *md, cob_mqpmo *pmo,
+          int32_t *buffer_length, char *buffer, int32_t *cc, int32_t *reason)
+{
+    MQHCONN handle;
+    MQMD native_md;
+    MQPMO native_pmo;
+    MQLONG native_cc = MQCC_FAILED, native_reason = MQRC_HCONN_ERROR;
+    MQLONG length = read_i(buffer_length);
+    if (length < 0) {
+        native_reason = MQRC_OPTIONS_ERROR;
+    } else if (connection(hconn, &handle, &native_cc, &native_reason)) {
+        make_md(&native_md, md);
+        native_pmo = make_pmo(pmo);
+        native_put(handle, read_i(hobj), &native_md, &native_pmo,
+                   length, buffer, &native_cc, &native_reason);
+        if (native_cc == MQCC_OK) save_md(md, &native_md);
     }
-    result(cc, reason, code);
+    result(cc, reason, native_cc, native_reason);
     return 0;
 }
 
-int
-MQPUT1(int32_t *hconn, mqod *od, mqmd *md, mqpmo *pmo,
-       int32_t *buffer_length, char *buffer, int32_t *cc, int32_t *reason)
+int MQPUT1(int32_t *hconn, cob_mqod *od, cob_mqmd *md, cob_mqpmo *pmo,
+           int32_t *buffer_length, char *buffer, int32_t *cc, int32_t *reason)
 {
-    mq_response response;
-    char queue[49];
-    int32_t code;
-    (void)hconn;
-    (void)pmo;
-    trim_field(queue, sizeof(queue), od->object_name, 48);
-    if (!*queue) code = MQRC_UNKNOWN_OBJECT_NAME;
-    else if (read_i(buffer_length) < 0) code = MQRC_OPTIONS_ERROR;
-    else {
-        code = request("POST", queue, md, buffer,
-                       read_i(buffer_length), 0, &response);
-        if (code == 0 && has_id(response.msg_id, 24))
-            memcpy(md->msg_id, response.msg_id, 24);
-        free(response.data);
+    MQHCONN handle;
+    MQOD native_od;
+    MQMD native_md;
+    MQPMO native_pmo;
+    MQLONG native_cc = MQCC_FAILED, native_reason = MQRC_HCONN_ERROR;
+    MQLONG length = read_i(buffer_length);
+    if (length < 0) {
+        native_reason = MQRC_OPTIONS_ERROR;
+    } else if (connection(hconn, &handle, &native_cc, &native_reason)) {
+        make_od(&native_od, od);
+        make_md(&native_md, md);
+        native_pmo = make_pmo(pmo);
+        native_put1(handle, &native_od, &native_md, &native_pmo,
+                    length, buffer, &native_cc, &native_reason);
+        if (native_cc == MQCC_OK) save_md(md, &native_md);
     }
-    result(cc, reason, code);
+    result(cc, reason, native_cc, native_reason);
     return 0;
 }
 
-int
-MQGET(int32_t *hconn, int32_t *hobj, mqmd *md, mqgmo *gmo,
-      int32_t *buffer_length, char *buffer, int32_t *data_length,
-      int32_t *cc, int32_t *reason)
+int MQGET(int32_t *hconn, int32_t *hobj, cob_mqmd *md, cob_mqgmo *gmo,
+          int32_t *buffer_length, char *buffer, int32_t *data_length,
+          int32_t *cc, int32_t *reason)
 {
-    mq_response response;
-    int32_t code;
-    (void)hconn;
-    int32_t object = read_i(hobj);
-    int32_t length = read_i(buffer_length);
+    MQHCONN handle;
+    MQMD native_md;
+    MQGMO native_gmo = {MQGMO_DEFAULT};
+    MQLONG native_length = 0;
+    MQLONG native_cc = MQCC_FAILED, native_reason = MQRC_HCONN_ERROR;
+    MQLONG length = read_i(buffer_length);
     write_i(data_length, 0);
-    if (object <= 0 || object >= 64 || !handles[object][0])
-        code = MQRC_HOBJ_ERROR;
-    else if (length < 0)
-        code = MQRC_OPTIONS_ERROR;
-    else {
-        int32_t wait = read_i(&gmo->wait_interval);
-        code = request("DELETE", handles[object], NULL, NULL, 0,
-                       wait > 0 ? wait : 0,
-                       &response);
-        if (code == 0) {
-            write_i(data_length, (int32_t)response.size);
-            if (response.size > (size_t)length) {
-                code = MQRC_TRUNCATED_MSG_FAILED;
-            } else {
-                memcpy(buffer, response.data, response.size);
-                memcpy(md->msg_id, response.msg_id, 24);
-                memcpy(md->correl_id, response.correl_id, 24);
-                if (has_id(response.reply_to_q, 48))
-                    memcpy(md->reply_to_q, response.reply_to_q, 48);
-            }
-        }
-        free(response.data);
+    if (length < 0) {
+        native_reason = MQRC_OPTIONS_ERROR;
+    } else if (connection(hconn, &handle, &native_cc, &native_reason)) {
+        make_md(&native_md, md);
+        native_gmo.Version = MQGMO_VERSION_2;
+        native_gmo.Options = (read_i(&gmo->options) & ~MQGMO_SYNCPOINT) |
+                             MQGMO_NO_SYNCPOINT;
+        native_gmo.WaitInterval = read_i(&gmo->wait_interval);
+        native_gmo.MatchOptions = 0;
+        if (has_value(md->msg_id, sizeof(md->msg_id)))
+            native_gmo.MatchOptions |= MQMO_MATCH_MSG_ID;
+        if (has_value(md->correl_id, sizeof(md->correl_id)))
+            native_gmo.MatchOptions |= MQMO_MATCH_CORREL_ID;
+        native_get(handle, read_i(hobj), &native_md, &native_gmo, length,
+                   buffer, &native_length, &native_cc, &native_reason);
+        write_i(data_length, native_length);
+        if (native_cc == MQCC_OK) save_md(md, &native_md);
     }
-    result(cc, reason, code);
+    result(cc, reason, native_cc, native_reason);
     return 0;
 }
