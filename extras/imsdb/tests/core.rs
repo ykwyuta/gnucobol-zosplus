@@ -18,6 +18,42 @@ fn dbd() -> Dbd {
 }
 
 #[test]
+fn checkpoint_id_and_changes_survive_reopen_atomically() {
+    let wal = path();
+    let db = Database::open(&wal, vec![dbd()]).unwrap();
+    assert_eq!(db.latest_checkpoint(), None);
+    let mut tx = db.begin();
+    tx.insert(
+        "TEST",
+        "ROOT",
+        None,
+        vec![0x12, 0x3c, 0, 0, 0, 0],
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    tx.set_checkpoint(*b"CHECK001");
+    tx.commit().unwrap();
+    assert_eq!(db.latest_checkpoint(), Some(*b"CHECK001"));
+    let mut tx = db.begin();
+    tx.set_checkpoint(*b"CHECK002");
+    tx.rollback();
+    assert_eq!(db.latest_checkpoint(), Some(*b"CHECK001"));
+    drop(db);
+    let db = Database::open(&wal, vec![dbd()]).unwrap();
+    assert_eq!(db.count(), 1);
+    assert_eq!(db.latest_checkpoint(), Some(*b"CHECK001"));
+    let mut tx = db.begin();
+    tx.set_checkpoint(*b"CHECK003");
+    tx.commit().unwrap();
+    drop(db);
+    let db = Database::open(&wal, vec![dbd()]).unwrap();
+    assert_eq!(db.count(), 1);
+    assert_eq!(db.latest_checkpoint(), Some(*b"CHECK003"));
+    drop(db);
+    std::fs::remove_file(wal).unwrap();
+}
+
+#[test]
 fn a_wal_has_only_one_open_owner() {
     let wal = path();
     let owner = Database::open(&wal, vec![dbd()]).unwrap();

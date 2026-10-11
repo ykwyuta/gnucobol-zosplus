@@ -1,5 +1,7 @@
 use imsdb::call_adapter::PcbEncoding;
-use imsdb::ffi::{imsdb_call, imsdb_close, imsdb_commit, imsdb_open, imsdb_pcb_index, ImsSpan};
+use imsdb::ffi::{
+    imsdb_call, imsdb_checkpoint, imsdb_close, imsdb_commit, imsdb_open, imsdb_pcb_index, ImsSpan,
+};
 use imsdb::{Database, Dbd};
 use std::ffi::CString;
 use std::fs;
@@ -112,6 +114,20 @@ fn c_abi_opens_database_and_checks_buffer_lengths() {
         unsafe { imsdb_commit(handle, error.as_mut_ptr(), error.len()) },
         0
     );
+    assert_eq!(
+        unsafe {
+            imsdb_checkpoint(
+                handle,
+                b"CHECK001".as_ptr(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        },
+        0
+    );
     unsafe { imsdb_close(handle) };
+    let db = Database::open(&wal, vec![Dbd::from_file(&dbd_file).unwrap()]).unwrap();
+    assert_eq!(db.latest_checkpoint(), Some(*b"CHECK001"));
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }

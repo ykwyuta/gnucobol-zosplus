@@ -59,6 +59,9 @@ build/cobc/.libs/cobc -x -fdata-codeset=IBM-037 \
 build/cobc/.libs/cobc -x -o "$tmp/ims-dexec" \
     extras/imsdb/tests/execdli-service-smoke.cob
 "$tmp/ims-dexec"
+checkpoint=$(build/imsdb-linux/debug/imsdbctl latest-checkpoint "$tmp/bank.wal" \
+    reference/Bank-of-Z-main/src/base/ims/DBD)
+test "$checkpoint" = 'CHECK001'
 python3 - "$tmp/output.msg" "$tmp/run.log" <<'PY'
 import pathlib
 import struct

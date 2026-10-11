@@ -221,7 +221,13 @@ impl CallAdapter {
     }
 
     pub fn commit(&mut self) -> Result<(), String> {
-        self.session.commit().map_err(|e| e.to_string())?;
+        self.commit_checkpoint(None)
+    }
+
+    pub fn commit_checkpoint(&mut self, checkpoint: Option<[u8; 8]>) -> Result<(), String> {
+        self.session
+            .commit_checkpoint(checkpoint)
+            .map_err(|e| e.to_string())?;
         self.current_segments.fill(None);
         Ok(())
     }

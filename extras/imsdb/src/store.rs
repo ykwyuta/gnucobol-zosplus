@@ -55,6 +55,7 @@ struct State {
     // BTreeMap lets GU and same-parent sequential access avoid full scans.
     index: BTreeMap<IndexKey, ()>,
     next_id: u64,
+    latest_checkpoint: Option<[u8; 8]>,
 }
 impl State {
     fn insert(&mut self, record: Record) -> Result<(), StoreError> {
@@ -159,6 +160,7 @@ pub struct Transaction {
     id: u64,
     changes: Vec<Change>,
     locks: Vec<(String, Vec<u8>)>,
+    checkpoint: Option<[u8; 8]>,
 }
 impl Drop for Transaction {
     fn drop(&mut self) {
@@ -363,11 +365,15 @@ impl Transaction {
         Ok(())
     }
     pub fn commit(mut self) -> Result<(), StoreError> {
-        if self.changes.is_empty() {
+        if self.changes.is_empty() && self.checkpoint.is_none() {
             self.release();
             return Ok(());
         }
-        let payload = encode_changes(&self.changes);
+        let mut payload = Vec::new();
+        if let Some(id) = self.checkpoint {
+            payload.extend_from_slice(&id);
+        }
+        payload.extend_from_slice(&encode_changes(&self.changes));
         let len = u32::try_from(payload.len())
             .map_err(|_| StoreError::Definition("transaction exceeds 4 GiB".into()))?;
         if payload.len() > 64 * 1024 * 1024 {
@@ -394,7 +400,11 @@ impl Transaction {
             inverses.push(inverse);
         }
         let write_result = (|| -> std::io::Result<()> {
-            wal.write_all(b"IMS1")?;
+            wal.write_all(if self.checkpoint.is_some() {
+                b"IMS2"
+            } else {
+                b"IMS1"
+            })?;
             wal.write_all(&len.to_le_bytes())?;
             wal.write_all(&checksum(&payload).to_le_bytes())?;
             wal.write_all(&payload)?;
@@ -406,12 +416,19 @@ impl Transaction {
             wal.seek(SeekFrom::End(0))?;
             return Err(StoreError::Io(error));
         }
+        if let Some(id) = self.checkpoint {
+            state.latest_checkpoint = Some(id);
+        }
         drop(wal);
         drop(state);
         self.release();
         Ok(())
     }
     pub fn rollback(self) {}
+
+    pub fn set_checkpoint(&mut self, id: [u8; 8]) {
+        self.checkpoint = Some(id);
+    }
 }
 
 fn inverse(state: &State, change: &Change) -> Result<Change, StoreError> {
@@ -536,7 +553,7 @@ impl Database {
             if got < 12 {
                 break;
             } // Interrupted final write has no commit record.
-            if &header[..4] != b"IMS1" {
+            if &header[..4] != b"IMS1" && &header[..4] != b"IMS2" {
                 return Err(StoreError::Corrupt("invalid WAL magic".into()));
             }
             let len = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
@@ -554,7 +571,22 @@ impl Database {
             if checksum(&payload) != expected {
                 return Err(StoreError::Corrupt("WAL checksum mismatch".into()));
             }
-            for change in decode_changes(&payload)? {
+            let checkpoint = if &header[..4] == b"IMS2" {
+                let id: [u8; 8] = payload
+                    .get(..8)
+                    .ok_or_else(|| StoreError::Corrupt("short checkpoint WAL frame".into()))?
+                    .try_into()
+                    .unwrap();
+                Some(id)
+            } else {
+                None
+            };
+            let changes = decode_changes(if checkpoint.is_some() {
+                &payload[8..]
+            } else {
+                &payload
+            })?;
+            for change in changes {
                 let record = match &change {
                     Change::Insert(r)
                     | Change::Delete { record: r }
@@ -602,6 +634,9 @@ impl Database {
                 }
                 apply(&mut state, &change, true)?;
             }
+            if let Some(id) = checkpoint {
+                state.latest_checkpoint = Some(id);
+            }
             valid_end = wal.stream_position()?;
         }
         wal.set_len(valid_end)?;
@@ -624,6 +659,7 @@ impl Database {
             id,
             changes: Vec::new(),
             locks: Vec::new(),
+            checkpoint: None,
         }
     }
     pub fn segment(&self, dbd: &str, segment: &str) -> Result<&Segment, StoreError> {
@@ -662,6 +698,10 @@ impl Database {
     }
     pub fn count(&self) -> usize {
         self.0.state.lock().unwrap().records.len()
+    }
+
+    pub fn latest_checkpoint(&self) -> Option<[u8; 8]> {
+        self.0.state.lock().unwrap().latest_checkpoint
     }
 }
 

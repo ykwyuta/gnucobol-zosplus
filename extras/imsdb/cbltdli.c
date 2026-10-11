@@ -257,7 +257,8 @@ int CBLTDLI(const unsigned char *function, unsigned char *pcb, ...)
         operation[index] = (char)(charset->to_host ? charset->to_host[byte] : byte);
     }
     if (memcmp(operation, "CHKP", 4) == 0 || memcmp(operation, "ROLB", 4) == 0) {
-        if ((operation[0] == 'C' && (argc != 3 || cob_get_param_size(3) < 8)) ||
+        if (cob_get_param_size(2) != 32 ||
+            (operation[0] == 'C' && (argc != 3 || cob_get_param_size(3) < 8)) ||
             (operation[0] == 'R' && argc != 2)) {
             fputs("CBLTDLI: invalid batch CHKP or ROLB argument list\n", stderr);
             return -1;
@@ -275,6 +276,7 @@ int CBLTDLI(const unsigned char *function, unsigned char *pcb, ...)
                 pthread_mutex_unlock(&ims_mutex);
                 return -1;
             }
+            unsigned char checkpoint_id[8];
             for (int index = 0; index < 8; ++index) {
                 unsigned char byte = charset->to_host ? charset->to_host[id[index]] : id[index];
                 if (byte < 0x20 || byte > 0x7e) {
@@ -282,8 +284,9 @@ int CBLTDLI(const unsigned char *function, unsigned char *pcb, ...)
                     pthread_mutex_unlock(&ims_mutex);
                     return -1;
                 }
+                checkpoint_id[index] = byte;
             }
-            rc = imsdb_commit(ims_handle, error, sizeof error);
+            rc = imsdb_checkpoint(ims_handle, checkpoint_id, error, sizeof error);
             if (rc == 0) rc = commit_messages(error, sizeof error);
         } else {
             imsdb_rollback(ims_handle);
@@ -486,7 +489,7 @@ int IMSDEXEC(const unsigned char *function, const unsigned char *argument,
             }
             if (strcmp(code, "  ") == 0) {
                 char error[512] = {0};
-                if (imsdb_commit(ims_handle, error, sizeof error) != 0 ||
+                if (imsdb_checkpoint(ims_handle, (const unsigned char *)arg, error, sizeof error) != 0 ||
                     commit_messages(error, sizeof error) != 0) {
                     fprintf(stderr, "IMSDEXEC CHKP: %s\n", error);
                     code = "AJ";

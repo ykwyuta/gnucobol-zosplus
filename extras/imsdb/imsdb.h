@@ -25,6 +25,8 @@ int32_t imsdb_call(ImsHandle *handle, uint32_t pcb_index,
                    const ImsSpan *ssas, size_t ssa_count,
                    char *error, size_t error_capacity);
 int32_t imsdb_commit(ImsHandle *handle, char *error, size_t error_capacity);
+int32_t imsdb_checkpoint(ImsHandle *handle, const uint8_t id[8],
+                         char *error, size_t error_capacity);
 void imsdb_rollback(ImsHandle *handle);
 void imsdb_close(ImsHandle *handle);
 

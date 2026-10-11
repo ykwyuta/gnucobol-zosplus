@@ -212,6 +212,12 @@ impl Session {
         self.read(pcb_index, hold, raw_ssas)
     }
     pub fn commit(&mut self) -> Result<(), StoreError> {
+        self.commit_checkpoint(None)
+    }
+    pub fn commit_checkpoint(&mut self, checkpoint: Option<[u8; 8]>) -> Result<(), StoreError> {
+        if let Some(id) = checkpoint {
+            self.transaction.set_checkpoint(id);
+        }
         let previous = std::mem::replace(&mut self.transaction, self.database.begin());
         self.positions = (0..self.psb.pcbs.len())
             .map(|_| Position::default())

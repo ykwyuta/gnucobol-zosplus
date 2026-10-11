@@ -33,8 +33,10 @@ It includes an experimental GnuCOBOL `CBLTDLI` entry point for DB PCBs.
   little-endian `COMP-5` values at the call boundary. A GnuCOBOL loadable shim provides
   `CBLTDLI` and the temporary explicit commit call `IMSDBCOM`.
 - The GnuCOBOL shim accepts basic batch `CHKP` (commit) and `ROLB` (rollback) calls
-  with an I/O PCB. It validates the eight-character checkpoint ID, but does not
-  yet persist a restart marker or implement symbolic checkpoints and `XRST`.
+  with an I/O PCB. It validates the eight-character checkpoint ID and stores it
+  atomically with the DB changes in a checksummed WAL frame. `imsdbctl
+  latest-checkpoint WAL DBD_OR_DIR` reads the last committed ID in a fresh process.
+  Symbolic checkpoints, automatic program restart, and `XRST` remain unsupported.
 - For an I/O PCB with a 32-byte mask, `GU` reads length-prefixed messages from
   `DD_IMSINPUT` and returns `QC` at end of input. `ISRT` stages a length-prefixed
   message for `DD_IMSOUTPUT` until commit. `imsbatch.c` can launch a GnuCOBOL
@@ -186,7 +188,9 @@ GNP; the resulting rollback is covered by the integration test. The current
 `CBLTDLI` shim implements local file-backed I/O PCB `GU`/`ISRT` and basic batch
 `CHKP`/`ROLB`; it does not provide a live IMS TM queue, alternate PCBs,
 variable-length GSAM, Japanese EBCDIC control text,
-restart recovery, or a complete IMS program lifecycle. The application must select
+automatic program restart, or a complete IMS program lifecycle. Basic checkpoint
+IDs are durable, but the application must implement restart positioning itself.
+The application must select
 a DB PCB by DBD name. `DFSRRC00` launches a profile-registered executable;
 the profile must set the batch runner's IMS linkage mode explicitly.
 Qualified GN and unsuccessful-call positioning need further IBM semantics tests.

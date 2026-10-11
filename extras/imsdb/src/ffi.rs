@@ -360,6 +360,61 @@ pub unsafe extern "C" fn imsdb_commit(
     }
 }
 
+/// Commit the current UOW with an eight-byte basic checkpoint ID.
+///
+/// # Safety
+///
+/// `handle` must remain open, `id` must point to eight readable bytes, and
+/// `error` must be writable for `error_capacity` bytes when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn imsdb_checkpoint(
+    handle: *mut ImsHandle,
+    id: *const u8,
+    error: *mut c_char,
+    error_capacity: usize,
+) -> i32 {
+    if handle.is_null() || id.is_null() {
+        unsafe {
+            report(
+                error,
+                error_capacity,
+                "IMS DB handle or checkpoint ID is null",
+            )
+        };
+        return -1;
+    }
+    let checkpoint = unsafe { std::slice::from_raw_parts(id, 8) };
+    let checkpoint: [u8; 8] = checkpoint.try_into().unwrap();
+    let result = std::panic::catch_unwind(|| -> Result<(), String> {
+        let handle = unsafe { &*handle };
+        handle
+            .adapter
+            .lock()
+            .map_err(|_| "IMS DB session lock poisoned".to_owned())?
+            .commit_checkpoint(Some(checkpoint))?;
+        for session in handle
+            .gsam
+            .lock()
+            .map_err(|_| "GSAM session lock poisoned".to_owned())?
+            .values_mut()
+        {
+            session.commit()?;
+        }
+        Ok(())
+    });
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            unsafe { report(error, error_capacity, &message) };
+            -1
+        }
+        Err(_) => {
+            unsafe { report(error, error_capacity, "IMS DB checkpoint panicked") };
+            -1
+        }
+    }
+}
+
 /// Discard the current unit of work.
 ///
 /// # Safety

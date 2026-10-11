@@ -1,7 +1,33 @@
 use imsdb::csv_load::encode_root_csv;
 use imsdb::unload::parse_dfsurgu0;
 use imsdb::{Database, Dbd, Psb};
+use std::path::Path;
 use std::time::Duration;
+
+fn load_dbds(path: &str) -> Result<Vec<Dbd>, String> {
+    let path = Path::new(path);
+    if path.is_file() {
+        return Ok(vec![Dbd::from_file(path)?]);
+    }
+    if !path.is_dir() {
+        return Err(format!("{} is not a DBD file or directory", path.display()));
+    }
+    let mut files = std::fs::read_dir(path)
+        .map_err(|e| e.to_string())?
+        .map(|entry| entry.map(|e| e.path()).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    files.sort();
+    let dbds = files
+        .into_iter()
+        .filter(|file| {
+            file.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("dbd") || ext.eq_ignore_ascii_case("asm")
+            })
+        })
+        .map(Dbd::from_file)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(dbds)
+}
 
 fn hex(input: &str) -> Result<Vec<u8>, String> {
     let input = input.trim();
@@ -63,9 +89,16 @@ fn run() -> Result<(), String> {
             println!("{} {}", record.id, display_hex(&record.data));
         }
         [_, command, wal, dbd_file] if command == "count" => {
-            let dbd = Dbd::from_file(dbd_file)?;
-            let db = Database::open(wal, vec![dbd]).map_err(|e| e.to_string())?;
+            let db = Database::open(wal, load_dbds(dbd_file)?).map_err(|e| e.to_string())?;
             println!("{}", db.count());
+        }
+        [_, command, wal, dbd_file] if command == "latest-checkpoint" => {
+            let db = Database::open(wal, load_dbds(dbd_file)?).map_err(|e| e.to_string())?;
+            if let Some(id) = db.latest_checkpoint() {
+                println!("{}", String::from_utf8_lossy(&id));
+            } else {
+                println!("none");
+            }
         }
         [_, command, wal, dbd_file, segment, input] if command == "import-fixed" => {
             let dbd = Dbd::from_file(dbd_file)?;
@@ -227,7 +260,7 @@ fn run() -> Result<(), String> {
             file.sync_all().map_err(|e| e.to_string())?;
             println!("exported {} records", records.len());
         }
-        _ => return Err("usage: imsdbctl inspect DBD... [PSB...] | put-root WAL DBD SEGMENT RECORD_HEX | get-root WAL DBD SEGMENT KEY_HEX | count WAL DBD | import-fixed WAL DBD SEGMENT FILE | import-dfsurgu0 WAL DBD FILE | split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT | import-csv WAL DBD SEGMENT FILE | import-csv-bundle WAL DBD_DIR DATA_DIR | export-fixed WAL DBD SEGMENT FILE".into()),
+        _ => return Err("usage: imsdbctl inspect DBD... [PSB...] | put-root WAL DBD SEGMENT RECORD_HEX | get-root WAL DBD SEGMENT KEY_HEX | count WAL DBD | latest-checkpoint WAL DBD | import-fixed WAL DBD SEGMENT FILE | import-dfsurgu0 WAL DBD FILE | split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT | import-csv WAL DBD SEGMENT FILE | import-csv-bundle WAL DBD_DIR DATA_DIR | export-fixed WAL DBD SEGMENT FILE".into()),
     }
     Ok(())
 }

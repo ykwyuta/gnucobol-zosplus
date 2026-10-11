@@ -80,6 +80,9 @@ export COB_IMS_VERIFY_ONLY=6
 result=$("$tmp/ims-smoke")
 printf '%s\n' "$result"
 test "$result" = 'IMS CUSTOMER CHKP OK'
+checkpoint=$(build/imsdb-linux/debug/imsdbctl latest-checkpoint "$tmp/bank.wal" \
+    reference/Bank-of-Z-main/src/base/ims/DBD)
+test "$checkpoint" = 'CHECK001'
 export COB_IMS_VERIFY_ONLY=7
 result=$("$tmp/ims-smoke")
 printf '%s\n' "$result"
