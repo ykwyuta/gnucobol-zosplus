@@ -25,6 +25,7 @@ def area(value):
 
 
 def main():
+    os.environ["COBCICS_VSAM_BACKEND"] = "local"
     source = ROOT / "build/jclsh/genapp-vsam"
     with tempfile.TemporaryDirectory() as directory:
         for name, path in (("KSDSCUST", "ksdscust.dat"),

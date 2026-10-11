@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::records;
+use super::vsam_sql;
 use super::{Dd, DdKind, Profile, Result, Step};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,41 @@ pub(super) struct DataSets<'a> {
     profile: &'a Profile,
     passed: HashMap<String, PathBuf>,
     created_gdg: HashMap<String, PathBuf>,
+}
+
+impl<'a> DataSets<'a> {
+    pub(super) fn sql_table(&self, dsn: &str) -> Result<Option<&str>> {
+        if self.profile.vsam_backend == "local" { return Ok(None); }
+        self.profile.vsam_tables.get(&dsn.to_ascii_uppercase())
+            .map(|name| name.as_str()).map(Some)
+            .ok_or_else(|| format!("SQL VSAM table mapping is missing for {dsn}"))
+    }
+
+    pub(super) fn mapped_sql_table(&self, dsn: &str) -> Option<&str> {
+        if self.profile.vsam_backend == "local" { return None; }
+        self.profile.vsam_tables.get(&dsn.to_ascii_uppercase()).map(String::as_str)
+    }
+
+    pub(super) fn sql_table_for_path(&self, path: &Path) -> Option<&str> {
+        if self.profile.vsam_backend == "local" { return None; }
+        self.profile.vsam_tables.iter().find_map(|(dsn, table)| {
+            self.profile.datasets.get(dsn)
+                .filter(|relative| self.workspace.join(relative) == path)
+                .map(|_| table.as_str())
+        })
+    }
+
+    pub(super) fn sql_table_for_allocation(&self, path: &Path,
+                                           allocations: &[Allocation]) -> Option<&str> {
+        if self.profile.vsam_backend == "local" { return None; }
+        allocations.iter().find(|allocation| allocation.path == path)
+            .and_then(|allocation| self.profile.vsam_tables.get(&allocation.name))
+            .map(String::as_str)
+    }
+
+    pub(super) fn sql_context(&self) -> (&Profile, &Path) {
+        (self.profile, self.workspace)
+    }
 }
 
 fn disposition(value: &str) -> Result<Disp> {
@@ -470,6 +506,9 @@ impl<'a> DataSets<'a> {
                     records::remove_layout(&alloc.path)?;
                 }
                 Action::Delete => {
+                    if let Some(table) = self.mapped_sql_table(&alloc.name) {
+                        vsam_sql::drop_table(self.profile, self.workspace, table)?;
+                    }
                     if let Some(old) = self.passed.remove(&alloc.name) {
                         if old != alloc.path && old.exists() {
                             fs::remove_file(&old).map_err(|error| error.to_string())?;

@@ -47,4 +47,4 @@ COB_DB2_SQL_PREPROCESSOR="$PWD/bin/db2sql-preprocess.py" \
 
 ## 実装上の範囲
 
-ホスト変数は libpq の [パラメーター付き実行](https://www.postgresql.org/docs/17/libpq-exec.html)で送る。`OPEN CURSOR` は結果をメモリに取得し、以降の `FETCH` で順番に返す。大量結果のストリーミング、`SCROLL` / `WITH HOLD` のカーソル意味論、位置指定更新、Db2 固有 SQL の PostgreSQL 方言への変換、Db2 用 CICS/FILE の共有トランザクションには対応していない。長さ付き `VARCHAR` グループの文字データは現在バイト列として渡す。アプリケーション SQL は PostgreSQL が受け付ける文法で記述する。
+ホスト変数は libpq の [パラメーター付き実行](https://www.postgresql.org/docs/17/libpq-exec.html)で送る。`OPEN CURSOR` は結果をメモリに取得し、以降の `FETCH` で順番に返す。大量結果のストリーミング、`SCROLL` / `WITH HOLD` のカーソル意味論、位置指定更新、Db2 固有 SQL の PostgreSQL 方言への変換には対応していない。長さ付き `VARCHAR` グループの文字データは現在バイト列として渡す。アプリケーション SQL は PostgreSQL が受け付ける文法で記述する。CICS FILE の VSAM を同じ PostgreSQL 接続に置く場合は [CICS VSAM SQL モード](cics-vsam-sql.md)を参照する。

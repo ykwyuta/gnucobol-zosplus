@@ -2,6 +2,7 @@
 """Exercise CICS KSDS operations against the isolated Db2 fixture."""
 
 import ctypes
+import os
 from pathlib import Path
 import sys
 
@@ -23,6 +24,7 @@ def area(value: bytes) -> ctypes.Array:
 
 
 def main() -> None:
+    os.environ["COBCICS_VSAM_BACKEND"] = "db2"
     library = ctypes.CDLL(str(Path(sys.argv[1]).resolve()))
     for operation, arguments in (("READ", 10), ("WRITE", 9),
                                  ("REWRITE", 6), ("DELETE", 6)):

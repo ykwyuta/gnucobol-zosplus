@@ -41,7 +41,7 @@ GenApp の `DFHNCMN`、`DFHSIP`、`DFHXQMN`、`EYU9XECS` は常駐サーバー�
 | SORT | `SORT FIELDS`、`OPTION COPY`、`INCLUDE COND`、`OUTREC FIELDS`、`SYMNAMES` の資材中で使う形式 |
 | DFHCSDUP | `DEFINE`、`ADD`、`REMOVE`、`DELETE GROUP(...) ALL`、`LIST GROUP(...)`。DFHCSD DD に jclsh 独自の TSV CSD カタログを保存 |
 
-IDCAMS の VSAM クラスターはローカルファイル、AIX はキーと元レコード番号の索引ファイル、PATH は索引への参照ファイルとして表現する。GDG の `(+1)` / `(0)` / `(-n)` は `G0001V00` 形式のローカルファイルに割り当て、CATLG 時には LIMIT を超える古い世代を削除する。
+IDCAMS の VSAM クラスターは既定でローカルファイル、AIX はキーと元レコード番号の索引ファイル、PATH は索引への参照ファイルとして表現する。`vsam_backend=db2|postgres` と DSN ごとの表マッピングを設定すると、キー付きクラスターのレコード実体を SQL 表に切り替えられる。DEFINE／REPRO／DELETE／BLDINDEX の詳細は [jclsh SQL VSAM モード](jcl-vsam-sql.md)を参照する。GDG の `(+1)` / `(0)` / `(-n)` は `G0001V00` 形式のローカルファイルに割り当て、CATLG 時には LIMIT を超える古い世代を削除する。
 
 `DCB=(RECFM=FB,LRECL=n)` または IDCAMS の `RECORDSIZE(n,n)` を持つデータセットは、改行・長さヘッダーのない n バイト単位の FB ファイルとして保存する。`<データファイル>.jclsh-meta` に `FB<TAB>LRECL<TAB>KEYLEN<TAB>KEYOFFSET` を記録し、IEBGENER、REPRO、SORT、BLDINDEX と GDG のコピー・削除で維持する。メタデータのない投入元は改行区切りのレコードとして読み、指定 LRECL まで空白で埋める。既存の FB 入力は LRECL 単位で検証する。GenApp の元 JCL `adef121.jcl` では `KSDSCUST` が 225 バイト、`KSDSPOLY` が 64 バイトになる。
 

@@ -12,7 +12,85 @@ use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use cobcics::server::WorkerRouting;
 
 fn usage() -> &'static str {
-    "usage: cobcicsd --bms FILE [--map NAME] [--csd FILE --csd-list LIST --dataset-profile FILE --program NAME=COBOL-EXE ...] [--check-csd] [--tn3270e] [--nvt] [--printer-queue NAME --printer-input host|utf8] [--indfile-root DIR] [--tls-cert PEM --tls-key PEM [--starttls]] [--charset IBM-037|IBM-930|IBM-939|IBM-1390|IBM-1399] [--listen 127.0.0.1:3270] [--applid ID] [--worker COBOL-EXE] [--transid ID --route ID=COBOL-EXE --map-route ID=BMS-FILE#MAP ...]"
+    "usage: cobcicsd --bms FILE [--map NAME] [--csd FILE --csd-list LIST --dataset-profile FILE --program NAME=COBOL-EXE ...] [--vsam-backend local|db2|postgres] [--vsam-table FILE=TABLE --vsam-layout FILE=LRECL,KEYLEN,KEYOFFSET ...] [--check-csd] [--tn3270e] [--nvt] [--printer-queue NAME --printer-input host|utf8] [--indfile-root DIR] [--tls-cert PEM --tls-key PEM [--starttls]] [--charset IBM-037|IBM-930|IBM-939|IBM-1390|IBM-1399] [--listen 127.0.0.1:3270] [--applid ID] [--worker COBOL-EXE] [--transid ID --route ID=COBOL-EXE --map-route ID=BMS-FILE#MAP ...]"
+}
+
+fn vsam_name(name: &str) -> Result<String, String> {
+    if name.is_empty() || name.len() > 8 || !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(format!("invalid VSAM FILE name {name}"));
+    }
+    Ok(name.to_ascii_uppercase())
+}
+
+fn vsam_assignment(value: &str) -> Result<(String, String), String> {
+    let (name, assigned) = value
+        .split_once('=')
+        .ok_or("VSAM mapping requires FILE=VALUE")?;
+    if assigned.is_empty() {
+        return Err("VSAM mapping requires FILE=VALUE".to_owned());
+    }
+    Ok((vsam_name(name)?, assigned.to_owned()))
+}
+
+fn valid_table(name: &str) -> bool {
+    let parts: Vec<_> = name.split('.').collect();
+    name.len() < 64
+        && (1..=2).contains(&parts.len())
+        && parts.iter().all(|part| {
+            let mut bytes = part.bytes();
+            matches!(bytes.next(), Some(b) if b.is_ascii_alphabetic() || b == b'_')
+                && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+}
+
+fn valid_layout(value: &str) -> bool {
+    let parts: Vec<_> = value.split(',').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let Ok(values) = parts
+        .iter()
+        .map(|part| part.parse::<usize>())
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+    values[0] > 0
+        && values[0] <= 64 * 1024 * 1024
+        && values[1] > 0
+        && matches!(values[2].checked_add(values[1]), Some(end) if end <= values[0])
+}
+
+fn validate_vsam_selection(
+    backend: Option<&str>,
+    dataset_profile: Option<&str>,
+    tables: &HashMap<String, String>,
+    layouts: &HashMap<String, String>,
+) -> Result<(), String> {
+    match backend {
+        Some("local") if !tables.is_empty() || !layouts.is_empty() => {
+            Err("local VSAM cannot use --vsam-table or --vsam-layout".to_owned())
+        }
+        Some("db2" | "postgres") if dataset_profile.is_some() => {
+            Err("SQL VSAM cannot use --dataset-profile".to_owned())
+        }
+        Some("db2" | "postgres" | "local") => Ok(()),
+        None if !tables.is_empty() || !layouts.is_empty() => {
+            Err("--vsam-table and --vsam-layout require --vsam-backend db2 or postgres".to_owned())
+        }
+        None => Ok(()),
+        _ => Err("--vsam-backend requires local, db2, or postgres".to_owned()),
+    }?;
+    if matches!(backend, Some("db2" | "postgres")) {
+        for name in tables.keys().chain(layouts.keys()) {
+            if !matches!(name.as_str(), "KSDSCUST" | "KSDSPOLY")
+                && (!tables.contains_key(name) || !layouts.contains_key(name))
+            {
+                return Err(format!("VSAM FILE {name} needs both table and layout"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn starttls(stream: &mut std::net::TcpStream) -> Result<(), String> {
@@ -75,6 +153,9 @@ fn run() -> Result<(), String> {
     let mut csd_path = None;
     let mut csd_list = None;
     let mut dataset_profile = None;
+    let mut vsam_backend = None;
+    let mut vsam_tables = HashMap::new();
+    let mut vsam_layouts = HashMap::new();
     let mut programs = HashMap::new();
     let mut check_csd = false;
     let mut csd_files = 0;
@@ -85,6 +166,35 @@ fn run() -> Result<(), String> {
             "--csd" => csd_path = args.next(),
             "--csd-list" => csd_list = args.next(),
             "--dataset-profile" => dataset_profile = args.next(),
+            "--vsam-backend" => {
+                let value = args.next().ok_or("--vsam-backend needs a value")?;
+                if vsam_backend.replace(value).is_some() {
+                    return Err("--vsam-backend specified more than once".to_owned());
+                }
+            }
+            "--vsam-table" => {
+                let (name, table) =
+                    vsam_assignment(&args.next().ok_or("--vsam-table needs FILE=TABLE")?)?;
+                if !valid_table(&table) {
+                    return Err(format!("invalid SQL table name {table}"));
+                }
+                if vsam_tables.insert(name.clone(), table).is_some() {
+                    return Err(format!("duplicate SQL table mapping for {name}"));
+                }
+            }
+            "--vsam-layout" => {
+                let (name, layout) = vsam_assignment(
+                    &args
+                        .next()
+                        .ok_or("--vsam-layout needs FILE=LRECL,KEYLEN,KEYOFFSET")?,
+                )?;
+                if !valid_layout(&layout) {
+                    return Err(format!("invalid VSAM layout for {name}: {layout}"));
+                }
+                if vsam_layouts.insert(name.clone(), layout).is_some() {
+                    return Err(format!("duplicate VSAM layout for {name}"));
+                }
+            }
             "--check-csd" => check_csd = true,
             "--program" => {
                 let value = args.next().ok_or_else(|| usage().to_owned())?;
@@ -190,6 +300,21 @@ fn run() -> Result<(), String> {
             }
             _ => return Err(usage().to_owned()),
         }
+    }
+    validate_vsam_selection(
+        vsam_backend.as_deref(),
+        dataset_profile.as_deref(),
+        &vsam_tables,
+        &vsam_layouts,
+    )?;
+    if let Some(backend) = vsam_backend {
+        std::env::set_var("COBCICS_VSAM_BACKEND", backend);
+    }
+    for (name, table) in vsam_tables {
+        std::env::set_var(format!("COBCICS_VSAM_TABLE_{name}"), table);
+    }
+    for (name, layout) in vsam_layouts {
+        std::env::set_var(format!("COBCICS_VSAM_LAYOUT_{name}"), layout);
     }
     if csd_list.is_some() && csd_path.is_none() || dataset_profile.is_some() && csd_path.is_none() {
         return Err("--csd-list and --dataset-profile require --csd".to_owned());
@@ -329,5 +454,30 @@ POLICY DFHMDF POS=(1,1),LENGTH=4\n";
         assert_eq!(select_map(source, Some("SSMAPP1")).unwrap().name, "SSMAPP1");
         assert!(select_map(source, None).is_err());
         assert!(select_map(source, Some("MISSING")).is_err());
+    }
+
+    #[test]
+    fn vsam_backend_is_exclusive_and_mappings_are_validated() {
+        let empty = HashMap::new();
+        let mut tables = HashMap::new();
+        tables.insert("OTHER".to_owned(), "public.vsam_other".to_owned());
+        let mut layouts = HashMap::new();
+        layouts.insert("OTHER".to_owned(), "12,4,2".to_owned());
+        assert!(validate_vsam_selection(Some("local"), Some("profile"), &empty, &empty).is_ok());
+        assert!(validate_vsam_selection(Some("local"), None, &tables, &layouts).is_err());
+        assert!(
+            validate_vsam_selection(Some("postgres"), Some("profile"), &empty, &empty).is_err()
+        );
+        assert!(validate_vsam_selection(Some("db2"), None, &tables, &layouts).is_ok());
+        assert!(validate_vsam_selection(Some("postgres"), None, &tables, &layouts).is_ok());
+        assert!(validate_vsam_selection(Some("postgres"), None, &tables, &empty).is_err());
+        assert!(validate_vsam_selection(None, None, &tables, &layouts).is_err());
+        assert!(validate_vsam_selection(Some("unknown"), None, &empty, &empty).is_err());
+        assert_eq!(vsam_name("other").unwrap(), "OTHER");
+        assert!(vsam_name("TOO-LONG-NAME").is_err());
+        assert!(valid_table("public.vsam_other"));
+        assert!(!valid_table("public.vsam_other;DROP"));
+        assert!(valid_layout("12,4,2"));
+        assert!(!valid_layout("12,4,9"));
     }
 }

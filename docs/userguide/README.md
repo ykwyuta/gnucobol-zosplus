@@ -7,6 +7,8 @@
 | COBOL のデータを IBM EBCDIC で保持する | [EBCDIC 互換モード](ebcdic.md) | `-fdata-codeset=IBM-1399` など |
 | `EXEC SQL` から Docker Compose の Db2 に接続する | [Db2 接続](db2.md) | `--db2-sql`、`extras/db2sql/compose.yaml` |
 | `EXEC SQL` から Docker Compose の PostgreSQL に接続する | [PostgreSQL 接続](postgresql.md) | `--postgres-sql`、`extras/pgsql/compose.yaml` |
+| CICS FILE の VSAM を Db2 / PostgreSQL のテーブルに保存する | [CICS VSAM SQL モード](cics-vsam-sql.md) | `--vsam-backend`、`--vsam-table`、`--vsam-layout` |
+| JCL の IDCAMS / REPRO で VSAM の SQL 表を使う | [jclsh SQL VSAM モード](jcl-vsam-sql.md) | `vsam_backend`、`vsam_table.<DSN>` |
 | BMS 画面を TN3270 端末に表示し、Bank of Z を操作する | [CICS/BMS](cics-bms.md) | `--cics-map`、`cobcicsd` |
 | 対応 CICS 機能と `EXEC CICS` コマンドの範囲を調べる | [CICS 対応機能・コマンド一覧](cics-supported-features.md) | IBM 公式リファレンス付きの対応表 |
 | GenApp の顧客・保険画面と HTTP 業務経路を試す | [CICS GenApp](cics-genapp.md) | `test-genapp-all.ps1`、`cobcicsd` |

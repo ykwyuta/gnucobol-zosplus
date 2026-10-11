@@ -10,6 +10,7 @@ mod datasets;
 mod jcl;
 mod records;
 mod utilities;
+mod vsam_sql;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -75,6 +76,13 @@ struct Profile {
     dataset_root: PathBuf,
     site: HashMap<String, String>,
     ld_library_path: String,
+    vsam_backend: String,
+    vsam_tables: HashMap<String, String>,
+    vsam_postgres_container: String,
+    vsam_postgres_user: String,
+    vsam_postgres_database: String,
+    vsam_db2_image: String,
+    vsam_db2_helper: PathBuf,
 }
 
 fn read_profile(path: &Path) -> Result<Profile> {
@@ -85,6 +93,7 @@ fn read_profile(path: &Path) -> Result<Profile> {
     let mut proclibs = HashMap::new();
     let mut datasets = HashMap::new();
     let mut site = HashMap::new();
+    let mut vsam_tables = HashMap::new();
     for (index, line) in source.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -163,6 +172,16 @@ fn read_profile(path: &Path) -> Result<Profile> {
                     index + 1
                 ));
             }
+        } else if let Some(name) = key.strip_prefix("vsam_table.") {
+            let name = name.to_ascii_uppercase();
+            let table = value.trim();
+            if name.is_empty()
+                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b".$#@".contains(&b))
+                || !vsam_sql::valid_table(table)
+                || vsam_tables.insert(name, table.to_string()).is_some()
+            {
+                return Err(format!("{}:{}: invalid VSAM table mapping", path.display(), index + 1));
+            }
         } else if matches!(
             key,
             "image"
@@ -173,6 +192,12 @@ fn read_profile(path: &Path) -> Result<Profile> {
                 | "dsn_library"
                 | "ld_library_path"
                 | "dataset_root"
+                | "vsam_backend"
+                | "vsam_postgres_container"
+                | "vsam_postgres_user"
+                | "vsam_postgres_database"
+                | "vsam_db2_image"
+                | "vsam_db2_helper"
         ) {
             if values
                 .insert(key.to_string(), value.trim().to_string())
@@ -199,6 +224,13 @@ fn read_profile(path: &Path) -> Result<Profile> {
             .cloned()
             .ok_or_else(|| format!("{}: missing profile key {key}", path.display()))
     };
+    let vsam_backend = values.get("vsam_backend").map(String::as_str).unwrap_or("local");
+    if !matches!(vsam_backend, "local" | "db2" | "postgres") {
+        return Err(format!("{}: vsam_backend requires local, db2, or postgres", path.display()));
+    }
+    if vsam_backend == "local" && !vsam_tables.is_empty() {
+        return Err(format!("{}: local VSAM cannot use vsam_table mappings", path.display()));
+    }
     Ok(Profile {
         image: required("image")?,
         env_file: PathBuf::from(required("env_file")?),
@@ -217,6 +249,18 @@ fn read_profile(path: &Path) -> Result<Profile> {
         ),
         site,
         ld_library_path: required("ld_library_path")?,
+        vsam_backend: vsam_backend.to_string(),
+        vsam_tables,
+        vsam_postgres_container: values.get("vsam_postgres_container")
+            .cloned().unwrap_or_else(|| "gnucobol-pgsql-postgres-1".to_string()),
+        vsam_postgres_user: values.get("vsam_postgres_user")
+            .cloned().unwrap_or_else(|| "gcob".to_string()),
+        vsam_postgres_database: values.get("vsam_postgres_database")
+            .cloned().unwrap_or_else(|| "gcobpg".to_string()),
+        vsam_db2_image: values.get("vsam_db2_image")
+            .cloned().unwrap_or_else(|| "gnucobol-db2-build".to_string()),
+        vsam_db2_helper: PathBuf::from(values.get("vsam_db2_helper")
+            .map(String::as_str).unwrap_or("extras/jclsh/vsam_db2.py")),
     })
 }
 
@@ -593,6 +637,25 @@ fn run_job(
             continue;
         }
         let abend_file = step_dir.join("abend.txt");
+        if profile.vsam_backend != "local" {
+            for dd in &step.dds {
+                if let DdKind::Dataset(entries) = &dd.kind {
+                    for (name, disposition) in entries {
+                        if profile.vsam_tables.contains_key(&name.to_ascii_uppercase()) {
+                            if entries.len() != 1 {
+                                return Err(format!("SQL VSAM DD {name} cannot be concatenated"));
+                            }
+                            if step.pgm != "IDCAMS"
+                                && !(step.pgm == "IEFBR14"
+                                    && disposition.to_ascii_uppercase().contains("DELETE"))
+                            {
+                                return Err(format!("SQL VSAM DD {name} is supported by IDCAMS/REPRO only"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let (dataset_env, allocations) = datasets.prepare(step, &step_dir)?;
         let mut dd_paths: HashMap<String, PathBuf> = dataset_env.into_iter().collect();
         for dd in &step.dds {
@@ -652,7 +715,7 @@ fn run_job(
             }
             (rc, output.stdout, output.stderr)
         } else {
-            let output = utilities::run(&step.pgm, &dd_paths, &datasets)?;
+            let output = utilities::run(&step.pgm, &dd_paths, &allocations, &datasets)?;
             (output.rc, output.stdout, output.stderr)
         };
         let abend = if abend_file.exists() {

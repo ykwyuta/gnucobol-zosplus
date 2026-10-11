@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::datasets::DataSets;
+use super::datasets::{Allocation, DataSets};
 use super::records::{self, Layout};
+use super::vsam_sql;
 use super::Result;
 
 pub(super) struct Output {
@@ -25,12 +26,13 @@ pub(super) fn is_builtin(program: &str) -> bool {
 pub(super) fn run(
     program: &str,
     dds: &HashMap<String, PathBuf>,
+    allocations: &[Allocation],
     datasets: &DataSets<'_>,
 ) -> Result<Output> {
     let result = match program {
         "IEFBR14" => Ok((0, "IEFBR14: DD dispositions processed\n".to_string())),
         "IEBGENER" => iebgener(dds),
-        "IDCAMS" => idcams(dds, datasets),
+        "IDCAMS" => idcams(dds, allocations, datasets),
         "SORT" => sort(dds),
         "DFHCSDUP" => dfhcsdup(dds),
         _ => return Err(format!("unknown built-in utility {program}")),
@@ -162,6 +164,7 @@ fn operand(text: &str, key: &str) -> Option<String> {
 
 fn idcams(
     dds: &HashMap<String, PathBuf>,
+    allocations: &[Allocation],
     datasets: &DataSets<'_>,
 ) -> std::result::Result<(i32, String), String> {
     let mut maxcc = 0;
@@ -179,6 +182,10 @@ fn idcams(
                     .map_err(|error| error.to_string())?
                     .ok_or("DELETE requires a cataloged data set")?;
                 if path.exists() {
+                    if let Some(table) = datasets.mapped_sql_table(name) {
+                        let (profile, workspace) = datasets.sql_context();
+                        vsam_sql::drop_table(profile, workspace, table)?;
+                    }
                     fs::remove_file(&path).map_err(|error| error.to_string())?;
                     records::remove_layout(&path)?;
                     0
@@ -252,25 +259,33 @@ fn idcams(
                         }
                         _ => String::new(),
                     };
-                    fs::write(&path, contents).map_err(|error| error.to_string())?;
-                    if kind == "CLUSTER" {
-                        if let Some(recordsize) =
-                            operand(&card, "RECORDSIZE").or_else(|| operand(&card, "RECSZ"))
-                        {
-                            let record_len = numeric_pair(&recordsize)?.1;
-                            let (key_len, key_offset) = operand(&card, "KEYS")
-                                .map(|value| numeric_pair(&value))
-                                .transpose()?
-                                .unwrap_or((0, 0));
-                            records::write_layout(
-                                &path,
-                                Layout {
-                                    lrecl: record_len,
-                                    key_len,
-                                    key_offset,
-                                },
-                            )?;
+                    let layout = if kind == "CLUSTER" {
+                        operand(&card, "RECORDSIZE").or_else(|| operand(&card, "RECSZ"))
+                            .map(|size| {
+                                let record_len = numeric_pair(&size)?.1;
+                                let (key_len, key_offset) = operand(&card, "KEYS")
+                                    .map(|value| numeric_pair(&value)).transpose()?
+                                    .unwrap_or((0, 0));
+                                Ok::<Layout, String>(Layout { lrecl: record_len, key_len, key_offset })
+                            }).transpose()?
+                    } else { None };
+                    let sql_table = if kind == "CLUSTER" { datasets.sql_table(&name)? } else { None };
+                    if let Some(table) = sql_table {
+                        let (profile, workspace) = datasets.sql_context();
+                        vsam_sql::create(profile, workspace, table,
+                            layout.ok_or("SQL VSAM requires RECORDSIZE and KEYS")?)?;
+                    }
+                    let local_result = (|| {
+                        fs::write(&path, contents).map_err(|error| error.to_string())?;
+                        if let Some(layout) = layout { records::write_layout(&path, layout)?; }
+                        Ok::<_, String>(())
+                    })();
+                    if let Err(error) = local_result {
+                        if let Some(table) = sql_table {
+                            let (profile, workspace) = datasets.sql_context();
+                            let _ = vsam_sql::drop_table(profile, workspace, table);
                         }
+                        return Err(error);
                     }
                     0
                 }
@@ -293,10 +308,17 @@ fn idcams(
                 let key_offset: usize = parts[3]
                     .parse()
                     .map_err(|_| "invalid ALTERNATEINDEX key offset")?;
-                let bytes = fs::read(&base_path).map_err(|error| format!("{base}: {error}"))?;
+                let base_layout = records::read_layout(&base_path)?;
+                let bytes = if let Some(table) = datasets.sql_table_for_path(&base_path) {
+                    let (profile, workspace) = datasets.sql_context();
+                    vsam_sql::export(profile, workspace, table,
+                        base_layout.ok_or("SQL VSAM base lacks FB layout")?)?
+                } else {
+                    fs::read(&base_path).map_err(|error| format!("{base}: {error}"))?
+                };
                 let mut entries = Vec::new();
                 for (ordinal, record) in
-                    records::records(&bytes, records::read_layout(&base_path)?)?
+                    records::records(&bytes, base_layout)?
                         .into_iter()
                         .enumerate()
                 {
@@ -329,18 +351,35 @@ fn idcams(
                 let to = operand(&card, "OUTFILE")
                     .or_else(|| operand(&card, "OFILE"))
                     .ok_or_else(|| format!("REPRO requires OUTFILE/OFILE: {card}"))?;
-                let mut bytes = fs::read(dd(dds, &from)?).map_err(|error| error.to_string())?;
                 let input = dd(dds, &from)?;
                 let output = dd(dds, &to)?;
                 let input_layout = records::read_layout(input)?;
+                let input_sql = datasets.sql_table_for_allocation(input, allocations);
+                let output_sql = datasets.sql_table_for_allocation(output, allocations);
+                let mut bytes = if let Some(table) = input_sql {
+                    let (profile, workspace) = datasets.sql_context();
+                    vsam_sql::export(profile, workspace, table,
+                        input_layout.ok_or("SQL VSAM input lacks FB layout")?)?
+                } else {
+                    fs::read(input).map_err(|error| error.to_string())?
+                };
                 if let Some(layout) = records::read_layout(output)?.or(input_layout) {
                     if input_layout.is_some_and(|source| source.lrecl != layout.lrecl) {
                         return Err("REPRO input and output FB LRECL differ".to_string());
                     }
                     bytes = records::normalize_fb(&bytes, layout, input_layout.is_some())?;
-                    records::write_layout(output, layout)?;
+                    if let Some(table) = output_sql {
+                        let (profile, workspace) = datasets.sql_context();
+                        vsam_sql::replace(profile, workspace, table, layout, &bytes)?;
+                    } else {
+                        records::write_layout(output, layout)?;
+                        fs::write(output, &bytes).map_err(|error| error.to_string())?;
+                    }
+                } else if output_sql.is_some() {
+                    return Err("SQL VSAM output lacks FB layout".to_string());
+                } else {
+                    fs::write(output, &bytes).map_err(|error| error.to_string())?;
                 }
-                fs::write(output, bytes).map_err(|error| error.to_string())?;
                 0
             }
             "LISTCAT" => {

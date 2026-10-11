@@ -131,7 +131,10 @@ ensure_connection(void)
     const char *password_file = getenv("PG_PASSWORD_FILE");
     const char *conninfo = getenv("PG_CONNINFO");
     if (connection && PQstatus(connection) == CONNECTION_OK) return 0;
-    if (connection) PQfinish(connection);
+    if (connection) {
+        PQfinish(connection);
+        connection = NULL;
+    }
     if (password_file && *password_file) {
         FILE *file = fopen(password_file, "rb");
         size_t length;
@@ -172,10 +175,19 @@ ensure_connection(void)
     if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
         diagnostic(begin);
         PQclear(begin);
+        PQfinish(connection);
+        connection = NULL;
         return -1;
     }
     PQclear(begin);
     return 0;
+}
+
+/* CICS VSAM shares the embedded-SQL connection and task transaction. */
+PGconn *
+PGSQL_CONNECTION(void)
+{
+    return ensure_connection() == 0 ? connection : NULL;
 }
 
 /* The existing SQL translator emits question-mark host placeholders. Only

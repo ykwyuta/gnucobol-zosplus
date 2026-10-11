@@ -33,6 +33,7 @@ docker run --rm --env-file extras/db2sql/.runtime.env `
 if ($LASTEXITCODE -ne 0) { throw 'Db2 VARCHAR host variable test failed' }
 
 foreach ($test in @('test-genapp-file.py',
+                    'test-vsam-db2-generic.py',
                     'test-genapp-lock.py',
                     'test-genapp-queue.py',
                     'test-genapp-vsam-transactions.py',
@@ -52,7 +53,7 @@ foreach ($test in @('test-genapp-file.py',
                     'test-genapp-http.py',
                     'test-genapp-scheduler-host.py')) {
     $arguments = @("extras/cobcics/$test")
-    if ($test -eq 'test-genapp-file.py') {
+    if ($test -eq 'test-genapp-file.py' -or $test -eq 'test-vsam-db2-generic.py') {
         $arguments += 'build/genapp/libgenapp_file.so'
     }
     if ($test -eq 'test-genapp-queue.py') {

@@ -36,6 +36,8 @@ def main() -> None:
         if source.is_file() and source.suffix in (".c", ".h"):
             files[f"pl1c/runtime/{source.name}"] = source
 
+    files["jclsh/vsam_db2.py"] = ROOT / "extras" / "jclsh" / "vsam_db2.py"
+
     with ZipFile(output, "w", compression=ZIP_DEFLATED, compresslevel=9) as archive:
         for destination, source in files.items():
             archive.write(source, destination)

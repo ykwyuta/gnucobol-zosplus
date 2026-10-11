@@ -68,6 +68,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File extras/jclsh/test-utilities.
 
 `--check-csd` を付けると待受けせずに解決結果の件数を表示する。起動時には CSD の FILE `DSNAME` とプロファイルの `dataset.<DSN>` を照合し、`dataset_root` 内の実ファイルだけをワーカーに渡す。GenApp の CICS FILE ブリッジは `KSDSCUST` / `KSDSPOLY` に加え、`COBCICS_VSAM_<FILE>` と FB メタデータを持つ任意のキー付きファイルを扱う。非ゼロのキー位置にも対応する。CICS ワーカー間の書き込みは作業単位の終わりまでファイル単位で排他する。更新は同じ作業単位の読み取りにだけ反映し、`EXEC CICS SYNCPOINT` または正常終了で Db2 とともに確定する。`SYNCPOINT ROLLBACK`・ABEND・Db2 確定失敗ではファイル変更を破棄する。現行のローカルバックエンドはファイル全体をメモリへ読み込み、64 MiB を上限とする。Db2 確定後のファイル置換失敗やプロセス・ホスト障害をまたぐ原子的な回復はまだ保証しない。分散二相コミットと回復ログは未実装である。
 
+VSAM の実体を Db2 または PostgreSQL のテーブルへ切り替える方法は [CICS VSAM SQL モード](cics-vsam-sql.md)を参照する。
+
 JCL 生成物を用いた CICS FILE ABI の試験は、`gnucobol-db2-build` イメージで `libgenapp_file.so` をビルドした後に `python3 extras/cobcics/test-genapp-local-vsam.py build/genapp/libgenapp_file.so` を実行する。元データは一時ディレクトリにコピーし、未確定データの読み取り、取り消し、確定を検証する。`test-vsam-db2-uow.c` は Db2 確定失敗時のファイル破棄を、`test-vsam-db2-real.c` は Docker Compose の実 Db2 と FB ファイルを同時に更新する確定・取り消しを検証する。
 
 これらの作業単位試験は、上記の jclsh 回帰試験で FB ファイルを生成した後にまとめて実行できる。
