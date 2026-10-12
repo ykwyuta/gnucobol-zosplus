@@ -12,13 +12,13 @@ if (-not (Test-Path extras/db2sql/.runtime.env)) {
 cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcics-mapgen --locked -- `
     reference/Bank-of-Z-main/src/base/cics/bms/BNK1MAI.bms "$output/BNK1MAI.cpy"
 if ($LASTEXITCODE -ne 0) { throw 'BMS map generation failed' }
-python bin/cics-preprocess.py extras/cobcics/sync-link-worker.cob `
+& extras/preprocessors/target/debug/cics-preprocess.exe extras/cobcics/sync-link-worker.cob `
     "$output/BNK1MAI.cpy" "$output/sync-link-worker.cob"
 if ($LASTEXITCODE -ne 0) { throw 'Main CICS conversion failed' }
-python bin/cics-preprocess.py extras/cobcics/sync-link-sub.cob `
+& extras/preprocessors/target/debug/cics-preprocess.exe extras/cobcics/sync-link-sub.cob `
     "$output/BNK1MAI.cpy" "$output/sync-link-sub.cics.cob"
 if ($LASTEXITCODE -ne 0) { throw 'Linked CICS conversion failed' }
-python bin/db2sql-preprocess.py -I reference/Bank-of-Z-main/src/base/cics/copy `
+& extras/preprocessors/target/debug/db2sql-preprocess.exe -I reference/Bank-of-Z-main/src/base/cics/copy `
     "$output/sync-link-sub.cics.cob" "$output/sync-link-sub.cob"
 if ($LASTEXITCODE -ne 0) { throw 'Linked SQL conversion failed' }
 

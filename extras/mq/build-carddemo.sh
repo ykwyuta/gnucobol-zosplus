@@ -33,7 +33,7 @@ gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
     -o "$output/mqdemo" extras/mq/demo.cbl
 
 for name in CODATE01 COACCT01; do
-    python3 bin/cics-preprocess.py \
+    build/preprocessors-linux/debug/cics-preprocess \
         "reference/aws-mainframe-modernization-carddemo/app/app-vsam-mq/cbl/$name.cbl" \
         extras/mq/cics-placeholder.cpy "$output/$name.cob"
 done

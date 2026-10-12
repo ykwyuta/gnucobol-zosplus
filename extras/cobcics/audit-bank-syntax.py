@@ -5,8 +5,8 @@ Requires Python, offline Cargo dependencies, and the gnucobol-db2-build image.
 Generated files and compiler diagnostics are kept under build/bank-syntax.
 """
 
-import importlib.util
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -28,32 +28,34 @@ def main():
     sql_dir = OUTPUT / "sql"
     for directory in (maps_dir, converted_dir, sql_dir):
         directory.mkdir(parents=True, exist_ok=True)
-    spec = importlib.util.spec_from_file_location("cics_preprocess", ROOT / "bin/cics-preprocess.py")
-    cics = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(cics)
-    maps = {}
+    map_copybooks = []
     for source in sorted((SOURCE / "bms").glob("*.bms")):
         copybook = maps_dir / (source.stem + ".cpy")
         run("cargo", "run", "--manifest-path", "extras/cobcics/Cargo.toml",
             "--offline", "--quiet", "--bin", "cobcics-mapgen", "--",
             str(source), str(copybook))
-        for name, fields in cics.maps_from_copybook(copybook.read_text()).items():
-            if name in maps:
-                raise RuntimeError(f"duplicate BMS map {name}")
-            maps[name] = fields
+        map_copybooks.append(copybook.read_text(encoding="utf-8"))
+    combined = maps_dir / "all-maps.cpy"
+    combined.write_text("".join(map_copybooks), encoding="utf-8")
+    if sys.platform == "win32":
+        cics = ROOT / "extras/preprocessors/target/debug/cics-preprocess.exe"
+        sql = ROOT / "extras/preprocessors/target/debug/db2sql-preprocess.exe"
+    else:
+        cics = ROOT / "build/preprocessors-linux/debug/cics-preprocess"
+        sql = ROOT / "build/preprocessors-linux/debug/db2sql-preprocess"
     sources = sorted((SOURCE / "cobol").glob("*.cbl"))
     for source in sources:
-        text = source.read_text(encoding="utf-8")
-        if "EXEC CICS" in text.upper():
-            text = cics.transform(text, maps)
         converted = converted_dir / (source.stem + ".cob")
-        converted.write_text(text, encoding="utf-8")
-        run(sys.executable, "bin/db2sql-preprocess.py", "-I",
+        if "EXEC CICS" in source.read_text(encoding="utf-8").upper():
+            run(str(cics), "--any-mapset", str(source), str(combined), str(converted))
+        else:
+            shutil.copyfile(source, converted)
+        run(str(sql), "-I",
             str(SOURCE / "copy"), str(converted), str(sql_dir / converted.name))
     script = """set -eu
 for file in build/bank-syntax/sql/*.cob; do
   name=$(basename "$file" .cob)
-  build/cobc/cobc -c \
+  build/db2sql-build/cobc/.libs/cobc -c \
     -I reference/Bank-of-Z-main/src/base/cics/copy \
     -I extras/cobcics/copy -I build/bank-syntax/maps \
     -o "build/bank-syntax/$name.o" "$file" \
@@ -65,12 +67,13 @@ for file in build/bank-syntax/sql/*.cob; do
 done
 gcc -std=c11 -Wall -Wextra -Werror -I. \
   extras/cobcics/bridge.c extras/cobcics/test_bridge_channel.c \
-  -Lbuild/libcob/.libs -lcob -Wl,-rpath,/src/build/libcob/.libs \
+  -Lbuild/db2sql-build/libcob/.libs -lcob -Wl,-rpath,/src/build/db2sql-build/libcob/.libs \
   -o build/bank-syntax/test_bridge_channel
 printf 'CCI3\\175OMENBANKAPP \\000\\000\\000\\000' | \
   build/bank-syntax/test_bridge_channel
 """
     run("docker", "run", "--rm", "-e", "LICENSE=accept",
+        "-e", "LD_LIBRARY_PATH=/src/build/db2sql-build/libcob/.libs:/src/build/libcob/.libs",
         "-e", "COB_CONFIG_DIR=/src/config", "-e", "COB_COPY_DIR=/src/copy",
         "-e", "COB_CFLAGS=-I/src",
         "--entrypoint", "sh", "-v", f"{ROOT}:/src", "-w", "/src",

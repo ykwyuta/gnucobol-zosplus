@@ -95,17 +95,17 @@ fallback for IDs without a route.
 `PROGRAM-ID`, which must fit in eight characters for this command
 ([IBM's ASSIGN reference](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-assign)).
 
-`bin/cics-preprocess.py` translates the first `EXEC CICS` subset. The generated
+`extras/preprocessors/target/release/cics-preprocess` translates the first `EXEC CICS` subset. The generated
 copybook filename must match the mapset name. For the menu demo:
 
 ```sh
-python bin/cics-preprocess.py \
+extras/preprocessors/target/release/cics-preprocess \
   extras/cobcics/menu-worker-cics.cob build/BNK1MAI.cpy \
   build/menu-worker-cics.cob
-python bin/cics-preprocess.py \
+extras/preprocessors/target/release/cics-preprocess \
   extras/cobcics/menu-linked-cics.cob build/BNK1MAI.cpy \
   build/menu-linked-cics.cob
-python bin/cics-preprocess.py \
+extras/preprocessors/target/release/cics-preprocess \
   extras/cobcics/menu-immediate-cics.cob build/BNK1MAI.cpy \
   build/menu-immediate-cics.cob
 cobc -x -I build -I extras/cobcics/copy -o build/menu-worker-cics \
@@ -298,7 +298,7 @@ resource definitions and dynamic program loading are not implemented.
 The preprocessor is also available from `cobc --cics-map=build/BNK1MAI.cpy`.
 When combined with `--db2-sql`, CICS conversion runs before SQL conversion.
 When compiling from a source checkout, set `COB_CICS_PREPROCESSOR` to the
-absolute path of `bin/cics-preprocess.py` unless it is on `PATH`. Add the
+absolute path of `extras/preprocessors/target/release/cics-preprocess` unless it is on `PATH`. Add the
 map copybook and `extras/cobcics/copy` directories with `-I`, and link
 `bridge.c` into the worker. The latter directory contains the supported
 `DFHAID` AID constants. The combined driver order has been checked at the
@@ -307,7 +307,7 @@ INSERT, task-end commit, and ABEND backout. The original Bank of Z business
 programs remain to be compiled and exercised.
 
 ```sh
-COB_CICS_PREPROCESSOR="$PWD/bin/cics-preprocess.py" cobc \
+COB_CICS_PREPROCESSOR="$PWD/extras/preprocessors/target/release/cics-preprocess" cobc \
   --cics-map=build/BNK1MAI.cpy -x -I build -I extras/cobcics/copy \
   -o build/menu-worker-cics extras/cobcics/menu-worker-cics.cob \
   extras/cobcics/menu-linked-cics.cob \

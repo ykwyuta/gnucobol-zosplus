@@ -5462,7 +5462,7 @@ force_new_page_for_next_line (void)
 	cb_listing_linecount = cb_lines_per_page;
 }
 
-/* Optional source translators. Pass arguments to Python without a shell. */
+/* Optional source translators. Pass arguments to Rust tools without a shell. */
 static const char *
 find_translation_script (const char *script)
 {
@@ -5495,18 +5495,18 @@ find_translation_script (const char *script)
 }
 
 static int
-run_python_translation (const char *python, char **args)
+run_source_translation (const char *tool, char **args)
 {
 	int status;
 #ifdef _WIN32
-	status = (int)_spawnvp (_P_WAIT, python, (const char * const *)args);
+	status = (int)_spawnvp (_P_WAIT, tool, (const char * const *)args);
 #else
 	{
 		pid_t child = fork ();
 		if (child == 0) {
-			execvp (python, args);
+			execvp (tool, args);
 			fprintf (stderr, "cobc: cannot start %s: %s\n",
-			         python, strerror (errno));
+			         tool, strerror (errno));
 			_exit (127);
 		}
 		if (child < 0) {
@@ -5530,18 +5530,16 @@ run_python_translation (const char *python, char **args)
 static int
 cics_transform (struct filename *fn, const char **translated)
 {
-	const char *python = getenv ("COB_CICS_PYTHON");
 	const char *script = getenv ("COB_CICS_PREPROCESSOR");
 	char *target;
-	char *args[6];
+	char *args[5];
 	size_t length;
 
 	if (fn->file_is_stdin || CB_SF_FREE (cobc_get_source_format ())) {
 		cobc_err_msg (_("--cics-map requires a fixed-format source file"));
 		return 1;
 	}
-	if (!python || !*python) python = "python3";
-	if (!script || !*script) script = "cics-preprocess.py";
+	if (!script || !*script) script = "cics-preprocess";
 	script = find_translation_script (script);
 	if (save_temps) {
 		const char *base = file_basename (fn->source, NULL);
@@ -5557,15 +5555,14 @@ cics_transform (struct filename *fn, const char **translated)
 		target = cobc_main_malloc (COB_FILE_MAX);
 		cob_temp_name (target, ".cbl");
 	}
-	args[0] = (char *)python;
-	args[1] = (char *)script;
-	args[2] = (char *)fn->source;
-	args[3] = (char *)cb_cics_map;
-	args[4] = target;
-	args[5] = NULL;
+	args[0] = (char *)script;
+	args[1] = (char *)fn->source;
+	args[2] = (char *)cb_cics_map;
+	args[3] = target;
+	args[4] = NULL;
 	if (verbose_output)
 		fprintf (stderr, "CICS translation: %s -> %s\n", fn->source, target);
-	if (run_python_translation (python, args)) {
+	if (run_source_translation (script, args)) {
 		if (!save_temps) (void)unlink (target);
 		cobc_err_msg (_("CICS translation failed for %s"), fn->source);
 		return 1;
@@ -5578,18 +5575,16 @@ static int
 ims_dli_transform (struct filename *fn, const char *source,
 		   const char **translated)
 {
-	const char *python = getenv ("COB_IMS_DLI_PYTHON");
 	const char *script = getenv ("COB_IMS_DLI_PREPROCESSOR");
 	char *target;
-	char *args[7];
+	char *args[6];
 	size_t length;
 
 	if (fn->file_is_stdin || CB_SF_FREE (cobc_get_source_format ())) {
 		cobc_err_msg (_("--ims-dli requires a fixed-format source file"));
 		return 1;
 	}
-	if (!python || !*python) python = "python3";
-	if (!script || !*script) script = "imsdli-preprocess.py";
+	if (!script || !*script) script = "imsdli-preprocess";
 	script = find_translation_script (script);
 	if (save_temps) {
 		const char *base = file_basename (fn->source, NULL);
@@ -5605,16 +5600,15 @@ ims_dli_transform (struct filename *fn, const char *source,
 		target = cobc_main_malloc (COB_FILE_MAX);
 		cob_temp_name (target, ".cbl");
 	}
-	args[0] = (char *)python;
-	args[1] = (char *)script;
-	args[2] = (char *)source;
-	args[3] = target;
-	args[4] = (char *)"--dbd";
-	args[5] = (char *)cb_ims_dbd;
-	args[6] = NULL;
+	args[0] = (char *)script;
+	args[1] = (char *)source;
+	args[2] = target;
+	args[3] = (char *)"--dbd";
+	args[4] = (char *)cb_ims_dbd;
+	args[5] = NULL;
 	if (verbose_output)
 		fprintf (stderr, "IMS DLI translation: %s -> %s\n", source, target);
-	if (run_python_translation (python, args)) {
+	if (run_source_translation (script, args)) {
 		if (!save_temps) (void)unlink (target);
 		cobc_err_msg (_("IMS DLI translation failed for %s"), fn->source);
 		return 1;
@@ -5627,7 +5621,6 @@ static int
 embedded_sql_transform (struct filename *fn, const char *source,
 			const char **translated, int postgres)
 {
-	const char *python = getenv ("COB_DB2_SQL_PYTHON");
 	const char *script = getenv ("COB_DB2_SQL_PREPROCESSOR");
 	struct cb_text_list *include;
 	char *target;
@@ -5639,8 +5632,7 @@ embedded_sql_transform (struct filename *fn, const char *source,
 		cobc_err_msg (_("--db2-sql/--postgres-sql requires a fixed-format source file"));
 		return 1;
 	}
-	if (!python || !*python) python = "python3";
-	if (!script || !*script) script = "db2sql-preprocess.py";
+	if (!script || !*script) script = "db2sql-preprocess";
 	script = find_translation_script (script);
 	if (save_temps) {
 		const char *base = file_basename (fn->source, NULL);
@@ -5672,7 +5664,6 @@ embedded_sql_transform (struct filename *fn, const char *source,
 		}
 	}
 	args = cobc_main_malloc ((count * 2 + 7) * sizeof (*args));
-	args[index++] = (char *)python;
 	args[index++] = (char *)script;
 	if (origin_dir) {
 		args[index++] = (char *)"-I";
@@ -5688,7 +5679,7 @@ embedded_sql_transform (struct filename *fn, const char *source,
 	if (verbose_output)
 		fprintf (stderr, "%s SQL translation: %s -> %s\n",
 		         postgres ? "PostgreSQL" : "Db2", source, target);
-	if (run_python_translation (python, args)) {
+	if (run_source_translation (script, args)) {
 		if (!save_temps) (void)unlink (target);
 		cobc_err_msg (_("%s SQL translation failed for %s"),
 		              postgres ? "PostgreSQL" : "Db2", fn->source);

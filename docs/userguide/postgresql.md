@@ -38,7 +38,7 @@ COB_HOST_CODESET=UTF-8 "$PGSQL_BUILD_DIR/pgsql-ebcdic-demo"
 自分の固定形式ソースをコンパイルする場合:
 
 ```sh
-COB_DB2_SQL_PREPROCESSOR="$PWD/bin/db2sql-preprocess.py" \
+COB_DB2_SQL_PREPROCESSOR="$PWD/extras/preprocessors/target/release/db2sql-preprocess" \
   build/cobc/.libs/cobc --postgres-sql -x -Icopy \
   -o build/pgsql/my-program path/to/my-program.cbl
 ```

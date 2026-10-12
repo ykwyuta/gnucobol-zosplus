@@ -11,6 +11,9 @@ export COB_COPY_DIR="$root/copy"
 export COB_CFLAGS="-I$root"
 export COB_LDFLAGS="-L$root/build/libcob/.libs"
 export PATH="$root/bin:$PATH"
+export COB_CICS_PREPROCESSOR="$root/build/preprocessors-linux/debug/cics-preprocess"
+export COB_IMS_DLI_PREPROCESSOR="$root/build/preprocessors-linux/debug/imsdli-preprocess"
+export COB_DB2_SQL_PREPROCESSOR="$root/build/preprocessors-linux/debug/db2sql-preprocess"
 python3 extras/cobcics/test_cics_preprocess.py
 python3 extras/imsdb/tests/test_execdli.py
 cp "$card/dcl/AUTHFRDS.dcl" "$tmp/AUTHFRDS.cpy"

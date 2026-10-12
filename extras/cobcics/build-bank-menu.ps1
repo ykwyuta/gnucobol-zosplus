@@ -21,7 +21,7 @@ foreach ($program in $programs) {
     cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcics-mapgen --locked -- `
         "reference/Bank-of-Z-main/src/base/cics/bms/$map.bms" "$output/$map.cpy"
     if ($LASTEXITCODE -ne 0) { throw "BMS map generation failed: $map" }
-    python bin/cics-preprocess.py `
+    & extras/preprocessors/target/debug/cics-preprocess.exe `
         "reference/Bank-of-Z-main/src/base/cics/cobol/$name.cbl" `
         "$output/$map.cpy" "$output/$name.cob"
     if ($LASTEXITCODE -ne 0) { throw "CICS conversion failed: $name" }

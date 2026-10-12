@@ -20,22 +20,22 @@ foreach ($program in $programs) {
     cargo run --manifest-path extras/cobcics/Cargo.toml --bin cobcics-mapgen --locked -- `
         "reference/Bank-of-Z-main/src/base/cics/bms/$map.bms" "$output/$map.cpy"
     if ($LASTEXITCODE -ne 0) { throw "BMS map generation failed: $map" }
-    python bin/cics-preprocess.py `
+    & extras/preprocessors/target/debug/cics-preprocess.exe `
         "reference/Bank-of-Z-main/src/base/cics/cobol/$name.cbl" `
         "$output/$map.cpy" "$output/$name.cob"
     if ($LASTEXITCODE -ne 0) { throw "CICS conversion failed: $name" }
 }
 
 foreach ($name in @('INQACC', 'DELACC', 'XFRFUN')) {
-    python bin/cics-preprocess.py `
+    & extras/preprocessors/target/debug/cics-preprocess.exe `
         "reference/Bank-of-Z-main/src/base/cics/cobol/$name.cbl" `
         "$output/BNK1DAM.cpy" "$output/workers/$name.cics.cob"
     if ($LASTEXITCODE -ne 0) { throw "CICS conversion failed: $name" }
-    python bin/db2sql-preprocess.py -I reference/Bank-of-Z-main/src/base/cics/copy `
+    & extras/preprocessors/target/debug/db2sql-preprocess.exe -I reference/Bank-of-Z-main/src/base/cics/copy `
         "$output/workers/$name.cics.cob" "$output/workers/$name.gen.cob"
     if ($LASTEXITCODE -ne 0) { throw "SQL conversion failed: $name" }
 }
-python bin/cics-preprocess.py `
+& extras/preprocessors/target/debug/cics-preprocess.exe `
     reference/Bank-of-Z-main/src/base/cics/cobol/ABNDPROC.cbl `
     "$output/BNK1DAM.cpy" "$output/workers/ABNDPROC.gen.cob"
 if ($LASTEXITCODE -ne 0) { throw 'CICS conversion failed: ABNDPROC' }

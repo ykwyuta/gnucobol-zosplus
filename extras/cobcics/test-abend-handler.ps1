@@ -7,7 +7,7 @@ $output = 'build/bank-business'
 if (-not (Test-Path "$output/workers/ABNDPROC.gen.cob")) {
     throw 'Run extras/cobcics/build-bank-business.ps1 first'
 }
-python bin/cics-preprocess.py extras/cobcics/abend-handler-worker.cob `
+& extras/preprocessors/target/debug/cics-preprocess.exe extras/cobcics/abend-handler-worker.cob `
     "$output/BNK1DAM.cpy" "$output/workers/abend-handler-worker.gen.cob"
 if ($LASTEXITCODE -ne 0) { throw 'ABEND handler conversion failed' }
 

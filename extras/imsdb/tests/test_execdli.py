@@ -2,7 +2,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[3] / "bin/imsdli-preprocess.py"
+SCRIPT = Path(__file__).resolve().parents[3] / "tests/legacy_preprocessors/imsdli-preprocess.py"
 spec = importlib.util.spec_from_file_location("execdli", SCRIPT)
 execdli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(execdli)

@@ -14,6 +14,7 @@ export COB_COPY_DIR="$root/copy"
 export COB_CFLAGS="-I$root"
 export COB_LDFLAGS="-L$root/build/libcob/.libs"
 export PATH="$root/bin:$PATH"
+export COB_IMS_DLI_PREPROCESSOR="$root/build/preprocessors-linux/debug/imsdli-preprocess"
 python3 extras/imsdb/tests/test_execdli.py
 card="reference/aws-mainframe-modernization-carddemo/app/app-authorization-ims-db2-mq"
 build/cobc/.libs/cobc --ims-dli=DBPAUTP0 -m -I "$card/cpy" \

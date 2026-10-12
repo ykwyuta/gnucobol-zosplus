@@ -49,8 +49,8 @@ done
 $driver = '/usr/local/lib64/python3.9/site-packages'
 docker run --rm -e LICENSE=accept -e COB_CONFIG_DIR=/src/config `
     -e COB_COPY_DIR=/src/copy `
-    -e COB_CICS_PREPROCESSOR=/src/bin/cics-preprocess.py `
-    -e COB_DB2_SQL_PREPROCESSOR=/src/bin/db2sql-preprocess.py `
+    -e COB_CICS_PREPROCESSOR=/src/build/preprocessors-linux/debug/cics-preprocess `
+    -e COB_DB2_SQL_PREPROCESSOR=/src/build/preprocessors-linux/debug/db2sql-preprocess `
     -e COB_CFLAGS='-I/src -DCOBCICS_DB2SQL' `
     -e "COB_LDFLAGS=-L/src/build/carddemo-fraud/compiler/libcob/.libs -L/src/build/carddemo-fraud -ldb2sql -Wl,-rpath-link,$driver/ibm_db.libs" `
     -e "LD_LIBRARY_PATH=/src/build/carddemo-fraud/compiler/libcob/.libs:/src/build/carddemo-fraud:$driver/clidriver/lib:$driver/ibm_db.libs" `

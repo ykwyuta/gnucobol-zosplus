@@ -21,13 +21,13 @@ gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
     -I"$root" -I"$driver/include" extras/db2sql/db2sql.c \
     -L"$build/libcob/.libs" -lcob -L"$driver/lib" -ldb2 \
     -o "$build/libdb2sql.so"
-COB_DB2_SQL_PREPROCESSOR="$root/bin/db2sql-preprocess.py" \
+COB_DB2_SQL_PREPROCESSOR="$root/build/preprocessors-linux/debug/db2sql-preprocess" \
     sh "$build/pre-inst-env" "$build/cobc/cobc" --db2-sql \
     -x -Icopy -o "$build/db2-demo" extras/db2sql/demo.cbl
-COB_DB2_SQL_PREPROCESSOR="$root/bin/db2sql-preprocess.py" \
+COB_DB2_SQL_PREPROCESSOR="$root/build/preprocessors-linux/debug/db2sql-preprocess" \
     sh "$build/pre-inst-env" "$build/cobc/cobc" --db2-sql \
     -x -Icopy -o "$build/phase2-demo" extras/db2sql/phase2-demo.cbl
-COB_DB2_SQL_PREPROCESSOR="$root/bin/db2sql-preprocess.py" \
+COB_DB2_SQL_PREPROCESSOR="$root/build/preprocessors-linux/debug/db2sql-preprocess" \
     sh "$build/pre-inst-env" "$build/cobc/cobc" --db2-sql \
     -fdata-codeset=IBM-1399 -fsource-codeset=UTF-8 \
     -x -Icopy -o "$build/ebcdic-demo" extras/db2sql/ebcdic-demo.cbl

@@ -14,7 +14,7 @@ gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
   -o build/genapp/libgenapp_file.so
 gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
   extras/cobcics/genapp_queue.c -o build/genapp/libgenapp_queue.so
-python3 bin/db2sql-preprocess.py \
+build/preprocessors-linux/debug/db2sql-preprocess \
   extras/db2sql/varchar-demo.cbl build/genapp/varchar-demo.cob
 "$cobc" -x -o build/genapp/varchar-demo \
   build/genapp/varchar-demo.cob
@@ -49,7 +49,7 @@ for name in lgtestc1 lgtestp1 lgtestp2 lgtestp3 lgtestp4; do
     extras/cobcics/bridge.c extras/cobcics/genapp_queue.c \
     extras/cobcics/genapp_file.c extras/cobcics/local_vsam.c extras/cobcics/genapp_schedule.c
 done
-python3 bin/cics-preprocess.py extras/cobcics/genapp-map5-demo.cbl \
+build/preprocessors-linux/debug/cics-preprocess extras/cobcics/genapp-map5-demo.cbl \
   build/genapp/SSMAP.cpy build/genapp/map5-demo.cob
 "$cobc" -x -I build/genapp -o build/genapp/map5-demo \
   build/genapp/map5-demo.cob extras/cobcics/bridge.c \

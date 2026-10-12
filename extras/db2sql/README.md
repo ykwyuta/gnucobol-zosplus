@@ -1,6 +1,6 @@
 # Db2 埋め込み SQL の試験実装
 
-固定形式 COBOL の `EXEC SQL INCLUDE SQLCA/SQLDA`、SQLの表定義コピー、`INSERT`、単一行 `SELECT ... INTO`、`UPDATE`、`DELETE`、`COMMIT WORK`、`ROLLBACK WORK`、`DECLARE/OPEN/FETCH/CLOSE CURSOR` を実行できます。ホスト変数は整数、`PIC X`、`COMP-3` の小数、およびNULL指示変数に対応します。`cobc --db2-sql` は通常の COBOL 前処理より先に `bin/db2sql-preprocess.py` を起動して SQL を `CALL` に変換し、`db2sql.c` が Db2 CLI で実行します。未対応の SQL は変換時にエラーになります。
+固定形式 COBOL の `EXEC SQL INCLUDE SQLCA/SQLDA`、SQLの表定義コピー、`INSERT`、単一行 `SELECT ... INTO`、`UPDATE`、`DELETE`、`COMMIT WORK`、`ROLLBACK WORK`、`DECLARE/OPEN/FETCH/CLOSE CURSOR` を実行できます。ホスト変数は整数、`PIC X`、`COMP-3` の小数、およびNULL指示変数に対応します。`cobc --db2-sql` は通常の COBOL 前処理より先に `extras/preprocessors/target/release/db2sql-preprocess` を起動して SQL を `CALL` に変換し、`db2sql.c` が Db2 CLI で実行します。未対応の SQL は変換時にエラーになります。
 
 Db2 サーバーには IBM Db2 Community Edition 12.1.5.0、クライアントには `ibm_db` 3.3.0 の wheel に含まれる CLI ドライバーを使用します。どちらも IBM の配布物であり、リポジトリには同梱しません。Community Edition は無料で使用できるエディションですが、オープンソースではありません。
 
@@ -45,17 +45,17 @@ docker run --rm --entrypoint bash --env-file extras/db2sql/.runtime.env -e COB_H
 
 成功すると `DB2 SQL OK +000000042`、`DB2 PHASE 2 OK`、`DB2 EBCDIC OK` が出ます。最初のサンプルはINSERT、検索、該当なし（`+100`）、複数行の単一行検索（`-811`）、重複キー（`-803`）と各SQLSTATEを確認します。重複キーの診断は標準エラーへ出ます。2つ目はBank-of-Zと同じ形式のSQL表定義コピー、UPDATE/DELETE、カーソル、COMMIT/ROLLBACK、`COMP-3`小数、NULL指示変数を確認し、試験行を最後に削除します。最後はIBM-1399の日本語ホスト変数をDb2へ渡し、Db2側のUTF-8バイト値、COBOLへの読み戻し、短すぎる出力項目の診断を確認します。日本語の試験には、ホスト側のコードセットを `COB_HOST_CODESET=UTF-8` として明示する必要があります。自動コミットは無効です。
 
-`build-demo.sh` は両サンプルを `cobc --db2-sql` でコンパイルします。ソースチェックアウトから直接使う場合は変換スクリプトの場所を指定します。インストール後は `db2sql-preprocess.py` を `PATH` から探します。Python 実行名を変更する場合は `COB_DB2_SQL_PYTHON` を指定できます。`--save-temps` を併用すると変換後の `.db2.cbl` を確認できます。
+`build-demo.sh` は両サンプルを `cobc --db2-sql` でコンパイルします。ソースチェックアウトから直接使う場合はRust前処理器の場所を指定します。インストール後は `db2sql-preprocess` を `PATH` から探します。ビルド方法は [Rust前処理器ガイド](../../docs/userguide/rust-preprocessors.md) を参照してください。`--save-temps` を併用すると変換後の `.db2.cbl` を確認できます。
 
 ```sh
-COB_DB2_SQL_PREPROCESSOR=/src/bin/db2sql-preprocess.py \
+COB_DB2_SQL_PREPROCESSOR=/src/extras/preprocessors/target/release/db2sql-preprocess \
   cobc --db2-sql -x -Icopy -o db2-demo extras/db2sql/demo.cbl
 ```
 
 Bank-of-Zのソースを変換する場合は、コピー探索パスを指定します。以下はSQL変換のみの例です。元ソースにはCICS文もあるため、このままではプログラム全体をコンパイルできません。
 
 ```sh
-python3 bin/db2sql-preprocess.py -I reference/Bank-of-Z-main/src/base/cics/copy reference/Bank-of-Z-main/src/base/cics/cobol/INQCUST.cbl build/INQCUST-db2.cbl
+extras/preprocessors/target/release/db2sql-preprocess -I reference/Bank-of-Z-main/src/base/cics/copy reference/Bank-of-Z-main/src/base/cics/cobol/INQCUST.cbl build/INQCUST-db2.cbl
 ```
 
 現時点でBank-of-ZのSQLを含む15個の`.cbl`は変換できました。元ソースのCICS文は変換対象外のため、これらのプログラム全体をコンパイル・実行した確認ではありません。

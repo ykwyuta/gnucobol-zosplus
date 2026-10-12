@@ -46,7 +46,7 @@ It includes an experimental GnuCOBOL `CBLTDLI` entry point for DB PCBs.
   implicit I/O PCB and all PSB-defined TP, DB, and GSAM PCBs in PSB order.
   `test-bank-original.sh` runs the unchanged Bank of Z `IBSCUDAT.cbl` through
   both file and live queue modes; `test-tm-alt.sh` covers alternate PCBs.
-- `cobc --ims-dli=<DBD>` runs `bin/imsdli-preprocess.py` for the `EXEC DLI`
+- `cobc --ims-dli=<DBD>` runs `extras/preprocessors/target/release/imsdli-preprocess` for the `EXEC DLI`
   forms in CardDemo. It produces DB calls with DIBSTAT feedback, and maps Get
   commands to Get Hold behavior. `IMSDEXEC` handles `SCHD`, `TERM`, and basic
   `CHKP`; `TERM` commits and releases the scheduled PSB. The original

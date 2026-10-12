@@ -44,10 +44,10 @@ docker run --rm --entrypoint bash --env-file extras/db2sql/.runtime.env `
 
 ## 自分の COBOL プログラムで使う
 
-固定形式のソースに `EXEC SQL ... END-EXEC` と `EXEC SQL INCLUDE SQLCA END-EXEC` を記述し、`--db2-sql` を指定する。ソースチェックアウトから使う場合は、変換スクリプトの場所を `COB_DB2_SQL_PREPROCESSOR` で指定する。インストール済み環境ではスクリプトを PATH から探す。次はこのブランチの `cobc` をインストールし、ソースを `/src` に配置した Linux 環境の例である。Docker 内でビルドするときは、上記の `build-demo.sh` が同じ設定を行う。
+固定形式のソースに `EXEC SQL ... END-EXEC` と `EXEC SQL INCLUDE SQLCA END-EXEC` を記述し、`--db2-sql` を指定する。ソースチェックアウトから使う場合は、Rust前処理器の場所を `COB_DB2_SQL_PREPROCESSOR` で指定する。インストール済み環境では実行ファイルを PATH から探す。次はこのブランチの `cobc` をインストールし、ソースを `/src` に配置した Linux 環境の例である。Docker 内でビルドするときは、上記の `build-demo.sh` が同じ設定を行う。
 
 ```sh
-COB_DB2_SQL_PREPROCESSOR=/src/bin/db2sql-preprocess.py \
+COB_DB2_SQL_PREPROCESSOR=/src/extras/preprocessors/target/release/db2sql-preprocess \
   cobc --db2-sql -x -Icopy -o db2-demo extras/db2sql/demo.cbl
 ```
 

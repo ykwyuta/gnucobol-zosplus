@@ -1,0 +1,20 @@
+[package]
+name = "zosplus-preprocessors"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+regex = "1.13.1"
+
+[[bin]]
+name = "imsdli-preprocess"
+path = "src/bin/imsdli_preprocess.rs"
+
+[[bin]]
+name = "db2sql-preprocess"
+path = "src/bin/db2sql_preprocess.rs"
+
+[[bin]]
+name = "cics-preprocess"
+path = "src/bin/cics_preprocess.rs"

@@ -17,6 +17,12 @@ SOURCE = ROOT / "reference/cics-genapp/base/src"
 OUTPUT = ROOT / "build/genapp"
 
 
+def preprocessor(name: str) -> pathlib.Path:
+    if sys.platform == "win32":
+        return ROOT / "extras/preprocessors/target/debug" / f"{name}.exe"
+    return ROOT / "build/preprocessors-linux/debug" / name
+
+
 def run(*args: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(arg) for arg in args], cwd=ROOT, text=True, capture_output=True
@@ -203,12 +209,12 @@ def main() -> int:
         if ims:
             row.update(stage="excluded_candidate", diagnostic="IMS/DLI call; review dependencies")
         else:
-            result = run(sys.executable, "bin/cics-preprocess.py", input_source,
+            result = run(str(preprocessor("cics-preprocess")), input_source,
                          copybook, converted)
             if result.returncode:
                 row.update(stage="cics", diagnostic=diagnostic(result))
             else:
-                result = run(sys.executable, "bin/db2sql-preprocess.py",
+                result = run(str(preprocessor("db2sql-preprocess")),
                              "-I", SOURCE, converted, rendered)
                 if result.returncode:
                     row.update(stage="sql", diagnostic=diagnostic(result))

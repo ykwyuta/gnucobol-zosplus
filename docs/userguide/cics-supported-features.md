@@ -1,6 +1,6 @@
 # CICS 対応機能と EXEC CICS コマンド一覧
 
-この一覧は、このリポジトリの `bin/cics-preprocess.py` と `extras/cobcics/` の実装を対象とする。リンク先は IBM CICS Transaction Server for z/OS の公式リファレンス（主に 6.x）であり、**IBM CICS の全オプションがこの実装で使えるという意味ではない**。表の「対応範囲」に記した構文だけを受け付ける。`EXEC CICS` は前処理で COBOL とローカルブリッジの呼び出しに変換され、未対応のコマンドやオプションは元ソースの行番号付きエラーになる。
+この一覧は、このリポジトリの `extras/preprocessors` と `extras/cobcics/` の実装を対象とする。リンク先は IBM CICS Transaction Server for z/OS の公式リファレンス（主に 6.x）であり、**IBM CICS の全オプションがこの実装で使えるという意味ではない**。表の「対応範囲」に記した構文だけを受け付ける。`EXEC CICS` は前処理で COBOL とローカルブリッジの呼び出しに変換され、未対応のコマンドやオプションは元ソースの行番号付きエラーになる。
 
 ## 対応している機能
 

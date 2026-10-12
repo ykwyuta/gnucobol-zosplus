@@ -7,6 +7,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = {
+    "cics-preprocess": "preprocessors",
+    "db2sql-preprocess": "preprocessors",
+    "imsdli-preprocess": "preprocessors",
     "cobcicsd": "cobcics",
     "cobcics-mapgen": "cobcics",
     "jclsh": "jclsh",
@@ -38,7 +41,6 @@ def main() -> None:
             files[f"pl1c/runtime/{source.name}"] = source
 
     files["jclsh/vsam_db2.py"] = ROOT / "extras" / "jclsh" / "vsam_db2.py"
-    files["bin/imsdli-preprocess.py"] = ROOT / "bin" / "imsdli-preprocess.py"
     for name in ("cbltdli.c", "imsdb.h", "imsbatch.c"):
         files[f"imsdb/{name}"] = ROOT / "extras" / "imsdb" / name
     library = "imsdb.dll" if args.os == "Windows" else "libimsdb.so"

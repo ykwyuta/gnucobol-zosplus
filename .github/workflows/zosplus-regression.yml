@@ -18,6 +18,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Rust toolchain
         run: rustup default stable
+      - name: COBOL preprocessor unit tests
+        run: cargo test --locked --manifest-path extras/preprocessors/Cargo.toml
+      - name: Build COBOL preprocessors
+        run: cargo build --locked --manifest-path extras/preprocessors/Cargo.toml --bins
       - name: CICS/BMS host unit tests
         run: cargo test --locked --manifest-path extras/cobcics/Cargo.toml
       - name: JCL interpreter unit tests
@@ -30,6 +34,7 @@ jobs:
         run: cargo test --locked --manifest-path extras/imsdb/Cargo.toml
       - name: COBOL preprocess regression tests
         run: |
+          python tests/test_rust_preprocessors.py
           python extras/cobcics/test_cics_preprocess.py
           python tests/test_db2sql_preprocess.py
           python tests/test_cobcov.py
@@ -37,6 +42,7 @@ jobs:
           python extras/imsdb/tests/test_execdli.py
       - name: Build release tools
         run: |
+          cargo build --locked --release --manifest-path extras/preprocessors/Cargo.toml --bins
           cargo build --locked --release --manifest-path extras/cobcics/Cargo.toml --bins
           cargo build --locked --release --manifest-path extras/jclsh/Cargo.toml --bins
           cargo build --locked --release --manifest-path extras/pl1c/Cargo.toml
