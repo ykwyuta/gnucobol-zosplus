@@ -20,19 +20,94 @@ static int ims_cleanup_registered;
 static int ims_auto_commit;
 static int ims_scheduled;
 static FILE *ims_input;
+static unsigned char *ims_io_pcb;
+static unsigned char ims_input_source[8];
+static unsigned char *ims_current_input;
+static size_t ims_current_length;
+static size_t ims_current_offset;
+struct ims_alt_binding {
+    unsigned char *pcb;
+    int modifiable;
+};
+static struct ims_alt_binding ims_alts[16];
+static size_t ims_alt_count;
+
+static int alt_modifiable(unsigned char *pcb)
+{
+    for (size_t i = 0; i < ims_alt_count; ++i)
+        if (ims_alts[i].pcb == pcb) return ims_alts[i].modifiable;
+    return -1;
+}
+
+static int tm_name_valid(const unsigned char raw[8], const cob_charset *charset,
+                         unsigned char decoded[8])
+{
+    int seen = 0, padded = 0;
+    for (int index = 0; index < 8; ++index) {
+        unsigned char byte = charset->to_host ? charset->to_host[raw[index]] : raw[index];
+        decoded[index] = byte;
+        if (byte == ' ') padded = 1;
+        else if (padded || !((byte >= 'A' && byte <= 'Z') ||
+                             (byte >= '0' && byte <= '9'))) return -1;
+        else seen = 1;
+    }
+    return seen ? 0 : -1;
+}
+
+static int tm_env_name_valid(const char *name)
+{
+    if (!name || !*name || strlen(name) > 8) return 0;
+    for (const unsigned char *byte = (const unsigned char *)name; *byte; ++byte)
+        if (!((*byte >= 'A' && *byte <= 'Z') || (*byte >= '0' && *byte <= '9')))
+            return 0;
+    return 1;
+}
+
+struct ims_lease {
+    struct ims_lease *next;
+    uint64_t id;
+};
+static struct ims_lease *ims_leases;
 
 struct ims_message {
     struct ims_message *next;
+    unsigned char *pcb;
+    int sealed;
     size_t length;
-    unsigned char data[];
+    unsigned char destination[8];
+    unsigned char source[8];
+    unsigned char *data;
 };
 static struct ims_message *ims_output_head;
 static struct ims_message **ims_output_tail = &ims_output_head;
 
 static void discard_messages(void)
 {
+    free(ims_current_input);
+    ims_current_input = NULL;
+    ims_current_length = ims_current_offset = 0;
+    const char *queue = getenv("COB_IMS_TM_DIR");
+    if (queue && *queue && ims_leases) {
+        size_t count = 0;
+        for (struct ims_lease *item = ims_leases; item; item = item->next) ++count;
+        uint64_t *ids = malloc(count * sizeof(*ids));
+        if (ids) {
+            size_t index = 0;
+            for (struct ims_lease *item = ims_leases; item; item = item->next) ids[index++] = item->id;
+            char error[512] = {0};
+            if (imstm_rollback(queue, ids, count, error, sizeof error) != 0)
+                fprintf(stderr, "CBLTDLI: IMS TM rollback failed: %s\n", error);
+            free(ids);
+        }
+    }
+    while (ims_leases) {
+        struct ims_lease *next = ims_leases->next;
+        free(ims_leases);
+        ims_leases = next;
+    }
     while (ims_output_head) {
         struct ims_message *next = ims_output_head->next;
+        free(ims_output_head->data);
         free(ims_output_head);
         ims_output_head = next;
     }
@@ -41,6 +116,45 @@ static void discard_messages(void)
 
 static int commit_messages(char *error, size_t capacity)
 {
+    const char *queue = getenv("COB_IMS_TM_DIR");
+    if (queue && *queue) {
+        size_t input_count = 0, output_count = 0;
+        for (struct ims_lease *item = ims_leases; item; item = item->next) ++input_count;
+        for (struct ims_message *item = ims_output_head; item; item = item->next) ++output_count;
+        uint64_t *ids = input_count ? calloc(input_count, sizeof(*ids)) : NULL;
+        ImsTmOutput *outputs = output_count ? calloc(output_count, sizeof(*outputs)) : NULL;
+        if ((input_count && !ids) || (output_count && !outputs)) {
+            free(ids); free(outputs);
+            snprintf(error, capacity, "IMS TM commit allocation failed");
+            return -1;
+        }
+        size_t index = 0;
+        for (struct ims_lease *item = ims_leases; item; item = item->next) ids[index++] = item->id;
+        index = 0;
+        for (struct ims_message *item = ims_output_head; item; item = item->next) {
+            memcpy(outputs[index].destination, item->destination, 8);
+            memcpy(outputs[index].source, item->source, 8);
+            outputs[index].data = item->data;
+            outputs[index].length = item->length;
+            ++index;
+        }
+        int rc = imstm_complete(queue, ids, input_count, outputs, output_count, error, capacity);
+        free(ids); free(outputs);
+        if (rc != 0) return -1;
+        while (ims_leases) {
+            struct ims_lease *next = ims_leases->next;
+            free(ims_leases);
+            ims_leases = next;
+        }
+        while (ims_output_head) {
+            struct ims_message *next = ims_output_head->next;
+            free(ims_output_head->data);
+            free(ims_output_head);
+            ims_output_head = next;
+        }
+        ims_output_tail = &ims_output_head;
+        return 0;
+    }
     if (!ims_output_head) return 0;
     const char *path = getenv("DD_IMSOUTPUT");
     if (!path || !*path) {
@@ -101,6 +215,100 @@ static int io_pcb_call(const char operation[5], unsigned char *pcb,
                        const cob_charset *charset)
 {
     unsigned char space = charset->from_host ? charset->from_host[(unsigned char)' '] : ' ';
+    const char *queue = getenv("COB_IMS_TM_DIR");
+    if (memcmp(operation, "PURG", 4) == 0) {
+        for (struct ims_message *item = ims_output_head; item; item = item->next)
+            if (item->pcb == pcb) item->sealed = 1;
+        pcb[10] = space;
+        pcb[11] = space;
+        return area ? io_pcb_call("ISRT", pcb, area, capacity, charset) : 0;
+    }
+    if (memcmp(operation, "GN  ", 4) == 0 && queue && *queue) {
+        if (!ims_current_input || ims_current_offset == ims_current_length) {
+            pcb[10] = charset->from_host ? charset->from_host[(unsigned char)'Q'] : 'Q';
+            pcb[11] = charset->from_host ? charset->from_host[(unsigned char)'D'] : 'D';
+            return 0;
+        }
+        size_t length = ((size_t)ims_current_input[ims_current_offset] << 8) |
+                        ims_current_input[ims_current_offset + 1];
+        if (length < 4 || length > capacity || length > ims_current_length - ims_current_offset)
+            return -1;
+        memcpy(area, ims_current_input + ims_current_offset, length);
+        ims_current_offset += length;
+        pcb[10] = space;
+        pcb[11] = space;
+        return 0;
+    }
+    if (queue && *queue && memcmp(operation, "GU  ", 4) == 0) {
+        /* In a single-message MPP, the next GU is the prior message's
+         * syncpoint. Finish DB work before acknowledging that input. */
+        if (ims_leases || ims_output_head) {
+            char commit_error[512] = {0};
+            if ((ims_handle && imsdb_commit(ims_handle, commit_error, sizeof commit_error) != 0) ||
+                commit_messages(commit_error, sizeof commit_error) != 0) {
+                fprintf(stderr, "CBLTDLI: IMS TM GU syncpoint failed: %s\n", commit_error);
+                return -1;
+            }
+        }
+        free(ims_current_input);
+        ims_current_input = NULL;
+        ims_current_length = ims_current_offset = 0;
+        const char *name = getenv("COB_IMS_TM_DEST");
+        if (!tm_env_name_valid(name)) {
+            fputs("CBLTDLI: COB_IMS_TM_DEST must be 1..8 bytes\n", stderr);
+            return -1;
+        }
+        unsigned char destination[8];
+        memset(destination, ' ', 8);
+        memcpy(destination, name, strlen(name));
+        unsigned char source[8];
+        uint64_t id = 0;
+        size_t total_length = 0;
+        char error[512] = {0};
+        unsigned char *input = malloc(1048576);
+        if (!input) return -1;
+        int rc = imstm_get(queue, destination, input, 1048576,
+                           &total_length, source, &id, error, sizeof error);
+        if (rc < 0) {
+            free(input);
+            fprintf(stderr, "CBLTDLI: IMS TM GU failed: %s\n", error);
+            return -1;
+        }
+        if (rc == 1) {
+            free(input);
+            pcb[10] = charset->from_host ? charset->from_host[(unsigned char)'Q'] : 'Q';
+            pcb[11] = charset->from_host ? charset->from_host[(unsigned char)'C'] : 'C';
+            return 0;
+        }
+        size_t first_length = ((size_t)input[0] << 8) | input[1];
+        if (first_length < 4 || first_length > total_length || first_length > capacity) {
+            imstm_rollback(queue, &id, 1, error, sizeof error);
+            free(input);
+            fputs("CBLTDLI: IMS TM first segment exceeds COBOL area\n", stderr);
+            return -1;
+        }
+        struct ims_lease *lease = malloc(sizeof(*lease));
+        if (!lease) {
+            imstm_rollback(queue, &id, 1, error, sizeof error);
+            free(input);
+            return -1;
+        }
+        memcpy(area, input, first_length);
+        free(ims_current_input);
+        ims_current_input = input;
+        ims_current_length = total_length;
+        ims_current_offset = first_length;
+        lease->id = id;
+        lease->next = ims_leases;
+        ims_leases = lease;
+        ims_io_pcb = pcb;
+        memcpy(ims_input_source, source, 8);
+        for (int index = 0; index < 8; ++index)
+            pcb[index] = charset->from_host ? charset->from_host[source[index]] : source[index];
+        pcb[10] = space;
+        pcb[11] = space;
+        return 0;
+    }
     if (memcmp(operation, "GU  ", 4) == 0) {
         if (!ims_input) {
             const char *path = getenv("DD_IMSINPUT");
@@ -142,11 +350,61 @@ static int io_pcb_call(const char operation[5], unsigned char *pcb,
             fputs("CBLTDLI: invalid IMS output message length\n", stderr);
             return -1;
         }
-        struct ims_message *message = malloc(sizeof(*message) + length);
+        struct ims_message *message = NULL;
+        if (queue && *queue) {
+            for (struct ims_message *item = ims_output_head; item; item = item->next)
+                if (item->pcb == pcb && !item->sealed) message = item;
+        }
+        if (message) {
+            if (pcb == ims_io_pcb || message->length > 1048576 - length) {
+                fputs("CBLTDLI: I/O response permits one segment; TM message limit is 1 MiB\n", stderr);
+                return -1;
+            }
+            unsigned char *resized = realloc(message->data, message->length + length);
+            if (!resized) return -1;
+            memcpy(resized + message->length, area, length);
+            message->data = resized;
+            message->length += length;
+            pcb[10] = space;
+            pcb[11] = space;
+            return 0;
+        }
+        message = calloc(1, sizeof(*message));
         if (!message) return -1;
-        message->next = NULL;
+        message->data = malloc(length);
+        if (!message->data) { free(message); return -1; }
+        message->pcb = pcb;
         message->length = length;
         memcpy(message->data, area, length);
+        if (queue && *queue) {
+            int alternative = ims_io_pcb && pcb != ims_io_pcb;
+            if (!ims_io_pcb) {
+                alternative = 0;
+                for (int index = 0; index < 8; ++index)
+                    if (pcb[index] != 0 && pcb[index] != space) alternative = 1;
+            }
+            if (alternative) {
+                if (tm_name_valid(pcb, charset, message->destination) != 0) {
+                    free(message->data); free(message);
+                    fputs("CBLTDLI: alternate PCB has no valid destination\n", stderr);
+                    return -1;
+                }
+            } else if (ims_leases) {
+                memcpy(message->destination, ims_input_source, 8);
+            } else {
+                const char *lterm = getenv("COB_IMS_TM_LTERM");
+                if (!tm_env_name_valid(lterm)) {
+                    free(message->data); free(message);
+                    fputs("CBLTDLI: no input LTERM or COB_IMS_TM_LTERM for response\n", stderr);
+                    return -1;
+                }
+                memset(message->destination, ' ', 8);
+                memcpy(message->destination, lterm, strlen(lterm));
+            }
+            const char *source = getenv("COB_IMS_TM_DEST");
+            memset(message->source, ' ', 8);
+            if (source && *source) memcpy(message->source, source, strlen(source) < 8 ? strlen(source) : 8);
+        }
         *ims_output_tail = message;
         ims_output_tail = &message->next;
         pcb[10] = space;
@@ -155,6 +413,32 @@ static int io_pcb_call(const char operation[5], unsigned char *pcb,
     }
     fputs("CBLTDLI: unsupported I/O PCB function\n", stderr);
     return -1;
+}
+
+/* The launcher identifies the I/O PCB before the first GU. */
+int IMSTM_BIND_IO(unsigned char *pcb)
+{
+    ims_io_pcb = pcb;
+    return 0;
+}
+
+int IMSTM_BIND_ALT(unsigned char *pcb, int modifiable)
+{
+    if (!pcb || ims_alt_count == sizeof ims_alts / sizeof ims_alts[0]) return -1;
+    ims_alts[ims_alt_count].pcb = pcb;
+    ims_alts[ims_alt_count++].modifiable = modifiable;
+    return 0;
+}
+
+int IMSPSBLAYOUT(int index, unsigned char *kind, unsigned char name[8],
+                 unsigned char *modifiable)
+{
+    const char *psb = getenv("COB_IMS_PSB");
+    if (!psb || !*psb) return -1;
+    char error[512] = {0};
+    int rc = imsdb_psb_layout(psb, index, kind, name, modifiable, error, sizeof error);
+    if (rc < 0) fprintf(stderr, "imsbatch: PSB layout: %s\n", error);
+    return rc;
 }
 
 static void ims_cleanup(void)
@@ -305,8 +589,40 @@ int CBLTDLI(const unsigned char *function, unsigned char *pcb, ...)
     }
     int gsam_control = memcmp(operation, "OPEN", 4) == 0 ||
                        memcmp(operation, "CLSE", 4) == 0;
-    if (cob_get_param_size(2) == 32 && !gsam_control) {
-        if (argc != 3 || cob_get_param_size(3) < 4 || !cob_get_param_data(3)) {
+    int tm_pcb = cob_get_param_size(2) == 32 || cob_get_param_size(2) == 12;
+    if (tm_pcb && !gsam_control) {
+        int alternative = cob_get_param_size(2) == 12;
+        if (memcmp(operation, "CHNG", 4) == 0) {
+            unsigned char decoded[8];
+            if (!alternative || argc != 3 || cob_get_param_size(3) < 8 ||
+                !cob_get_param_data(3) || alt_modifiable(pcb_data) != 1 ||
+                !getenv("COB_IMS_TM_DIR") ||
+                tm_name_valid(cob_get_param_data(3), charset, decoded) != 0) {
+                fputs("CBLTDLI: CHNG requires a modifiable alternate PCB\n", stderr);
+                return -1;
+            }
+            pthread_mutex_lock(&ims_mutex);
+            for (struct ims_message *item = ims_output_head; item; item = item->next) {
+                if (item->pcb == pcb_data && !item->sealed) {
+                    pthread_mutex_unlock(&ims_mutex);
+                    fputs("CBLTDLI: PURG required before CHNG\n", stderr);
+                    return -1;
+                }
+            }
+            memcpy(pcb_data, cob_get_param_data(3), 8);
+            unsigned char space = charset->from_host ? charset->from_host[(unsigned char)' '] : ' ';
+            pcb_data[10] = space;
+            pcb_data[11] = space;
+            pthread_mutex_unlock(&ims_mutex);
+            return 0;
+        }
+        int purg = memcmp(operation, "PURG", 4) == 0;
+        if (alternative && memcmp(operation, "ISRT", 4) != 0 && !purg) {
+            fputs("CBLTDLI: alternate PCB supports ISRT, PURG and CHNG here\n", stderr);
+            return -1;
+        }
+        if ((purg ? argc < 2 || argc > 3 : argc != 3) ||
+            (argc == 3 && (cob_get_param_size(3) < 4 || !cob_get_param_data(3)))) {
             fputs("CBLTDLI: invalid I/O PCB call arguments\n", stderr);
             return -1;
         }
@@ -317,8 +633,9 @@ int CBLTDLI(const unsigned char *function, unsigned char *pcb, ...)
             atexit(ims_cleanup);
             ims_cleanup_registered = 1;
         }
-        int rc = io_pcb_call(operation, pcb_data, cob_get_param_data(3),
-                             (size_t)cob_get_param_size(3), charset);
+        int rc = io_pcb_call(operation, pcb_data,
+                             argc == 3 ? cob_get_param_data(3) : NULL,
+                             argc == 3 ? (size_t)cob_get_param_size(3) : 0, charset);
         pthread_mutex_unlock(&ims_mutex);
         return rc;
     }

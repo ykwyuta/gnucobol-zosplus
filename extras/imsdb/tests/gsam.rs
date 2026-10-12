@@ -25,6 +25,8 @@ fn fixed_gsam_gn_gu_rsa_insert_commit_and_rollback() {
         dbd_name: Some("GSAMDB".into()),
         procopt: Some("LS".into()),
         keylen: None,
+        lterm: None,
+        modifiable: false,
         sensitive_segments: vec![],
     };
     let mut session = GsamSession::new(

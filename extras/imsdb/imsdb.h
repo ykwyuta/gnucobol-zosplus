@@ -10,6 +10,12 @@ extern "C" {
 
 typedef struct ImsHandle ImsHandle;
 typedef struct {
+    uint8_t destination[8];
+    uint8_t source[8];
+    const uint8_t *data;
+    size_t length;
+} ImsTmOutput;
+typedef struct {
     uint8_t *data; /* DB SSA input; GSAM RSA input/output. */
     size_t len;
 } ImsSpan;
@@ -29,6 +35,20 @@ int32_t imsdb_checkpoint(ImsHandle *handle, const uint8_t id[8],
                          char *error, size_t error_capacity);
 void imsdb_rollback(ImsHandle *handle);
 void imsdb_close(ImsHandle *handle);
+/* PSB PCB order for imsbatch: index -1 returns the count. */
+int32_t imsdb_psb_layout(const char *psb_file, int32_t index, uint8_t *kind,
+                         uint8_t name[8], uint8_t *modifiable,
+                         char *error, size_t error_capacity);
+/* A durable local IMS TM queue. Destination/source are eight ASCII bytes.
+ * imstm_get returns 0 for a message, 1 for an empty queue, -1 on error. */
+int32_t imstm_get(const char *path, const uint8_t destination[8], uint8_t *area,
+                  size_t capacity, size_t *actual_length, uint8_t source[8], uint64_t *id,
+                  char *error, size_t error_capacity);
+int32_t imstm_complete(const char *path, const uint64_t *ids, size_t id_count,
+                       const ImsTmOutput *outputs, size_t output_count,
+                       char *error, size_t error_capacity);
+int32_t imstm_rollback(const char *path, const uint64_t *ids, size_t id_count,
+                       char *error, size_t error_capacity);
 
 #ifdef __cplusplus
 }

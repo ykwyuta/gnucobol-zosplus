@@ -1,5 +1,5 @@
-/* Batch launcher for COBOL programs with an IMS I/O PCB and one DB PCB,
- * or a DB PCB only when COB_IMS_LINKAGE=DB.
+/* Batch launcher for the PSB's ordered TP, DB and GSAM PCBs, preceded by
+ * the implicit I/O PCB unless COB_IMS_LINKAGE=DB.
  * COB_LIBRARY_PATH must contain a module exporting COB_IMS_ENTRY.
  */
 #include <libcob.h>
@@ -24,37 +24,74 @@ int main(int argc, char **argv)
     const char *dbd = getenv("COB_IMS_DBD_NAME");
     const char *encoding = getenv("COB_IMS_ENCODING");
     const char *linkage = getenv("COB_IMS_LINKAGE");
-    if (!entry || !*entry || !dbd || !*dbd || strlen(dbd) > 8) {
-        fputs("imsbatch: COB_IMS_ENTRY and COB_IMS_DBD_NAME (1..8) are required\n", stderr);
+    if (!entry || !*entry || (dbd && strlen(dbd) > 8)) {
+        fputs("imsbatch: COB_IMS_ENTRY is required; COB_IMS_DBD_NAME must fit eight bytes\n", stderr);
         return 8;
     }
     int ebcdic = encoding && strcmp(encoding, "IBM-037") == 0;
     unsigned char io_pcb[32] = {0};
-    unsigned char db_pcb[64] = {0};
-    for (size_t index = 0; index < 8; ++index) {
-        int ch = index < strlen(dbd) ? dbd[index] : ' ';
-        int byte = pcb_character(ch, ebcdic);
-        if (byte < 0) {
-            fputs("imsbatch: DBD name must use uppercase letters and digits\n", stderr);
-            return 8;
-        }
-        db_pcb[index] = (unsigned char)byte;
-    }
+    unsigned char pcbs[16][64] = {{0}};
     const char *sysin = getenv("DD_SYSIN");
     if (sysin && *sysin && !freopen(sysin, "rb", stdin)) {
         fputs("imsbatch: cannot open DD_SYSIN\n", stderr);
         return 8;
     }
     cob_init(argc, argv);
-    void *arguments[] = {io_pcb, db_pcb};
-    void *db_argument[] = {db_pcb};
+    int (*bind_io)(unsigned char *) = (int (*)(unsigned char *))cob_resolve("IMSTM_BIND_IO");
+    if (bind_io) bind_io(io_pcb);
+    void *arguments[17] = {0};
     int db_only = linkage && strcmp(linkage, "DB") == 0;
     if (linkage && !db_only && strcmp(linkage, "IO,DB") != 0) {
         fputs("imsbatch: COB_IMS_LINKAGE must be DB or IO,DB\n", stderr);
         return 8;
     }
-    int result = db_only ? cob_call(entry, 1, db_argument)
-                         : cob_call(entry, 2, arguments);
+    int argument_count = 0;
+    if (!db_only) arguments[argument_count++] = io_pcb;
+    int (*layout)(int, unsigned char *, unsigned char[8], unsigned char *) =
+        (int (*)(int, unsigned char *, unsigned char[8], unsigned char *))cob_resolve("IMSPSBLAYOUT");
+    int pcb_count = layout ? layout(-1, NULL, NULL, NULL) : -1;
+    if (pcb_count < 0 && getenv("COB_IMS_PSB") && *getenv("COB_IMS_PSB")) {
+        fputs("imsbatch: cannot read PSB layout\n", stderr);
+        return 8;
+    }
+    if (pcb_count < 0) {
+        if (!dbd || !*dbd) {
+            fputs("imsbatch: COB_IMS_PSB or COB_IMS_DBD_NAME is required\n", stderr);
+            return 8;
+        }
+        pcb_count = 1;
+    }
+    if (pcb_count > 16) {
+        fputs("imsbatch: PSB has more than 16 PCBs\n", stderr);
+        return 8;
+    }
+    int (*bind_alt)(unsigned char *, int) =
+        (int (*)(unsigned char *, int))cob_resolve("IMSTM_BIND_ALT");
+    for (int pcb = 0; pcb < pcb_count; ++pcb) {
+        unsigned char kind = 'D', name[8], modifiable = 0;
+        if (layout && layout(pcb, &kind, name, &modifiable) == 0) {
+            /* Use exactly the PCB order from the original PSB. */
+        } else {
+            if (!dbd || !*dbd || pcb != 0) return 8;
+            memset(name, ' ', 8);
+            memcpy(name, dbd, strlen(dbd));
+        }
+        if (kind != 'D' && kind != 'G' && kind != 'T') {
+            fputs("imsbatch: unsupported PSB PCB type\n", stderr);
+            return 8;
+        }
+        for (int index = 0; index < 8; ++index) {
+            int byte = pcb_character(name[index], ebcdic);
+            if (byte < 0) {
+                fputs("imsbatch: PCB name must use uppercase letters and digits\n", stderr);
+                return 8;
+            }
+            pcbs[pcb][index] = (unsigned char)byte;
+        }
+        if (kind == 'T' && bind_alt) bind_alt(pcbs[pcb], modifiable);
+        arguments[argument_count++] = pcbs[pcb];
+    }
+    int result = cob_call(entry, argument_count, arguments);
     /* A COBOL GOBACK returns to this C main without setting libcob's
        STOP RUN exit code. Finish the IMS UOW using the actual call result. */
     int (*end_task)(int) = (int (*)(int))cob_resolve("IMSDB_END_TASK");

@@ -5,6 +5,7 @@ pub mod dli;
 pub mod ffi;
 pub mod gsam;
 pub mod store;
+pub mod tm;
 pub mod unload;
 
 pub use catalog::{Dbd, Psb};

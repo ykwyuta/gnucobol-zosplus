@@ -104,6 +104,8 @@ pub struct Pcb {
     pub procopt: Option<String>,
     pub procseq: Option<String>,
     pub keylen: Option<usize>,
+    pub lterm: Option<String>,
+    pub modifiable: bool,
     pub sensitive_segments: Vec<String>,
     pub indices: Vec<(String, Vec<String>)>,
 }
@@ -129,6 +131,15 @@ impl Psb {
                     .any(|dbd| dbd.name == name && dbd.gsam.is_some())
                 {
                     return Err(format!("{}: missing GSAM DBD {name}", self.name));
+                }
+                continue;
+            }
+            if pcb.kind == "TP" {
+                if pcb.lterm.as_ref().is_some_and(|name| name.is_empty() || name.len() > 8 || !name.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())) {
+                    return Err(format!("{}: invalid TP PCB LTERM", self.name));
+                }
+                if pcb.lterm.is_none() && !pcb.modifiable {
+                    return Err(format!("{}: TP PCB needs LTERM or MODIFY=YES", self.name));
                 }
                 continue;
             }
@@ -490,6 +501,13 @@ pub fn parse_psb(source: &str) -> Result<Psb, String> {
                             .map_err(|_| format!("line {}: invalid KEYLEN", stmt.line))
                     })
                     .transpose()?,
+                lterm: value(&p, "LTERM").map(|s| s.to_ascii_uppercase()),
+                modifiable: match value(&p, "MODIFY") {
+                    None => false,
+                    Some(s) if s.eq_ignore_ascii_case("NO") => false,
+                    Some(s) if s.eq_ignore_ascii_case("YES") => true,
+                    _ => return Err(format!("line {}: invalid MODIFY", stmt.line)),
+                },
                 sensitive_segments: Vec::new(),
                 indices: Vec::new(),
             }),

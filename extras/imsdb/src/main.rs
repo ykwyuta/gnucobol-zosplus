@@ -47,9 +47,28 @@ fn display_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn tm_name(raw: &str) -> Result<[u8; 8], String> {
+    if raw.is_empty() || raw.len() > 8 || !raw.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()) {
+        return Err("IMS TM name must be 1..8 uppercase ASCII letters or digits".into());
+    }
+    let mut name = [b' '; 8];
+    name[..raw.len()].copy_from_slice(raw.as_bytes());
+    Ok(name)
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     match args.as_slice() {
+        [_, command, queue, destination, source, message] if command == "tm-enqueue" => {
+            let bytes = hex(message)?;
+            let id = imsdb::tm::Queue::open(queue)?.enqueue(tm_name(destination)?, tm_name(source)?, &bytes)?;
+            println!("{id}");
+        }
+        [_, command, queue, destination] if command == "tm-list" => {
+            for message in imsdb::tm::Queue::open(queue)?.pending(tm_name(destination)?)? {
+                println!("{} {} {}", message.id, String::from_utf8_lossy(&message.source).trim_end(), display_hex(&message.data));
+            }
+        }
         [_, command, files @ ..] if command == "inspect" && !files.is_empty() => {
             let mut dbds = Vec::new();
             let mut psbs = Vec::new();
@@ -266,7 +285,7 @@ fn run() -> Result<(), String> {
             file.sync_all().map_err(|e| e.to_string())?;
             println!("exported {} records", records.len());
         }
-        _ => return Err("usage: imsdbctl inspect DBD... [PSB...] | put-root WAL DBD SEGMENT RECORD_HEX | get-root WAL DBD SEGMENT KEY_HEX | get-secondary WAL DBD_DIR INDEX_DBD KEY_HEX | count WAL DBD | latest-checkpoint WAL DBD | import-fixed WAL DBD SEGMENT FILE | import-dfsurgu0 WAL DBD FILE | split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT | import-csv WAL DBD SEGMENT FILE | import-csv-bundle WAL DBD_DIR DATA_DIR | export-fixed WAL DBD SEGMENT FILE".into()),
+        _ => return Err("usage: imsdbctl tm-enqueue QUEUE DEST SOURCE LLZZ_BODY_HEX | tm-list QUEUE DEST | inspect DBD... [PSB...] | put-root WAL DBD SEGMENT RECORD_HEX | get-root WAL DBD SEGMENT KEY_HEX | get-secondary WAL DBD_DIR INDEX_DBD KEY_HEX | count WAL DBD | latest-checkpoint WAL DBD | import-fixed WAL DBD SEGMENT FILE | import-dfsurgu0 WAL DBD FILE | split-dfsurgu0 DBD FILE ROOT_OUT CHILD_OUT | import-csv WAL DBD SEGMENT FILE | import-csv-bundle WAL DBD_DIR DATA_DIR | export-fixed WAL DBD SEGMENT FILE".into()),
     }
     Ok(())
 }

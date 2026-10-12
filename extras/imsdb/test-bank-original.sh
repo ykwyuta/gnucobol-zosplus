@@ -93,3 +93,42 @@ data = pathlib.Path(sys.argv[1]).read_bytes()
 assert data == b'\x00\x08\x00\x00TEST', data
 print('IMS IO PCB COMMIT/ROLLBACK OK')
 PY
+
+# The same unchanged Bank of Z entry now receives a live, durable TM message.
+export COB_IMS_TM_DIR="$tmp/tm-queue"
+export COB_IMS_TM_DEST=IBSCUDAT
+input_hex=$(python3 - "$tmp/input.msg" <<'PY'
+import pathlib, sys
+print(pathlib.Path(sys.argv[1]).read_bytes().hex())
+PY
+)
+build/imsdb-linux/debug/imsdbctl tm-enqueue "$COB_IMS_TM_DIR" IBSCUDAT TERM0001 "$input_hex" >/dev/null
+"$tmp/imsbatch" > "$tmp/tm-run.log"
+test -z "$(build/imsdb-linux/debug/imsdbctl tm-list "$COB_IMS_TM_DIR" IBSCUDAT)"
+build/imsdb-linux/debug/imsdbctl tm-list "$COB_IMS_TM_DIR" TERM0001 > "$tmp/tm-output.txt"
+python3 - "$tmp/tm-output.txt" "$tmp/tm-run.log" <<'PY'
+import pathlib, sys
+rows = pathlib.Path(sys.argv[1]).read_text().splitlines()
+assert len(rows) == 1, rows
+id_, source, payload = rows[0].split()
+assert source == 'IBSCUDAT', rows
+data = bytes.fromhex(payload)
+assert int.from_bytes(data[:2], 'big') == len(data)
+assert 'TESTFIRST'.encode('cp037') in data
+log = pathlib.Path(sys.argv[2]).read_text(errors='replace')
+assert 'UPDATE SUCCESSFUL' in log and 'NO MORE MESSAGES' in log, log
+print('IMS TM BANK QUEUE OK')
+PY
+
+# A failing COBOL task must release its input lease and discard its reply.
+export COB_IMS_TM_DEST=IMSIOTEST
+export COB_IMS_TM_LTERM=TERM0002
+if IMS_IO_FAIL=1 "$tmp/ims-io"; then
+    echo 'IMS TM failure path returned zero' >&2
+    exit 1
+fi
+test -z "$(build/imsdb-linux/debug/imsdbctl tm-list "$COB_IMS_TM_DIR" TERM0002)"
+IMS_IO_FAIL=0 "$tmp/ims-io"
+build/imsdb-linux/debug/imsdbctl tm-list "$COB_IMS_TM_DIR" TERM0002 | \
+    grep -q '0008000054455354'
+echo 'IMS TM TASK ROLLBACK OK'

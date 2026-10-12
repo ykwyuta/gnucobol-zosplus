@@ -62,6 +62,36 @@ fn load_dbds(dir: &str) -> Result<Vec<Dbd>, String> {
     Ok(dbds)
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn imsdb_psb_layout(psb_file: *const c_char, index: i32,
+    kind: *mut u8, name: *mut u8, modifiable: *mut u8,
+    error: *mut c_char, error_capacity: usize) -> i32 {
+    let result = std::panic::catch_unwind(|| -> Result<i32, String> {
+        let psb = Psb::from_file(c_string(psb_file, "PSB file")?)?;
+        if index == -1 { return i32::try_from(psb.pcbs.len()).map_err(|e| e.to_string()); }
+        let pcb = psb.pcbs.get(usize::try_from(index).map_err(|e| e.to_string())?)
+            .ok_or("PSB PCB index is out of range")?;
+        if kind.is_null() || name.is_null() || modifiable.is_null() { return Err("null PSB layout buffer".into()); }
+        let marker = match pcb.kind.as_str() { "DB" => b'D', "GSAM" => b'G', "TP" => b'T', _ => return Err("unsupported PSB PCB type".into()) };
+        let pcb_name = if marker == b'T' { pcb.lterm.as_deref().unwrap_or("") }
+            else { pcb.dbd_name.as_deref().ok_or("PSB PCB has no DBDNAME")? };
+        if pcb_name.len() > 8 { return Err("PSB PCB name exceeds eight bytes".into()); }
+        let mut padded = [b' '; 8];
+        padded[..pcb_name.len()].copy_from_slice(pcb_name.as_bytes());
+        unsafe {
+            *kind = marker;
+            std::ptr::copy_nonoverlapping(padded.as_ptr(), name, 8);
+            *modifiable = u8::from(pcb.modifiable);
+        }
+        Ok(0)
+    });
+    match result {
+        Ok(Ok(code)) => code,
+        Ok(Err(e)) => { unsafe { report(error, error_capacity, &e); } -1 },
+        Err(_) => { unsafe { report(error, error_capacity, "PSB layout panic"); } -1 },
+    }
+}
+
 /// Returns null on failure. `encoding` bit 0 selects 1047 EBCDIC control text;
 /// bit 1 selects native little-endian COMP-5 at the caller boundary.
 /// The returned handle owns an exclusive lock on the WAL until `imsdb_close`.

@@ -37,12 +37,15 @@ It includes an experimental GnuCOBOL `CBLTDLI` entry point for DB PCBs.
   atomically with the DB changes in a checksummed WAL frame. `imsdbctl
   latest-checkpoint WAL DBD_OR_DIR` reads the last committed ID in a fresh process.
   Symbolic checkpoints, automatic program restart, and `XRST` remain unsupported.
-- For an I/O PCB with a 32-byte mask, `GU` reads length-prefixed messages from
-  `DD_IMSINPUT` and returns `QC` at end of input. `ISRT` stages a length-prefixed
-  message for `DD_IMSOUTPUT` until commit. `imsbatch.c` can launch a GnuCOBOL
-  module's original `DLITCBL` entry with an I/O PCB and one DB PCB. The
-  `test-bank-original.sh` integration test runs the unmodified Bank of Z
-  `IBSCUDAT.cbl` and checks its customer update and output message.
+- With `COB_IMS_TM_DIR`, Rust provides a durable, cross-process IMS TM queue.
+  I/O PCB `GU`/`GN` receive segments, `ISRT` replies to the input LTERM, and
+  alternate TP PCBs support `CHNG`, `ISRT`, and `PURG`. On normal completion,
+  leased input is acknowledged and pending output is saved; rollback releases
+  input and discards output. Without this setting, the original `DD_IMSINPUT`
+  and `DD_IMSOUTPUT` file mode remains available. `imsbatch.c` passes the
+  implicit I/O PCB and all PSB-defined TP, DB, and GSAM PCBs in PSB order.
+  `test-bank-original.sh` runs the unchanged Bank of Z `IBSCUDAT.cbl` through
+  both file and live queue modes; `test-tm-alt.sh` covers alternate PCBs.
 - `cobc --ims-dli=<DBD>` runs `bin/imsdli-preprocess.py` for the `EXEC DLI`
   forms in CardDemo. It produces DB calls with DIBSTAT feedback, and maps Get
   commands to Get Hold behavior. `IMSDEXEC` handles `SCHD`, `TERM`, and basic
@@ -91,7 +94,8 @@ zero-return `STOP RUN` commits and a nonzero return rolls back. The shim accepts
 native ASCII and GnuCOBOL IBM-037 control text. EBCDIC segment bytes remain raw.
 The `imsbatch` runner explicitly completes the UOW from `cob_call`'s result so a
 nonzero `GOBACK` rolls back as well. Set `COB_IMS_LINKAGE=DB` for originals
-whose procedure division takes only a DB PCB; the default is `IO,DB`.
+whose procedure division takes only DB/GSAM PCBs; the default prepends the
+I/O PCB to the ordered PCBs from the PSB. See the [IMS TM user guide](../../docs/userguide/imstm.md).
 
 For a JCL launch and persistence smoke test, run from PowerShell:
 
@@ -213,13 +217,12 @@ sources; the three online/MQ programs compile with CICS translation. The
 batch `CBPAUP0C` runs to completion against an empty database. With the correctly
 decoded 224-segment DFSURGU0 unload it reaches DJ on an invalid parent DLET after
 GNP; the resulting rollback is covered by the integration test. The current
-`CBLTDLI` shim implements local file-backed I/O PCB `GU`/`ISRT` and basic batch
-`CHKP`/`ROLB`; it does not provide a live IMS TM queue, alternate PCBs,
-variable-length GSAM, Japanese EBCDIC control text,
-automatic program restart, or a complete IMS program lifecycle. Basic checkpoint
-IDs are durable, but the application must implement restart positioning itself.
-The application must select
-a DB PCB by DBD name. `DFSRRC00` launches a profile-registered executable;
+`CBLTDLI` shim provides both local file and Rust queue IMS TM transport.
+Variable-length GSAM, Japanese EBCDIC control text, symbolic checkpoint/XRST,
+OTMA, MFS, and automatic program restart remain outside this local profile.
+Basic checkpoint IDs are durable, but the application must implement restart
+positioning itself. The application selects a DB PCB by DBD name. `DFSRRC00`
+launches a profile-registered executable;
 the profile must set the batch runner's IMS linkage mode explicitly.
 Qualified GN and unsuccessful-call positioning need further IBM semantics tests.
 The GSAM RSA is a local eight-byte big-endian record ordinal and is not an IMS
