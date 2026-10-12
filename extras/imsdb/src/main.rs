@@ -101,9 +101,15 @@ fn run() -> Result<(), String> {
             println!("inserted {id}");
         }
         [_, command, wal, dbd_file, segment, key] if command == "get-root" => {
-            let dbd = Dbd::from_file(dbd_file)?;
-            let name = dbd.name.clone();
-            let db = Database::open(wal, vec![dbd]).map_err(|e| e.to_string())?;
+            let dbds = load_dbds(dbd_file)?;
+            let matches: Vec<_> = dbds.iter().filter(|dbd| {
+                dbd.segment(segment).is_some_and(|definition| definition.parent.is_none())
+            }).collect();
+            if matches.len() != 1 {
+                return Err(format!("get-root requires exactly one DBD with root segment {segment}"));
+            }
+            let name = matches[0].name.clone();
+            let db = Database::open(wal, dbds).map_err(|e| e.to_string())?;
             let record = db.get(&name, None, segment, &hex(key)?).ok_or("record not found")?;
             println!("{} {}", record.id, display_hex(&record.data));
         }

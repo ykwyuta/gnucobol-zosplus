@@ -66,13 +66,32 @@ wsl --exec sh /mnt/d/workspace/gnucobol/extras/imsdb/test-carddemo-roundtrip.sh
 
 `UNLDPADB.JCL` の `IEFBR14` と `DFSRRC00`、続いて `LOADPADB.JCL` の `DFSRRC00` を無修正で `jclsh` から実行する。前者の FB 出力を元データの有効レコードとバイト単位で照合し、後者が親21件・子202件の計223セグメントを別の WAL に確定したことを確認する。期待する表示は `IMS CARDDEMO ORIGINAL JCL UNLOAD OK` と `IMS CARDDEMO ORIGINAL JCL LOAD 223 SEGMENTS OK`。実行には Docker の `gnucobol-ims-integration` イメージ、Linux 版 `libcob`／`cobc`／`libimsdb`／`imsdbctl` が必要。
 
-オンライン／MQ 側の無修正原本3本を CICS と IMS の両方の前処理器に通す。
+オンライン／MQ 側の原本4本を CICS・IMS・SQL の前処理器に通す。
 
 ```powershell
 wsl --exec sh /mnt/d/workspace/gnucobol/extras/imsdb/test-carddemo-online-build.sh
 ```
 
-`COPAUS0C`、`COPAUS1C`、`COPAUA0C` をそれぞれの BMS マップ、CardDemo の共通 COPY、MQ COPY を指定し、native と IBM-037／ビッグエンディアンの両モードでモジュールにコンパイルする。これは原本の結合コンパイル試験であり、TN3270 画面操作や MQ を含む業務フローの実行試験ではない。
+`COPAUS0C`、`COPAUS1C`、`COPAUA0C`、`COPAUS2C` をそれぞれの BMS マップ、CardDemo の共通 COPY、MQ COPY、`AUTHFRDS` DCL を指定し、native と IBM-037／ビッグエンディアンの両モードでモジュールにコンパイルする。`COPAUS2C` 原本の `ASKTIME` は `NOHANDLE` が重複しているため、ビルド用コピーで重複1個だけを除く。原本は変更しない。4本の結合コンパイルは通過したが、TN3270 画面操作や MQ を含む認可業務フロー全体の試験ではない。
+
+`COPAUS2C` の Db2 登録・更新は次で検証する。Compose の Db2 と `gnucobol-db2-build` イメージが必要。既定の接続先は `extras/db2sql/.runtime.env` のポート50001で、隔離 Db2 を別ポートに立てた場合は `-Db2Port` で指定する。下記は既存の Db2 ボリュームと分離してポート50002を使う例である。初回はコンテナーのログに `Setup has completed.` が出るまで待つ。
+
+```powershell
+$env:DB2_HOST_PORT = '50002'
+docker compose -p gnucobol-carddemo-fraud --env-file extras/db2sql/.env -f extras/db2sql/compose.yaml up -d
+powershell -NoProfile -ExecutionPolicy Bypass -File extras/imsdb/test-carddemo-fraud.ps1 -Db2Port 50002
+docker compose -p gnucobol-carddemo-fraud --env-file extras/db2sql/.env -f extras/db2sql/compose.yaml down
+```
+
+原本の SQL と上記のビルド用補正を使い、CICS `LINK` の COMMAREA から `AUTHFRDS` へ INSERT、同じカード番号で重複キーになった後の UPDATE を実 Db2 で照合する。native と IBM-037 を両方実行し、後者の入力 COMMAREA は CP037 バイトで送る。2026-10-12 に両モードで `INSERT and UPDATE OK` を確認した。試験行は終了時に削除する。
+
+原本 `DBUNLDGS.CBL` の IMS DB→GSAM 出力は次で検証する。
+
+```powershell
+wsl --exec sh /mnt/d/workspace/gnucobol/extras/imsdb/test-carddemo-gsam-original.sh
+```
+
+原本アンロード224セグメントを読み、親21件×100バイト、子202件×200バイトの固定長 GSAM ファイルを作る。2026-10-12 に `CardDemo original DBUNLDGS GSAM 21 parents 202 children OK` を確認した。最終親1件は原本の `IS NUMERIC` 判定で除外される。
 
 CICS 同期点と IMS WAL の結合試験は次のとおり。
 

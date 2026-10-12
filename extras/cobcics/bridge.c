@@ -1135,9 +1135,11 @@ static void format_time(const unsigned char *abstime,
                          unsigned char *clock, const unsigned char *clock_capacity,
                          const unsigned char *separator,
                          unsigned char *resp, unsigned char *resp2,
-                         int month_first, unsigned char time_separator) {
+                         int month_first, int short_year,
+                         unsigned char time_separator) {
     if (!started || cobol_length(abstime_capacity) != 8 ||
-        cobol_length(date_capacity) < 10 ||
+        cobol_length(date_capacity) <
+            (*separator ? (short_year ? 8 : 10) : (short_year ? 6 : 8)) ||
         cobol_length(clock_capacity) < (time_separator ? 8 : 6))
         failure("invalid FORMATTIME data area length");
     uint64_t milliseconds;
@@ -1160,7 +1162,11 @@ static void format_time(const unsigned char *abstime,
     char formatted_date[11];
     char formatted_time[9];
     int date_size;
-    if (*separator && month_first)
+    if (*separator && short_year)
+        date_size = snprintf(formatted_date, sizeof formatted_date,
+                             "%02u%c%02u%c%02d", month, *separator,
+                             day, *separator, year % 100);
+    else if (*separator && month_first)
         date_size = snprintf(formatted_date, sizeof formatted_date,
                              "%02u%c%02u%c%04d", month, *separator,
                              day, *separator, year);
@@ -1168,6 +1174,9 @@ static void format_time(const unsigned char *abstime,
         date_size = snprintf(formatted_date, sizeof formatted_date,
                              "%02u%c%02u%c%04d", day, *separator,
                              month, *separator, year);
+    else if (short_year)
+        date_size = snprintf(formatted_date, sizeof formatted_date,
+                             "%02u%02u%02d", month, day, year % 100);
     else if (month_first)
         date_size = snprintf(formatted_date, sizeof formatted_date,
                              "%02u%02u%04d", month, day, year);
@@ -1204,7 +1213,7 @@ void COBCICS_FORMATTIME(const unsigned char *abstime,
                          const unsigned char *separator,
                          unsigned char *resp, unsigned char *resp2) {
     format_time(abstime, abstime_capacity, date, date_capacity,
-                clock, clock_capacity, separator, resp, resp2, 0, 0);
+                clock, clock_capacity, separator, resp, resp2, 0, 0, 0);
 }
 
 void COBCICS_FORMATTIME_MMDD(const unsigned char *abstime,
@@ -1214,7 +1223,17 @@ void COBCICS_FORMATTIME_MMDD(const unsigned char *abstime,
                               const unsigned char *separator,
                               unsigned char *resp, unsigned char *resp2) {
     format_time(abstime, abstime_capacity, date, date_capacity,
-                clock, clock_capacity, separator, resp, resp2, 1, 0);
+                clock, clock_capacity, separator, resp, resp2, 1, 0, 0);
+}
+
+void COBCICS_FORMATTIME_MMDDYY(const unsigned char *abstime,
+                                const unsigned char *abstime_capacity,
+                                unsigned char *date, const unsigned char *date_capacity,
+                                unsigned char *clock, const unsigned char *clock_capacity,
+                                const unsigned char *separator,
+                                unsigned char *resp, unsigned char *resp2) {
+    format_time(abstime, abstime_capacity, date, date_capacity,
+                clock, clock_capacity, separator, resp, resp2, 1, 1, 0);
 }
 
 void COBCICS_FORMATTIME_TIMESEP(const unsigned char *abstime,
@@ -1225,7 +1244,7 @@ void COBCICS_FORMATTIME_TIMESEP(const unsigned char *abstime,
                          const unsigned char *time_separator,
                          unsigned char *resp, unsigned char *resp2) {
     format_time(abstime, abstime_capacity, date, date_capacity,
-                clock, clock_capacity, separator, resp, resp2, 0,
+                clock, clock_capacity, separator, resp, resp2, 0, 0,
                 *time_separator);
 }
 
@@ -1237,7 +1256,19 @@ void COBCICS_FORMATTIME_MMDD_TIMESEP(const unsigned char *abstime,
                          const unsigned char *time_separator,
                          unsigned char *resp, unsigned char *resp2) {
     format_time(abstime, abstime_capacity, date, date_capacity,
-                clock, clock_capacity, separator, resp, resp2, 1,
+                clock, clock_capacity, separator, resp, resp2, 1, 0,
+                *time_separator);
+}
+
+void COBCICS_FORMATTIME_MMDDYY_TIMESEP(const unsigned char *abstime,
+                         const unsigned char *abstime_capacity,
+                         unsigned char *date, const unsigned char *date_capacity,
+                         unsigned char *clock, const unsigned char *clock_capacity,
+                         const unsigned char *separator,
+                         const unsigned char *time_separator,
+                         unsigned char *resp, unsigned char *resp2) {
+    format_time(abstime, abstime_capacity, date, date_capacity,
+                clock, clock_capacity, separator, resp, resp2, 1, 1,
                 *time_separator);
 }
 

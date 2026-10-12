@@ -49,7 +49,7 @@
 | `START` | `TRANSID('....') AFTER MINUTES(n)` のみ。ローカルの時刻指定タスクを登録する。最大 8 件、待ち時間は 0～525600 分。`RESP` / `RESP2` も可。 | GenApp | [START](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-start) |
 | `DELAY` | `FOR SECONDS(n)` のみ。0～60 秒待機する。`RESP` / `RESP2` も可。 | 基本 | [DELAY](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-delay) |
 | `ASKTIME` | `ABSTIME` へローカル時刻に基づく時刻値を返す。`RESP` / `RESP2` も可。 | 基本 | [ASKTIME](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-asktime) |
-| `FORMATTIME` | `ABSTIME`、`DDMMYYYY` または `MMDDYYYY` のどちらか、`TIME`、任意の `DATESEP` と `RESP` / `RESP2`。日時を文字列化する。 | 基本 | [FORMATTIME](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-formattime) |
+| `FORMATTIME` | `ABSTIME`、`DDMMYYYY`／`MMDDYYYY`／`MMDDYY`、任意の `TIME`・`DATESEP`・`TIMESEP`・`NOHANDLE`・`RESP` / `RESP2`。`YYDDD`／`YYMMDD` も対応。日時を文字列化する。 | Bank of Z、GenApp、CardDemo | [FORMATTIME](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-formattime) |
 | `BIF DEEDIT` | `FIELD`、任意の `LENGTH`。数字以外を除去して左側をゼロ詰めする。IBM CICS の符号付きゾーン形式の特殊処理は実装しない。 | 基本 | [BIF DEEDIT](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-bif-deedit) |
 | `HANDLE ABEND` | `LABEL(label)`、`CANCEL`、`RESET`。同一プログラムの明示的な `ABEND` に対する出口を切り替える。その他の異常終了を捕捉する一般的な CICS 出口ではない。 | 基本 | [HANDLE ABEND](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-handle-abend) |
 | `ABEND` | 任意の `ABCODE`、`NODUMP`、`CANCEL`。明示的に異常終了し、設定済み `HANDLE ABEND` へ制御を渡せる。トランザクションダンプは作成しない。 | 基本 | [ABEND](https://www.ibm.com/docs/en/cics-ts/6.x?topic=summary-abend) |

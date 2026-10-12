@@ -170,12 +170,22 @@ pub fn encode_root_csv(dbd: &Dbd, segment: &str, source: &str) -> Result<Vec<Vec
     if next != definition.max_bytes + 1 {
         return Err("CSV fields do not cover the entire segment".into());
     }
+    // Bank of Z's CUSTACCS.data is ACCID,CUSTID,ACCNUM, while its DBD
+    // stores CUSTID,ACCID,ACCNUM. Keep this source-specific layout explicit:
+    // otherwise valid records import under the account id as customer key.
+    let bank_custaccs = dbd.name == "CUSTACCS"
+        && definition.name == "CUSTACCS"
+        && fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>()
+            == ["CUSTID", "ACCID", "ACCNUM"];
     let mut records = Vec::new();
     for (line_number, line) in source.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let columns = csv_row(line).map_err(|e| format!("line {}: {e}", line_number + 1))?;
+        let mut columns = csv_row(line).map_err(|e| format!("line {}: {e}", line_number + 1))?;
         if columns.len() != fields.len() {
             return Err(format!(
                 "line {}: expected {} columns; got {}",
@@ -183,6 +193,9 @@ pub fn encode_root_csv(dbd: &Dbd, segment: &str, source: &str) -> Result<Vec<Vec
                 fields.len(),
                 columns.len()
             ));
+        }
+        if bank_custaccs {
+            columns.swap(0, 1);
         }
         let mut record = Vec::with_capacity(definition.max_bytes);
         for (field, value) in fields.iter().zip(columns.iter()) {

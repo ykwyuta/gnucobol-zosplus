@@ -1,4 +1,5 @@
 use imsdb::catalog::{parse_dbd, parse_psb};
+use imsdb::csv_load::encode_root_csv;
 use imsdb::dli::{ReadOp, Session, Status, WriteOp};
 use imsdb::{Database, Dbd, StoreError};
 use std::path::PathBuf;
@@ -13,6 +14,17 @@ const XDFLD_INDEX: &str = " DBD NAME=SECOND,ACCESS=(INDEX,VSAM)\n SEGM NAME=PTR,
 const PROCSEQ_PSB: &str = " PCB TYPE=DB,DBDNAME=PRIMARY,PROCOPT=G,PROCSEQ=SECOND,KEYLEN=2\n SENSEG NAME=ROOT,PARENT=0\n PSBGEN PSBNAME=IDXPSB,LANG=COBOL\n END\n";
 const DIRECT_INDEX_PSB: &str = " PCB TYPE=DB,DBDNAME=SECOND,PROCOPT=G,KEYLEN=6\n SENSEG NAME=PTR,PARENT=0\n PSBGEN PSBNAME=PTRPSB,LANG=COBOL\n END\n";
 const INDICES_PSB: &str = " PCB TYPE=DB,DBDNAME=PRIMARY,PROCOPT=G,KEYLEN=2\n SENSEG NAME=ROOT,PARENT=0,INDICES=SECOND\n PSBGEN PSBNAME=PHYPSB,LANG=COBOL\n END\n";
+
+#[test]
+fn bank_custaccs_csv_uses_account_customer_number_order() {
+    let dbd = parse_dbd(" DBD NAME=CUSTACCS,ENCODING=Cp1047,ACCESS=(HDAM,OSAM)\n SEGM NAME=CUSTACCS,PARENT=0,BYTES=(16)\n FIELD NAME=(CUSTID,SEQ,M),START=1,BYTES=4,TYPE=C,DATATYPE=INT\n FIELD NAME=ACCID,START=5,BYTES=8,TYPE=C,DATATYPE=LONG\n FIELD NAME=ACCNUM,START=13,BYTES=4,TYPE=C,DATATYPE=INT\n DBDGEN\n END\n").unwrap();
+    let rows = encode_root_csv(&dbd, "CUSTACCS", "101,1,1\n102,1,2\n").unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(&rows[0][..4], &1i32.to_be_bytes());
+    assert_eq!(&rows[0][4..12], &101i64.to_be_bytes());
+    assert_eq!(&rows[1][..4], &1i32.to_be_bytes());
+    assert_eq!(&rows[1][4..12], &102i64.to_be_bytes());
+}
 
 #[test]
 fn senseg_indices_gu_uses_secondary_key_but_gn_keeps_physical_order() {
@@ -1170,4 +1182,46 @@ fn hold_lock_blocks_same_root_but_allows_another_root() {
     drop(first);
     drop(database);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn get_only_pcb_ghu_does_not_lock_roots_for_update() {
+    let wal = path();
+    let database = Database::open(&wal, vec![dbd()]).unwrap();
+    let mut seed = database.begin();
+    for id in [1, 2] {
+        seed.insert(
+            "TEST",
+            "ROOT",
+            None,
+            vec![id, 0, 0, 0, 0, 0],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    }
+    seed.commit().unwrap();
+    let read_only = parse_psb(" PCB TYPE=DB,DBDNAME=TEST,PROCOPT=G,KEYLEN=2\n SENSEG NAME=ROOT,PARENT=0\n PSBGEN PSBNAME=READONLY,LANG=COBOL\n END\n").unwrap();
+    let mut reader = Session::new(database.clone(), read_only).unwrap();
+    let mut updater = Session::new(database.clone(), parse_psb(PSB).unwrap()).unwrap();
+    updater.set_lock_timeout(Duration::from_millis(5));
+    let ssa = |id| {
+        let mut raw = b"ROOT    (ID      EQ".to_vec();
+        raw.extend_from_slice(&[id, 0]);
+        raw.push(b')');
+        raw
+    };
+    for id in [2, 1] {
+        assert_eq!(
+            reader.read(0, ReadOp::Ghu, &[&ssa(id)]).unwrap().status,
+            Status::Ok
+        );
+    }
+    assert_eq!(
+        updater.read(0, ReadOp::Ghu, &[&ssa(1)]).unwrap().status,
+        Status::Ok
+    );
+    drop(reader);
+    drop(updater);
+    drop(database);
+    std::fs::remove_file(wal).unwrap();
 }

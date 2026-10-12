@@ -209,6 +209,19 @@ fn bank_csv_load_data_encodes_all_nine_dbds() {
         .unwrap();
     assert_eq!(customer.data.len(), 279);
     assert_eq!(&customer.data[4..6], &[0xc1, 0x95]); // 'An' in EBCDIC.
+    let customer_accounts: Vec<_> = database
+        .children("CUSTACCS", None, "CUSTACCS")
+        .into_iter()
+        .filter(|record| record.dbd == "CUSTACCS" && record.key == 1i32.to_be_bytes())
+        .collect();
+    assert_eq!(customer_accounts.len(), 2);
+    assert_eq!(
+        customer_accounts
+            .iter()
+            .map(|record| i64::from_be_bytes(record.data[4..12].try_into().unwrap()))
+            .collect::<Vec<_>>(),
+        [101, 102]
+    );
     let psb = Psb::from_file(reference(
         "reference/Bank-of-Z-main/src/base/ims/PSB/IBTRAN.asm",
     ))

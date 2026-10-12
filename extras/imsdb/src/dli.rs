@@ -443,6 +443,9 @@ impl Session {
         if !procopt.contains(['G', 'R', 'D', 'A']) {
             return Err(format!("PCB {} does not permit get calls", pcb_index));
         }
+        // A Get Hold on a get-only PCB cannot be followed by REPL or DLET.
+        // Such reads must not retain update locks across other PCB reads.
+        let update_hold = op.is_hold() && procopt.contains(['R', 'D', 'A']);
         let dbd_name = pcb.dbd_name.as_deref().ok_or("DB PCB has no DBDNAME")?;
         let dbd = self.database.definition(dbd_name).ok_or("missing DBD")?;
         if dbd.access == "INDEX" {
@@ -625,7 +628,7 @@ impl Session {
             ReadOp::Ghu | ReadOp::Ghn | ReadOp::Ghnp => unreachable!(),
         };
         if let Some(record) = found {
-            let record = if op.is_hold() {
+            let record = if update_hold {
                 self.transaction
                     .hold(record.id, self.lock_timeout)
                     .map_err(|e| e.to_string())?
@@ -635,7 +638,7 @@ impl Session {
             position.current = Some(record.id);
             position.parent = record.parent.or(Some(record.id));
             position.last_deleted = None;
-            if op.is_hold() {
+            if update_hold {
                 position.held = Some(record.id);
             }
             let status = if base == ReadOp::Gn && ssas.is_empty() {
@@ -715,14 +718,11 @@ impl Session {
             None
         };
         let pcb = &self.psb.pcbs[pcb_index];
-        if !pcb
-            .procopt
-            .as_deref()
-            .unwrap_or("")
-            .contains(['G', 'R', 'D', 'A'])
-        {
+        let procopt = pcb.procopt.as_deref().unwrap_or("");
+        if !procopt.contains(['G', 'R', 'D', 'A']) {
             return Err(format!("PCB {pcb_index} does not permit get calls"));
         }
+        let update_hold = op.is_hold() && procopt.contains(['R', 'D', 'A']);
         if !pcb.sensitive_segments.is_empty() && !pcb.sensitive_segments.contains(&segment) {
             return Err(format!("PCB is not sensitive to {segment}"));
         }
@@ -765,7 +765,7 @@ impl Session {
             .transaction
             .record(record.id)
             .ok_or("indexed target was deleted")?;
-        let record = if op.is_hold() {
+        let record = if update_hold {
             self.transaction
                 .hold(record.id, self.lock_timeout)
                 .map_err(|e| e.to_string())?
@@ -776,7 +776,7 @@ impl Session {
         position.current = Some(record.id);
         position.parent = Some(record.id);
         position.last_deleted = None;
-        if op.is_hold() {
+        if update_hold {
             position.held = Some(record.id);
         }
         let mut outcome = ReadOutcome::found(record, Status::Ok);
@@ -897,7 +897,13 @@ impl Session {
             .transaction
             .record(record.id)
             .ok_or("indexed target was deleted")?;
-        let record = if op.is_hold() {
+        let update_hold = op.is_hold()
+            && self.psb.pcbs[pcb_index]
+                .procopt
+                .as_deref()
+                .unwrap_or("")
+                .contains(['R', 'D', 'A']);
+        let record = if update_hold {
             self.transaction
                 .hold(record.id, self.lock_timeout)
                 .map_err(|error| error.to_string())?
@@ -906,7 +912,7 @@ impl Session {
         };
         position.current = Some(record.id);
         position.parent = Some(record.id);
-        if op.is_hold() {
+        if update_hold {
             position.held = Some(record.id);
         }
         Ok(ReadOutcome::found(record, Status::Ok))

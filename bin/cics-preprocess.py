@@ -359,15 +359,17 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
             if period:
                 lines[-1] = lines[-1].rstrip() + ".\n"
             return lines
-        unsupported = set(options) - {"ABSTIME", "DDMMYYYY", "MMDDYYYY", "TIME", "DATESEP", "TIMESEP", "RESP", "RESP2"}
+        unsupported = set(options) - {"ABSTIME", "DDMMYYYY", "MMDDYYYY", "MMDDYY", "TIME", "DATESEP", "TIMESEP", "NOHANDLE", "RESP", "RESP2"}
         if unsupported:
             raise CicsError(f"unsupported FORMATTIME option: {sorted(unsupported)[0]}")
-        if ("DDMMYYYY" in options) == ("MMDDYYYY" in options):
+        date_formats = {"DDMMYYYY", "MMDDYYYY", "MMDDYY"} & set(options)
+        if len(date_formats) != 1:
             raise CicsError("FORMATTIME requires exactly one date format")
         abstime = identifier(options.get("ABSTIME"), "ABSTIME")
-        date_format = "MMDDYYYY" if "MMDDYYYY" in options else "DDMMYYYY"
+        date_format = next(iter(date_formats))
         date = identifier(options.get(date_format), date_format)
-        clock = identifier(options.get("TIME"), "TIME")
+        clock = (identifier(options["TIME"], "TIME") if "TIME" in options
+                 else "COBCICS-FORMATTIME-CLOCK")
         separator = "X'00'"
         if "DATESEP" in options:
             raw = options["DATESEP"]
@@ -386,7 +388,9 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
                 time_separator = f'"{raw[1]}"'
             else:
                 raise CicsError("TIMESEP requires a single character literal")
-        routine = "COBCICS_FORMATTIME" + ("_MMDD" if date_format == "MMDDYYYY" else "")
+        routine = "COBCICS_FORMATTIME" + (
+            "_MMDDYY" if date_format == "MMDDYY" else
+            "_MMDD" if date_format == "MMDDYYYY" else "")
         if time_separator is not None:
             routine += "_TIMESEP"
         lines = [f"           MOVE LENGTH OF {abstime}\n",
@@ -405,7 +409,7 @@ def statement(body, maps, period, expected_mapset=None, program_id=None,
         if time_separator is not None:
             lines.append(f"                   {time_separator}\n")
         lines.append("                   EIBRESP EIBRESP2\n")
-        if "RESP" not in options and "RESP2" not in options:
+        if "RESP" not in options and "RESP2" not in options and "NOHANDLE" not in options:
             lines += ['           CALL STATIC "COBCICS_REQUIRE_NORMAL"\n',
                       '             USING EIBRESP\n']
         lines += response_targets(options)
@@ -1302,6 +1306,7 @@ def transform(source, maps, expected_mapset=None):
                 result.append("          PIC S9(4) COMP.\n")
                 result.append("       01 COBCICS-TIME-CAPACITY\n")
                 result.append("          PIC S9(4) COMP.\n")
+                result.append("       01 COBCICS-FORMATTIME-CLOCK PIC X(8).\n")
                 result.append("       01 COBCICS-DATA-CAPACITY PIC S9(8) COMP.\n")
                 result.append("       01 COBCICS-DATA-LENGTH PIC S9(8) COMP.\n")
                 result.append('       01 COBCICS-CURRENT-CHANNEL PIC X(16)\n')

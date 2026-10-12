@@ -106,6 +106,12 @@ class CicsPreprocessTests(unittest.TestCase):
             "TIME(CLOCK) MILLISECONDS(MILLIS)", self.maps, False))
         self.assertIn("COBCICS_FORMATTIME_YYDDD", timestamp)
         self.assertIn("MILLIS", timestamp)
+        fraud_date = "".join(MODULE.statement(
+            "FORMATTIME ABSTIME(NOW-TIME) MMDDYY(WS-DATE) "
+            "DATESEP NOHANDLE", self.maps, False))
+        self.assertIn("COBCICS_FORMATTIME_MMDDYY", fraud_date)
+        self.assertIn("COBCICS-FORMATTIME-CLOCK", fraud_date)
+        self.assertNotIn("COBCICS_REQUIRE_NORMAL", fraud_date)
         queue = "".join(MODULE.statement(
             "WRITEQ TD QUEUE('CSSL') FROM(MSG) NOHANDLE",
             self.maps, False))
@@ -346,7 +352,6 @@ class CicsPreprocessTests(unittest.TestCase):
             ("SYNCPOINT ROLLBACK(1)", "ROLLBACK takes no value"),
             ("DELAY FOR SECONDS(61)", "requires 0-60"),
             ("ASKTIME ABSTIME(CLOCK) TIME(DATE)", "unsupported ASKTIME option"),
-            ("FORMATTIME ABSTIME(CLOCK) DDMMYYYY(DATE)", "TIME requires"),
             ("FORMATTIME ABSTIME(CLOCK) DDMMYYYY(DATE) TIME(NOW) DATESEP('AB')",
              "DATESEP requires a single character literal"),
         ]:
